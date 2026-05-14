@@ -1,0 +1,5 @@
+@{
+    UserConfig = @{
+        CreateSelfSignedIssuer = $true
+    }
+}

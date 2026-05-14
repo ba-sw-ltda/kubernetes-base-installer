@@ -1,0 +1,5 @@
+@{
+    UserConfig = @{
+        ServerServiceType = "ClusterIP"
+    }
+}

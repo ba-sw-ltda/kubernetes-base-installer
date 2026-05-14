@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(d:/Development/Kubernetes.Quen/.tools/kind.exe export *)",
+      "Bash(kubectl get *)",
+      "Bash(helm upgrade *)",
+      "Bash(Resolve-DnsName rancher.kubernetes.local)",
+      "Bash(nslookup rancher.kubernetes.local)",
+      "Bash(powershell.exe -Command \"Get-Service AcrylicDNSProxySvc 2>&1 | Select-Object Name,Status,StartType\")",
+      "Bash(powershell.exe -Command \"Get-DnsClientServerAddress | Select-Object InterfaceAlias,ServerAddresses | Format-Table -AutoSize\")",
+      "Bash(powershell.exe -Command \"Import-Module 'd:\\\\Development\\\\Kubernetes.Quen\\\\_lib\\\\InstallerFunctions.psm1' -Force; Install-AcrylicDns -Domain 'kubernetes.local'\")",
+      "Bash(pwsh -Command \"Import-Module 'd:\\\\Development\\\\Kubernetes.Quen\\\\_lib\\\\InstallerFunctions.psm1' -Force; Install-AcrylicDns -Domain 'kubernetes.local'\")",
+      "Bash(nslookup rancher.kubernetes.local 127.0.0.1)",
+      "Bash(pwsh -Command \"Restart-Service AcrylicDNSProxySvc -Force; Start-Sleep 2; \\(Get-Service AcrylicDNSProxySvc\\).Status\")",
+      "Bash(pwsh -Command \"Start-Process pwsh -Verb RunAs -ArgumentList '-Command','Restart-Service AcrylicDNSProxySvc -Force' -Wait\")",
+      "Bash(nslookup rancher.kubernetes.local localhost)",
+      "Bash(curl -sk -o /dev/null -w \"%{http_code}\" https://rancher.kubernetes.local)",
+      "Bash(curl -sk -o /dev/null -w \"%{http_code}\" https://localhost)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -sk -o /dev/null -w \"%{http_code}\" https://localhost:32490)",
+      "Bash(d:/Development/Kubernetes.Quen/.tools/kind.exe delete *)",
+      "Bash(cat)",
+      "Bash(d:/Development/Kubernetes.Quen/.tools/kind.exe create *)",
+      "Read(//c/Program Files \\(x86\\)/Acrylic DNS Proxy/**)",
+      "Bash(pwsh -Command \"Start-Process 'C:\\\\Program Files \\(x86\\)\\\\Acrylic DNS Proxy\\\\Uninstall.exe' -Wait\")",
+      "Bash(pwsh -Command \"Get-DnsClientServerAddress | Select-Object InterfaceAlias, ServerAddresses | Format-Table -AutoSize\")",
+      "Bash(pwsh -Command ' *)",
+      "Bash(pwsh -Command 'Get-DnsClientServerAddress | Select-Object InterfaceAlias, ServerAddresses | Where-Object { $_.ServerAddresses } | Format-Table -AutoSize')",
+      "Bash(pwsh -Command \"Start-Process pwsh -Verb RunAs -Wait -ArgumentList '-NonInteractive','-File','C:\\\\Windows\\\\Temp\\\\reset-dns.ps1'\")",
+      "Bash(pwsh -Command 'Get-DnsClientServerAddress | Where-Object { $_.ServerAddresses -and $_.ServerAddresses -notlike '\\\\''*fec0*'\\\\'' } | Select-Object InterfaceAlias, ServerAddresses | Format-Table -AutoSize')",
+      "Bash(nslookup test.kubernetes.local)",
+      "Bash(pwsh -Command 'Get-DnsClientServerAddress | Where-Object { $_.ServerAddresses -contains '\\\\''127.0.0.1'\\\\'' } | Select-Object InterfaceAlias, ServerAddresses | Format-Table -AutoSize')",
+      "Bash(kubectl exec *)",
+      "Bash(kubectl describe *)",
+      "Bash(kubectl rollout *)",
+      "WebFetch(domain:grafana.com)",
+      "PowerShell($env:KUBECONFIG = \"$env:USERPROFILE\\\\.kube\\\\rke2-config\"; kubectl get pvc data-openbao-0 -n openbao -o json 2>&1 | ConvertFrom-Json | ForEach-Object { Write-Host \"FINALIZERS: $\\($_.metadata.finalizers -join ', '\\)\"; Write-Host \"STATUS: $\\($_.status.phase\\)\" })",
+      "PowerShell($env:KUBECONFIG = \"$env:USERPROFILE\\\\.kube\\\\rke2-config\"; kubectl get pv --show-labels 2>&1 | Select-String \"openbao|4d8159ef\" 2>&1)"
+    ]
+  }
+}

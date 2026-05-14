@@ -1,0 +1,18 @@
+# Cluster state files — contain IPs, tokens, credentials
+.rke2-state.json
+.aks-state.json
+.eks-state.json
+.gke-state.json
+.kind-state.json
+.openbao-state.json
+.ingress-ip
+
+# Generated kubeconfig copies
+*.kubeconfig
+
+# PowerShell session artifacts
+*.ps1xml
+
+# Editor
+.vscode/
+*.code-workspace

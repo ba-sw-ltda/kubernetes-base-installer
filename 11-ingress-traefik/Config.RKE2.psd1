@@ -1,0 +1,5 @@
+@{
+    UserConfig = @{
+        MetalLbPool = "ingress-pool"
+    }
+}
