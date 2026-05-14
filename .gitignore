@@ -10,8 +10,14 @@
 # Generated kubeconfig copies
 *.kubeconfig
 
+# Downloaded CLI tools — fetched automatically by Install-Base.ps1
+.tools/
+
 # PowerShell session artifacts
 *.ps1xml
+
+# Claude Code project memory
+.claude/
 
 # Editor
 .vscode/
