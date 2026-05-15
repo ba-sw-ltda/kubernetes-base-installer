@@ -1,103 +1,9 @@
 <#
 .SYNOPSIS
-    Interactive secret rotation — platform-agnostic.
-    Supports OpenBao (RKE2/Kind), Azure Key Vault (AKS) and GCP Secret Manager (GKE).
-    Updates the secret in the backend, then restarts workloads that use it via CSI mount.
-#>
-[CmdletBinding()]
-param()
-
-$BaseDir = $PSScriptRoot
-Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
-
-trap {
-    Write-Host "`n`n  Error: $(<#
-.SYNOPSIS
-    Interactive secret rotation — platform-agnostic.
-    Supports OpenBao (RKE2/Kind), Azure Key Vault (AKS) and GCP Secret Manager (GKE).
-    Updates the secret in the backend, then restarts workloads that use it via CSI mount.
-#>
-[CmdletBinding()]
-param()
-
-$BaseDir = $PSScriptRoot
-Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
-
-trap {
-    Write-Host "
-
-  Error: $(<#
-.SYNOPSIS
-    Interactive secret rotation — platform-agnostic.
-    Supports OpenBao (RKE2/Kind), Azure Key Vault (AKS) and GCP Secret Manager (GKE).
-    Updates the secret in the backend, then restarts workloads that use it via CSI mount.
-#>
-[CmdletBinding()]
-param()
-
-$BaseDir = $PSScriptRoot
-Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
-
-trap {
-    Write-Host "`n`n  Error: $(<#
-.SYNOPSIS
-    Interactive secret rotation — platform-agnostic.
-    Supports OpenBao (RKE2/Kind), Azure Key Vault (AKS) and GCP Secret Manager (GKE).
-    Updates the secret in the backend, then restarts workloads that use it via CSI mount.
-#>
-[CmdletBinding()]
-param()
-
-$BaseDir = $PSScriptRoot
-Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
-
-trap {
-    Write-Host "`n`n  Error: $(<#
-.SYNOPSIS
-    Interactive secret rotation — platform-agnostic.
-    Supports OpenBao (RKE2/Kind), Azure Key Vault (AKS) and GCP Secret Manager (GKE).
-    Updates the secret in the backend, then restarts workloads that use it via CSI mount.
-#>
-[CmdletBinding()]
-param()
-
-$BaseDir = $PSScriptRoot
-Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
-
-trap {
-    Write-Host "`n`n  Error: $(<#
-.SYNOPSIS
-    Interactive secret rotation — platform-agnostic.
-    Supports OpenBao (RKE2/Kind), Azure Key Vault (AKS) and GCP Secret Manager (GKE).
-    Updates the secret in the backend, then restarts workloads that use it via CSI mount.
-#>
-[CmdletBinding()]
-param()
-
-$BaseDir = $PSScriptRoot
-Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
-
-trap {
-    Write-Host "
-
-  Error: $(<#
-.SYNOPSIS
-    Interactive secret rotation — platform-agnostic.
-    Supports OpenBao (RKE2/Kind), Azure Key Vault (AKS) and GCP Secret Manager (GKE).
-    Updates the secret in the backend, then restarts workloads that use it via CSI mount.
-#>
-[CmdletBinding()]
-param()
-
-$BaseDir = $PSScriptRoot
-Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
-
-trap {
-    Write-Host "`n`n  Error: $(<#
-.SYNOPSIS
-    Interactive secret rotation — platform-agnostic.
-    Supports OpenBao (RKE2/Kind), Azure Key Vault (AKS) and GCP Secret Manager (GKE).
-    Updates the secret in the backend, then restarts workloads that use it via CSI mount.
+    Rotate a secret in the cluster vault backend — platform-agnostic.
+    Reads the current keys from OpenBao / Azure Key Vault / AWS Secrets Manager / GCP Secret Manager,
+    accepts new values, writes them to the backend, forces ESO to resync, and optionally
+    restarts affected workloads.
 #>
 [CmdletBinding()]
 param()
@@ -111,259 +17,20 @@ trap {
     exit 1
 }
 
-# ── 1. Select platform ───────────────────────────────────────
+# ── 1. Platform selection ────────────────────────────────────────
 $platforms = @()
-if (Test-Path (Join-Path $BaseDir ".rke2-state.json"))  { $platforms += @{ Label = "RKE2 (On-Premise)";  Value = "RKE2 (On-Premise)" } }
-if (Test-Path (Join-Path $BaseDir ".kind-state.json"))  { $platforms += @{ Label = "Kind (Local)";        Value = "Kind (Local)" } }
-if (Test-Path (Join-Path $BaseDir ".aks-state.json"))   { $platforms += @{ Label = "Azure AKS";           Value = "Azure AKS" } }
-if (Test-Path (Join-Path $BaseDir ".eks-state.json"))   { $platforms += @{ Label = "AWS EKS";             Value = "AWS EKS" } }
-if (Test-Path (Join-Path $BaseDir ".gke-state.json"))   { $platforms += @{ Label = "Google GKE";          Value = "Google GKE" } }
+if (Test-Path (Join-Path $BaseDir ".rke2-state.json")) { $platforms += @{ Label = "RKE2 (On-Premise)"; Value = "RKE2 (On-Premise)" } }
+if (Test-Path (Join-Path $BaseDir ".kind-state.json")) { $platforms += @{ Label = "Kind (Local)";       Value = "Kind (Local)" } }
+if (Test-Path (Join-Path $BaseDir ".aks-state.json"))  { $platforms += @{ Label = "Azure AKS";          Value = "Azure AKS" } }
+if (Test-Path (Join-Path $BaseDir ".eks-state.json"))  { $platforms += @{ Label = "AWS EKS";            Value = "AWS EKS" } }
+if (Test-Path (Join-Path $BaseDir ".gke-state.json"))  { $platforms += @{ Label = "Google GKE";         Value = "Google GKE" } }
 
-if ($platforms.Count -eq 0) { Write-Host "  No installed clusters found." -ForegroundColor Red; exit 1 }
-
-$platform = if ($platforms.Count -eq 1) {
-    $platforms[0].Value
-} else {
-    Read-SelectValue `
-        -Title "Select cluster" `
-        -Message "On which cluster should the secret be rotated?" `
-        -Options $platforms -Default 0 `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint "Multiple installed clusters found"
-}
-if (-not $platform) { exit 0 }
-
-# ── 2. Kubecontext setzen ────────────────────────────────────────
-Set-ClusterContext -BaseDir $BaseDir -Platform $platform
-
-# ── 3. Backend initialisieren ────────────────────────────────────
-$backendType = switch ($platform) {
-    { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
-        if (-not (Test-Path (Join-Path $BaseDir ".openbao-state.json"))) {
-            Write-Host "  OpenBao not installed on $platform" -ForegroundColor Red; exit 1
-        }
-        "openbao"
-    }
-    "Azure AKS" {
-        $aksS = Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json
-        if (-not $aksS.VaultName) { Write-Host "  Azure Key Vault not configured for AKS" -ForegroundColor Red; exit 1 }
-        "azurekv"
-    }
-    "AWS EKS" {
-        $eksS = Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json
-        if (-not $eksS.Region) { Write-Host "  EKS state not found" -ForegroundColor Red; exit 1 }
-        "awssm"
-    }
-    "Google GKE" {
-        $gkeS = Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json
-        if (-not $gkeS.ProjectId) { Write-Host "  GKE state not found" -ForegroundColor Red; exit 1 }
-        "gcpsm"
-    }
-    default { Write-Host "  Secret rotation for $platform not yet supported" -ForegroundColor Red; exit 1 }
-}
-
-$rootToken = $null
-$vaultName = $null
-$projectId = $null
-$awsRegion = $null
-if ($backendType -eq "openbao") {
-    $rootToken = (Get-Content (Join-Path $BaseDir ".openbao-state.json") | ConvertFrom-Json).RootToken
-} elseif ($backendType -eq "azurekv") {
-    $vaultName = (Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json).VaultName
-    $exitCode = Invoke-WithSpinner -Message "Prüfe Azure Login..." -Executable "az" `
-        -Arguments @("account", "show")
-    if ($exitCode -ne 0) {
-        Write-Host "`n  Azure login erforderlich." -ForegroundColor Cyan
-        & az login --use-device-code
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Azure login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-} elseif ($backendType -eq "awssm") {
-    $awsRegion = (Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json).Region
-    & aws sts get-caller-identity 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Host "  AWS not configured. Please run 'aws configure'." -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $projectId = (Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json).ProjectId
-    $gcloudAccount = & gcloud config get-value account 2>$null
-    if ([string]::IsNullOrWhiteSpace($gcloudAccount) -or $gcloudAccount -eq "(unset)") {
-        Write-Host "`n  Google login erforderlich." -ForegroundColor Cyan
-        & gcloud auth login --no-launch-browser
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Google login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-    & gcloud config set project $projectId 2>&1 | Out-Null
-}
-
-# ── 4. Select secret (loader with spinner) ─────────────────────
-$selected = Read-SelectValue `
-    -Title "Select secret" `
-    -Message "Which secret should be rotated?" `
-    -Options @(@{ Label = "[ Lade... ]"; Value = "" }) `
-    -Default 0 `
-    -ContextTitle "Secret Rotation" `
-    -ContextHint "Reads SecretProviderClasses from the cluster" `
-    -ContextCurrent ([ordered]@{ Cluster = $platform }) `
-    -Loader {
-        param($path); $env:PATH = $path
-        $spcList = & kubectl get secretproviderclass -A -o json 2>$null | ConvertFrom-Json
-        $items = if ($spcList -and $spcList.items) { $spcList.items } else { @() }
-        if ($items.Count -eq 0) { return @(@{ Label = "[ No SecretProviderClasses found ]"; Value = "" }) }
-        $items | ForEach-Object {
-            @{ Label = "$($_.metadata.name)  ($($_.metadata.namespace))"; Value = "$($_.metadata.name)|$($_.metadata.namespace)" }
-        } | Sort-Object { $_.Label }
-    } `
-    -LoadingMessage "Lade SecretProviderClasses..."
-
-if (-not $selected) { exit 0 }
-
-$spcName   = ($selected -split '\|')[0]
-$spcNs     = ($selected -split '\|')[1]
-$vaultPath = $spcName -replace '-vault$', ''   # grafana-vault → grafana
-
-# ── 5. Aktuelles Secret lesen ────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-$currentRef = [ref]$null
-if ($backendType -eq "openbao") {
-    Invoke-WithSpinner -Message "Reading secret from OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv get -format=json secret/$vaultPath") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "azurekv") {
-    Invoke-WithSpinner -Message "Reading secret from Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "show",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--query", "value", "--output", "tsv") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "awssm") {
-    Invoke-WithSpinner -Message "Reading secret from AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "get-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--query", "SecretString", "--output", "text") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "gcpsm") {
-    Invoke-WithSpinner -Message "Reading secret from GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "access", "latest",
-                     "--secret", $vaultPath, "--project", $projectId) `
-        -OutputVariable $currentRef | Out-Null
-}
-if (-not ($currentRef.Value -and ($currentRef.Value -join "").Trim() -ne "")) {
-    Write-Host "  Secret '$vaultPath' not found in backend." -ForegroundColor Red; exit 1
-}
-Write-Host "  ✓ Secret found" -ForegroundColor Green
-
-# ── 6. Neues Passwort eingeben ───────────────────────────────────
-do {
-    $newPassword = Read-SecretPlainConfirm `
-        -Prompt1 "Neues Passwort (min. 8 Zeichen)" `
-        -Prompt2 "Passwort bestätigen" `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint  "Aktuell: ••••••••" `
-        -ContextCurrent ([ordered]@{ Secret = $spcName; Namespace = $spcNs; Cluster = $platform })
-    if ($newPassword.Length -lt 8) {
-        Write-Host "  Passwort muss mindestens 8 Zeichen haben." -ForegroundColor Red
-    }
-} while ($newPassword.Length -lt 8)
-
-# ── 7. Secret schreiben ──────────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-Write-Host "  Secret:    $spcName" -ForegroundColor Gray
-Write-Host "  Namespace: $spcNs" -ForegroundColor Gray
-Write-Host "  Cluster:   $platform" -ForegroundColor Gray
-Write-Host ""
-
-if ($backendType -eq "openbao") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv put secret/$vaultPath adminPassword=$newPassword")
-    if ($exitCode -ne 0) { Write-Host "  Error writing to OpenBao" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "azurekv") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "set",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--file", $tmpFile.FullName, "--encoding", "utf-8")
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to Azure Key Vault" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "awssm") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "put-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--secret-string", $newPassword)
-    if ($exitCode -ne 0) { Write-Host "  Error writing to AWS Secrets Manager" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "add", $vaultPath,
-                     "--project", $projectId, "--data-file", $tmpFile.FullName)
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to GCP Secret Manager" -ForegroundColor Red; exit 1 }
-}
-Write-Host "  ✓ Secret aktualisiert" -ForegroundColor Green
-Write-Host ""
-
-# ── 8. Betroffene Workloads neustarten ───────────────────────────
-$restarted = @()
-foreach ($kind in @("deployment", "statefulset", "daemonset")) {
-    $resources = & kubectl get $kind -n $spcNs -o json 2>$null | ConvertFrom-Json
-    if (-not $resources -or -not $resources.items) { continue }
-    foreach ($r in $resources.items) {
-        $usesSpc = $r.spec.template.spec.volumes | Where-Object {
-            $_.csi -and
-            $_.csi.driver -eq "secrets-store.csi.k8s.io" -and
-            $_.csi.volumeAttributes.secretProviderClass -eq $spcName
-        }
-        if ($usesSpc) { $restarted += @{ Kind = $kind; Name = $r.metadata.name } }
-    }
-}
-
-if ($restarted.Count -eq 0) {
-    Write-Host "  No workloads with SPC '$spcName' in '$spcNs' found." -ForegroundColor Yellow
-} else {
-    foreach ($w in $restarted) {
-        $exitCode = Invoke-WithSpinner -Message "Restarting $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "restart", "$($w.Kind)/$($w.Name)", "-n", $spcNs)
-        if ($exitCode -ne 0) { Write-Host "  ✗ Restart failed: $($w.Kind)/$($w.Name)" -ForegroundColor Red; continue }
-
-        $exitCode = Invoke-WithSpinner -Message "Waiting for $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "status", "$($w.Kind)/$($w.Name)", "-n", $spcNs, "--timeout=3m")
-        if ($exitCode -eq 0) {
-            Write-Host "  ✓ $($w.Kind)/$($w.Name) läuft mit neuem Passwort" -ForegroundColor Green
-        } else {
-            Write-Host "  ⚠ Rollout timeout — please check status manually" -ForegroundColor Yellow
-        }
-    }
-}
-
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Rotation complete" -ForegroundColor Green
-Write-Host "========================================`n" -ForegroundColor Green
-.Exception.Message)" -ForegroundColor Red
-    Write-Host "  At: $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor DarkGray
+if ($platforms.Count -eq 0) {
+    Write-Host "`n  No installed cluster state files found. Run Install-Base.ps1 first." -ForegroundColor Red
     exit 1
 }
 
-# ── 1. Select platform ───────────────────────────────────────
-$platforms = @()
-if (Test-Path (Join-Path $BaseDir ".rke2-state.json"))  { $platforms += @{ Label = "RKE2 (On-Premise)";  Value = "RKE2 (On-Premise)" } }
-if (Test-Path (Join-Path $BaseDir ".kind-state.json"))  { $platforms += @{ Label = "Kind (Local)";        Value = "Kind (Local)" } }
-if (Test-Path (Join-Path $BaseDir ".aks-state.json"))   { $platforms += @{ Label = "Azure AKS";           Value = "Azure AKS" } }
-if (Test-Path (Join-Path $BaseDir ".eks-state.json"))   { $platforms += @{ Label = "AWS EKS";             Value = "AWS EKS" } }
-if (Test-Path (Join-Path $BaseDir ".gke-state.json"))   { $platforms += @{ Label = "Google GKE";          Value = "Google GKE" } }
-
-if ($platforms.Count -eq 0) { Write-Host "  No installed clusters found." -ForegroundColor Red; exit 1 }
-
-$platform = if ($platforms.Count -eq 1) {
-    $platforms[0].Value
-} else {
+$platform = if ($platforms.Count -eq 1) { $platforms[0].Value } else {
     Read-SelectValue `
         -Title "Select cluster" `
         -Message "On which cluster should the secret be rotated?" `
@@ -373,1667 +40,245 @@ $platform = if ($platforms.Count -eq 1) {
 }
 if (-not $platform) { exit 0 }
 
-# ── 2. Kubecontext setzen ────────────────────────────────────────
 Set-ClusterContext -BaseDir $BaseDir -Platform $platform
 
-# ── 3. Backend initialisieren ────────────────────────────────────
-$backendType = switch ($platform) {
+# ── 2. Secret path ───────────────────────────────────────────────
+$secretPath = Read-Plain `
+    -Prompt "Secret path in vault" `
+    -ContextTitle "Secret Rotation" `
+    -ContextHint "Same path used during installation, e.g.  infrastructure/database-credentials" `
+    -ContextCurrent ([ordered]@{ Platform = $platform })
+
+if ([string]::IsNullOrWhiteSpace($secretPath)) {
+    Write-Host "  Cancelled." -ForegroundColor Yellow; exit 0
+}
+$secretPath = $secretPath.Trim()
+
+# ── 3. Read current keys from vault (best-effort) ────────────────
+Write-Host ""
+Write-Host "  Reading current secret keys..." -ForegroundColor DarkGray
+
+$currentKeys = @()
+switch ($platform) {
     { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
-        if (-not (Test-Path (Join-Path $BaseDir ".openbao-state.json"))) {
-            Write-Host "  OpenBao not installed on $platform" -ForegroundColor Red; exit 1
+        $stateFile = Join-Path $BaseDir ".openbao-state.json"
+        if (Test-Path $stateFile) {
+            $rootToken = (Get-Content $stateFile | ConvertFrom-Json).RootToken
+            $raw = & kubectl exec openbao-0 -n openbao -- `
+                sh -c "BAO_TOKEN=$rootToken bao kv get -format=json secret/$secretPath 2>/dev/null" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $raw) {
+                $jsonStart = ($raw -join "`n").IndexOf('{')
+                if ($jsonStart -ge 0) {
+                    $parsed = ($raw -join "`n").Substring($jsonStart) | ConvertFrom-Json -ErrorAction SilentlyContinue
+                    if ($parsed -and $parsed.data -and $parsed.data.data) {
+                        $currentKeys = @($parsed.data.data.PSObject.Properties.Name)
+                    }
+                }
+            }
         }
-        "openbao"
     }
     "Azure AKS" {
-        $aksS = Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json
-        if (-not $aksS.VaultName) { Write-Host "  Azure Key Vault not configured for AKS" -ForegroundColor Red; exit 1 }
-        "azurekv"
+        $stateFile = Join-Path $BaseDir ".aks-state.json"
+        if (Test-Path $stateFile) {
+            $vaultName = (Get-Content $stateFile | ConvertFrom-Json).VaultName
+            if ($vaultName) {
+                $prefix = $secretPath -replace '/', '-'
+                $list = & az keyvault secret list --vault-name $vaultName `
+                    --query "[?starts_with(name, '$prefix')].name" -o tsv 2>$null
+                if ($list) {
+                    $currentKeys = @($list -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }) |
+                        ForEach-Object { ($_ -replace "^$prefix-?", '') } | Where-Object { $_ }
+                    if ($currentKeys.Count -eq 0) { $currentKeys = @($prefix) }
+                }
+            }
+        }
     }
     "AWS EKS" {
-        $eksS = Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json
-        if (-not $eksS.Region) { Write-Host "  EKS state not found" -ForegroundColor Red; exit 1 }
-        "awssm"
+        $stateFile = Join-Path $BaseDir ".eks-state.json"
+        if (Test-Path $stateFile) {
+            $region = (Get-Content $stateFile | ConvertFrom-Json).Region
+            if ($region) {
+                $prefix = $secretPath -replace '/', '-'
+                $list = & aws secretsmanager list-secrets --region $region `
+                    --query "SecretList[?starts_with(Name, '$prefix')].Name" --output text 2>$null
+                if ($list) {
+                    $currentKeys = @($list -split '\s+' | Where-Object { $_ }) |
+                        ForEach-Object { ($_ -replace "^$prefix-?", '') } | Where-Object { $_ }
+                    if ($currentKeys.Count -eq 0) { $currentKeys = @($prefix) }
+                }
+            }
+        }
     }
     "Google GKE" {
-        $gkeS = Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json
-        if (-not $gkeS.ProjectId) { Write-Host "  GKE state not found" -ForegroundColor Red; exit 1 }
-        "gcpsm"
-    }
-    default { Write-Host "  Secret rotation for $platform not yet supported" -ForegroundColor Red; exit 1 }
-}
-
-$rootToken = $null
-$vaultName = $null
-$projectId = $null
-$awsRegion = $null
-if ($backendType -eq "openbao") {
-    $rootToken = (Get-Content (Join-Path $BaseDir ".openbao-state.json") | ConvertFrom-Json).RootToken
-} elseif ($backendType -eq "azurekv") {
-    $vaultName = (Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json).VaultName
-    $exitCode = Invoke-WithSpinner -Message "Prüfe Azure Login..." -Executable "az" `
-        -Arguments @("account", "show")
-    if ($exitCode -ne 0) {
-        Write-Host "`n  Azure login erforderlich." -ForegroundColor Cyan
-        & az login --use-device-code
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Azure login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-} elseif ($backendType -eq "awssm") {
-    $awsRegion = (Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json).Region
-    & aws sts get-caller-identity 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Host "  AWS not configured. Please run 'aws configure'." -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $projectId = (Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json).ProjectId
-    $gcloudAccount = & gcloud config get-value account 2>$null
-    if ([string]::IsNullOrWhiteSpace($gcloudAccount) -or $gcloudAccount -eq "(unset)") {
-        Write-Host "`n  Google login erforderlich." -ForegroundColor Cyan
-        & gcloud auth login --no-launch-browser
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Google login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-    & gcloud config set project $projectId 2>&1 | Out-Null
-}
-
-# ── 4. Select secret (loader with spinner) ─────────────────────
-$selected = Read-SelectValue `
-    -Title "Select secret" `
-    -Message "Which secret should be rotated?" `
-    -Options @(@{ Label = "[ Lade... ]"; Value = "" }) `
-    -Default 0 `
-    -ContextTitle "Secret Rotation" `
-    -ContextHint "Reads SecretProviderClasses from the cluster" `
-    -ContextCurrent ([ordered]@{ Cluster = $platform }) `
-    -Loader {
-        param($path); $env:PATH = $path
-        $spcList = & kubectl get secretproviderclass -A -o json 2>$null | ConvertFrom-Json
-        $items = if ($spcList -and $spcList.items) { $spcList.items } else { @() }
-        if ($items.Count -eq 0) { return @(@{ Label = "[ No SecretProviderClasses found ]"; Value = "" }) }
-        $items | ForEach-Object {
-            @{ Label = "$($_.metadata.name)  ($($_.metadata.namespace))"; Value = "$($_.metadata.name)|$($_.metadata.namespace)" }
-        } | Sort-Object { $_.Label }
-    } `
-    -LoadingMessage "Lade SecretProviderClasses..."
-
-if (-not $selected) { exit 0 }
-
-$spcName   = ($selected -split '\|')[0]
-$spcNs     = ($selected -split '\|')[1]
-$vaultPath = $spcName -replace '-vault$', ''   # grafana-vault → grafana
-
-# ── 5. Aktuelles Secret lesen ────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-$currentRef = [ref]$null
-if ($backendType -eq "openbao") {
-    Invoke-WithSpinner -Message "Reading secret from OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv get -format=json secret/$vaultPath") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "azurekv") {
-    Invoke-WithSpinner -Message "Reading secret from Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "show",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--query", "value", "--output", "tsv") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "awssm") {
-    Invoke-WithSpinner -Message "Reading secret from AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "get-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--query", "SecretString", "--output", "text") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "gcpsm") {
-    Invoke-WithSpinner -Message "Reading secret from GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "access", "latest",
-                     "--secret", $vaultPath, "--project", $projectId) `
-        -OutputVariable $currentRef | Out-Null
-}
-if (-not ($currentRef.Value -and ($currentRef.Value -join "").Trim() -ne "")) {
-    Write-Host "  Secret '$vaultPath' not found in backend." -ForegroundColor Red; exit 1
-}
-Write-Host "  ✓ Secret found" -ForegroundColor Green
-
-# ── 6. Neues Passwort eingeben ───────────────────────────────────
-do {
-    $newPassword = Read-SecretPlainConfirm `
-        -Prompt1 "Neues Passwort (min. 8 Zeichen)" `
-        -Prompt2 "Passwort bestätigen" `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint  "Aktuell: ••••••••" `
-        -ContextCurrent ([ordered]@{ Secret = $spcName; Namespace = $spcNs; Cluster = $platform })
-    if ($newPassword.Length -lt 8) {
-        Write-Host "  Passwort muss mindestens 8 Zeichen haben." -ForegroundColor Red
-    }
-} while ($newPassword.Length -lt 8)
-
-# ── 7. Secret schreiben ──────────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-Write-Host "  Secret:    $spcName" -ForegroundColor Gray
-Write-Host "  Namespace: $spcNs" -ForegroundColor Gray
-Write-Host "  Cluster:   $platform" -ForegroundColor Gray
-Write-Host ""
-
-if ($backendType -eq "openbao") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv put secret/$vaultPath adminPassword=$newPassword")
-    if ($exitCode -ne 0) { Write-Host "  Error writing to OpenBao" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "azurekv") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "set",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--file", $tmpFile.FullName, "--encoding", "utf-8")
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to Azure Key Vault" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "awssm") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "put-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--secret-string", $newPassword)
-    if ($exitCode -ne 0) { Write-Host "  Error writing to AWS Secrets Manager" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "add", $vaultPath,
-                     "--project", $projectId, "--data-file", $tmpFile.FullName)
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to GCP Secret Manager" -ForegroundColor Red; exit 1 }
-}
-Write-Host "  ✓ Secret aktualisiert" -ForegroundColor Green
-Write-Host ""
-
-# ── 8. Betroffene Workloads neustarten ───────────────────────────
-$restarted = @()
-foreach ($kind in @("deployment", "statefulset", "daemonset")) {
-    $resources = & kubectl get $kind -n $spcNs -o json 2>$null | ConvertFrom-Json
-    if (-not $resources -or -not $resources.items) { continue }
-    foreach ($r in $resources.items) {
-        $usesSpc = $r.spec.template.spec.volumes | Where-Object {
-            $_.csi -and
-            $_.csi.driver -eq "secrets-store.csi.k8s.io" -and
-            $_.csi.volumeAttributes.secretProviderClass -eq $spcName
+        $stateFile = Join-Path $BaseDir ".gke-state.json"
+        if (Test-Path $stateFile) {
+            $projectId = (Get-Content $stateFile | ConvertFrom-Json).ProjectId
+            if ($projectId) {
+                $filter = $secretPath -replace '/', '-'
+                $list = & gcloud secrets list --project $projectId `
+                    --filter="name~^$filter" --format="value(name)" 2>$null
+                if ($list) {
+                    $currentKeys = @($list -split "`n" | Where-Object { $_ }) |
+                        ForEach-Object { ($_ -replace "^$filter-?", '') } | Where-Object { $_ }
+                    if ($currentKeys.Count -eq 0) { $currentKeys = @($filter) }
+                }
+            }
         }
-        if ($usesSpc) { $restarted += @{ Kind = $kind; Name = $r.metadata.name } }
     }
 }
 
-if ($restarted.Count -eq 0) {
-    Write-Host "  No workloads with SPC '$spcName' in '$spcNs' found." -ForegroundColor Yellow
+if ($currentKeys.Count -gt 0) {
+    Write-Host "  Current keys: $($currentKeys -join ', ')" -ForegroundColor DarkGray
 } else {
-    foreach ($w in $restarted) {
-        $exitCode = Invoke-WithSpinner -Message "Restarting $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "restart", "$($w.Kind)/$($w.Name)", "-n", $spcNs)
-        if ($exitCode -ne 0) { Write-Host "  ✗ Restart failed: $($w.Kind)/$($w.Name)" -ForegroundColor Red; continue }
+    Write-Host "  (Could not read keys — path may not exist yet or vault is unavailable)" -ForegroundColor DarkGray
+}
 
-        $exitCode = Invoke-WithSpinner -Message "Waiting for $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "status", "$($w.Kind)/$($w.Name)", "-n", $spcNs, "--timeout=3m")
-        if ($exitCode -eq 0) {
-            Write-Host "  ✓ $($w.Kind)/$($w.Name) läuft mit neuem Passwort" -ForegroundColor Green
-        } else {
-            Write-Host "  ⚠ Rollout timeout — please check status manually" -ForegroundColor Yellow
+# ── 4. Collect new values ────────────────────────────────────────
+Write-Host ""
+$newData = [ordered]@{}
+
+if ($currentKeys.Count -gt 0) {
+    Write-Host "  Enter new value for each key (press Enter to skip / keep existing):" -ForegroundColor White
+    Write-Host ""
+    foreach ($key in $currentKeys) {
+        $val = Read-SecretPlain `
+            -Prompt $key `
+            -ContextTitle "Secret Rotation — $secretPath" `
+            -ContextHint "Press Enter to keep the current value"
+        if (-not [string]::IsNullOrWhiteSpace($val)) {
+            $newData[$key] = $val
         }
+    }
+} else {
+    Write-Host "  Enter key=value pairs (one per line, empty line to finish):" -ForegroundColor White
+    Write-Host ""
+    $lineNum = 1
+    while ($true) {
+        $entry = Read-Plain `
+            -Prompt "Entry $lineNum  (key=value, or empty to finish)" `
+            -ContextTitle "Secret Rotation — $secretPath"
+        if ([string]::IsNullOrWhiteSpace($entry)) { break }
+        $parts = $entry -split '=', 2
+        if ($parts.Count -ne 2 -or [string]::IsNullOrWhiteSpace($parts[0])) {
+            Write-Host "  Expected format: key=value" -ForegroundColor Yellow; continue
+        }
+        $newData[$parts[0].Trim()] = $parts[1]
+        $lineNum++
     }
 }
 
+if ($newData.Count -eq 0) {
+    Write-Host ""
+    Write-Host "  No new values entered — nothing to update." -ForegroundColor Yellow
+    exit 0
+}
+
+# ── 5. Write to vault ────────────────────────────────────────────
 Write-Host ""
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Rotation complete" -ForegroundColor Green
-Write-Host "========================================`n" -ForegroundColor Green
-
-
-.Exception.Message)" -ForegroundColor Red
-    Write-Host "  At: $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor DarkGray
+$ok = Write-ClusterSecret -Path $secretPath -BaseDir $BaseDir -Platform $platform -Data $newData
+if (-not $ok) {
+    Write-Host "  ✗ Failed to write secret to vault backend." -ForegroundColor Red
     exit 1
 }
 
-# ── 1. Select platform ───────────────────────────────────────
-$platforms = @()
-if (Test-Path (Join-Path $BaseDir ".rke2-state.json"))  { $platforms += @{ Label = "RKE2 (On-Premise)";  Value = "RKE2 (On-Premise)" } }
-if (Test-Path (Join-Path $BaseDir ".kind-state.json"))  { $platforms += @{ Label = "Kind (Local)";        Value = "Kind (Local)" } }
-if (Test-Path (Join-Path $BaseDir ".aks-state.json"))   { $platforms += @{ Label = "Azure AKS";           Value = "Azure AKS" } }
-if (Test-Path (Join-Path $BaseDir ".eks-state.json"))   { $platforms += @{ Label = "AWS EKS";             Value = "AWS EKS" } }
-if (Test-Path (Join-Path $BaseDir ".gke-state.json"))   { $platforms += @{ Label = "Google GKE";          Value = "Google GKE" } }
-
-if ($platforms.Count -eq 0) { Write-Host "  No installed clusters found." -ForegroundColor Red; exit 1 }
-
-$platform = if ($platforms.Count -eq 1) {
-    $platforms[0].Value
-} else {
-    Read-SelectValue `
-        -Title "Select cluster" `
-        -Message "On which cluster should the secret be rotated?" `
-        -Options $platforms -Default 0 `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint "Multiple installed clusters found"
-}
-if (-not $platform) { exit 0 }
-
-# ── 2. Kubecontext setzen ────────────────────────────────────────
-Set-ClusterContext -BaseDir $BaseDir -Platform $platform
-
-# ── 3. Backend initialisieren ────────────────────────────────────
-$backendType = switch ($platform) {
-    { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
-        if (-not (Test-Path (Join-Path $BaseDir ".openbao-state.json"))) {
-            Write-Host "  OpenBao not installed on $platform" -ForegroundColor Red; exit 1
-        }
-        "openbao"
-    }
-    "Azure AKS" {
-        $aksS = Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json
-        if (-not $aksS.VaultName) { Write-Host "  Azure Key Vault not configured for AKS" -ForegroundColor Red; exit 1 }
-        "azurekv"
-    }
-    "AWS EKS" {
-        $eksS = Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json
-        if (-not $eksS.Region) { Write-Host "  EKS state not found" -ForegroundColor Red; exit 1 }
-        "awssm"
-    }
-    "Google GKE" {
-        $gkeS = Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json
-        if (-not $gkeS.ProjectId) { Write-Host "  GKE state not found" -ForegroundColor Red; exit 1 }
-        "gcpsm"
-    }
-    default { Write-Host "  Secret rotation for $platform not yet supported" -ForegroundColor Red; exit 1 }
-}
-
-$rootToken = $null
-$vaultName = $null
-$projectId = $null
-$awsRegion = $null
-if ($backendType -eq "openbao") {
-    $rootToken = (Get-Content (Join-Path $BaseDir ".openbao-state.json") | ConvertFrom-Json).RootToken
-} elseif ($backendType -eq "azurekv") {
-    $vaultName = (Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json).VaultName
-    $exitCode = Invoke-WithSpinner -Message "Prüfe Azure Login..." -Executable "az" `
-        -Arguments @("account", "show")
-    if ($exitCode -ne 0) {
-        Write-Host "`n  Azure login erforderlich." -ForegroundColor Cyan
-        & az login --use-device-code
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Azure login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-} elseif ($backendType -eq "awssm") {
-    $awsRegion = (Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json).Region
-    & aws sts get-caller-identity 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Host "  AWS not configured. Please run 'aws configure'." -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $projectId = (Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json).ProjectId
-    $gcloudAccount = & gcloud config get-value account 2>$null
-    if ([string]::IsNullOrWhiteSpace($gcloudAccount) -or $gcloudAccount -eq "(unset)") {
-        Write-Host "`n  Google login erforderlich." -ForegroundColor Cyan
-        & gcloud auth login --no-launch-browser
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Google login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-    & gcloud config set project $projectId 2>&1 | Out-Null
-}
-
-# ── 4. Select secret (loader with spinner) ─────────────────────
-$selected = Read-SelectValue `
-    -Title "Select secret" `
-    -Message "Which secret should be rotated?" `
-    -Options @(@{ Label = "[ Lade... ]"; Value = "" }) `
-    -Default 0 `
-    -ContextTitle "Secret Rotation" `
-    -ContextHint "Reads SecretProviderClasses from the cluster" `
-    -ContextCurrent ([ordered]@{ Cluster = $platform }) `
-    -Loader {
-        param($path); $env:PATH = $path
-        $spcList = & kubectl get secretproviderclass -A -o json 2>$null | ConvertFrom-Json
-        $items = if ($spcList -and $spcList.items) { $spcList.items } else { @() }
-        if ($items.Count -eq 0) { return @(@{ Label = "[ No SecretProviderClasses found ]"; Value = "" }) }
-        $items | ForEach-Object {
-            @{ Label = "$($_.metadata.name)  ($($_.metadata.namespace))"; Value = "$($_.metadata.name)|$($_.metadata.namespace)" }
-        } | Sort-Object { $_.Label }
-    } `
-    -LoadingMessage "Lade SecretProviderClasses..."
-
-if (-not $selected) { exit 0 }
-
-$spcName   = ($selected -split '\|')[0]
-$spcNs     = ($selected -split '\|')[1]
-$vaultPath = $spcName -replace '-vault$', ''   # grafana-vault → grafana
-
-# ── 5. Aktuelles Secret lesen ────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-$currentRef = [ref]$null
-if ($backendType -eq "openbao") {
-    Invoke-WithSpinner -Message "Reading secret from OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv get -format=json secret/$vaultPath") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "azurekv") {
-    Invoke-WithSpinner -Message "Reading secret from Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "show",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--query", "value", "--output", "tsv") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "awssm") {
-    Invoke-WithSpinner -Message "Reading secret from AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "get-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--query", "SecretString", "--output", "text") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "gcpsm") {
-    Invoke-WithSpinner -Message "Reading secret from GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "access", "latest",
-                     "--secret", $vaultPath, "--project", $projectId) `
-        -OutputVariable $currentRef | Out-Null
-}
-if (-not ($currentRef.Value -and ($currentRef.Value -join "").Trim() -ne "")) {
-    Write-Host "  Secret '$vaultPath' not found in backend." -ForegroundColor Red; exit 1
-}
-Write-Host "  ✓ Secret found" -ForegroundColor Green
-
-# ── 6. Neues Passwort eingeben ───────────────────────────────────
-do {
-    $newPassword = Read-SecretPlainConfirm `
-        -Prompt1 "Neues Passwort (min. 8 Zeichen)" `
-        -Prompt2 "Passwort bestätigen" `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint  "Aktuell: ••••••••" `
-        -ContextCurrent ([ordered]@{ Secret = $spcName; Namespace = $spcNs; Cluster = $platform })
-    if ($newPassword.Length -lt 8) {
-        Write-Host "  Passwort muss mindestens 8 Zeichen haben." -ForegroundColor Red
-    }
-} while ($newPassword.Length -lt 8)
-
-# ── 7. Secret schreiben ──────────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-Write-Host "  Secret:    $spcName" -ForegroundColor Gray
-Write-Host "  Namespace: $spcNs" -ForegroundColor Gray
-Write-Host "  Cluster:   $platform" -ForegroundColor Gray
+# ── 6. Force ESO resync ──────────────────────────────────────────
 Write-Host ""
+Write-Host "  Searching for ExternalSecrets that reference '$secretPath'..." -ForegroundColor DarkGray
 
-if ($backendType -eq "openbao") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv put secret/$vaultPath adminPassword=$newPassword")
-    if ($exitCode -ne 0) { Write-Host "  Error writing to OpenBao" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "azurekv") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "set",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--file", $tmpFile.FullName, "--encoding", "utf-8")
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to Azure Key Vault" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "awssm") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "put-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--secret-string", $newPassword)
-    if ($exitCode -ne 0) { Write-Host "  Error writing to AWS Secrets Manager" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "add", $vaultPath,
-                     "--project", $projectId, "--data-file", $tmpFile.FullName)
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to GCP Secret Manager" -ForegroundColor Red; exit 1 }
-}
-Write-Host "  ✓ Secret aktualisiert" -ForegroundColor Green
-Write-Host ""
+$syncTs  = Get-Date -Format 'yyyyMMddHHmmss'
+$synced  = 0
+$esRaw   = & kubectl get externalsecret -A -o json 2>$null
+$esList  = if ($esRaw) { ($esRaw | ConvertFrom-Json -ErrorAction SilentlyContinue).items } else { @() }
 
-# ── 8. Betroffene Workloads neustarten ───────────────────────────
-$restarted = @()
-foreach ($kind in @("deployment", "statefulset", "daemonset")) {
-    $resources = & kubectl get $kind -n $spcNs -o json 2>$null | ConvertFrom-Json
-    if (-not $resources -or -not $resources.items) { continue }
-    foreach ($r in $resources.items) {
-        $usesSpc = $r.spec.template.spec.volumes | Where-Object {
-            $_.csi -and
-            $_.csi.driver -eq "secrets-store.csi.k8s.io" -and
-            $_.csi.volumeAttributes.secretProviderClass -eq $spcName
-        }
-        if ($usesSpc) { $restarted += @{ Kind = $kind; Name = $r.metadata.name } }
+foreach ($es in @($esList)) {
+    $ns   = $es.metadata.namespace
+    $name = $es.metadata.name
+
+    $matched = $false
+    foreach ($d in @($es.spec.data)) {
+        if ($d.remoteRef.key -like "*$secretPath*") { $matched = $true; break }
     }
-}
+    if (-not $matched) {
+        foreach ($df in @($es.spec.dataFrom)) {
+            if ($df.extract.key -like "*$secretPath*") { $matched = $true; break }
+        }
+    }
 
-if ($restarted.Count -eq 0) {
-    Write-Host "  No workloads with SPC '$spcName' in '$spcNs' found." -ForegroundColor Yellow
-} else {
-    foreach ($w in $restarted) {
-        $exitCode = Invoke-WithSpinner -Message "Restarting $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "restart", "$($w.Kind)/$($w.Name)", "-n", $spcNs)
-        if ($exitCode -ne 0) { Write-Host "  ✗ Restart failed: $($w.Kind)/$($w.Name)" -ForegroundColor Red; continue }
-
-        $exitCode = Invoke-WithSpinner -Message "Waiting for $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "status", "$($w.Kind)/$($w.Name)", "-n", $spcNs, "--timeout=3m")
-        if ($exitCode -eq 0) {
-            Write-Host "  ✓ $($w.Kind)/$($w.Name) läuft mit neuem Passwort" -ForegroundColor Green
-        } else {
-            Write-Host "  ⚠ Rollout timeout — please check status manually" -ForegroundColor Yellow
+    if ($matched) {
+        & kubectl annotate externalsecret $name -n $ns `
+            "force-sync=$syncTs" --overwrite 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✓ Triggered resync: $name  ($ns)" -ForegroundColor Green
+            $synced++
         }
     }
 }
 
+if ($synced -eq 0) {
+    Write-Host "  ⚠ No matching ExternalSecrets found — resync not triggered automatically." -ForegroundColor Yellow
+    Write-Host "    Trigger manually:" -ForegroundColor DarkGray
+    Write-Host "    kubectl annotate externalsecret <name> -n <ns> force-sync=$syncTs --overwrite" -ForegroundColor DarkGray
+}
+
+# ── 7. Restart affected workloads (optional) ─────────────────────
 Write-Host ""
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Rotation complete" -ForegroundColor Green
-Write-Host "========================================`n" -ForegroundColor Green
-.Exception.Message)" -ForegroundColor Red
-    Write-Host "  At: $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor DarkGray
-    exit 1
-}
+$restartNs = Read-Plain `
+    -Prompt "Restart workloads in namespace" `
+    -ContextTitle "Secret Rotation — Workload Restart" `
+    -ContextHint "Enter a namespace to restart deployments/statefulsets there, or press Enter to skip"
 
-# ── 1. Select platform ───────────────────────────────────────
-$platforms = @()
-if (Test-Path (Join-Path $BaseDir ".rke2-state.json"))  { $platforms += @{ Label = "RKE2 (On-Premise)";  Value = "RKE2 (On-Premise)" } }
-if (Test-Path (Join-Path $BaseDir ".kind-state.json"))  { $platforms += @{ Label = "Kind (Local)";        Value = "Kind (Local)" } }
-if (Test-Path (Join-Path $BaseDir ".aks-state.json"))   { $platforms += @{ Label = "Azure AKS";           Value = "Azure AKS" } }
-if (Test-Path (Join-Path $BaseDir ".eks-state.json"))   { $platforms += @{ Label = "AWS EKS";             Value = "AWS EKS" } }
-if (Test-Path (Join-Path $BaseDir ".gke-state.json"))   { $platforms += @{ Label = "Google GKE";          Value = "Google GKE" } }
+if (-not [string]::IsNullOrWhiteSpace($restartNs)) {
+    $restartNs = $restartNs.Trim()
+    Write-Host ""
 
-if ($platforms.Count -eq 0) { Write-Host "  No installed clusters found." -ForegroundColor Red; exit 1 }
+    $deploys = @(& kubectl get deployment -n $restartNs --no-headers `
+        -o custom-columns="N:.metadata.name" 2>$null | Where-Object { $_ })
+    $stsets  = @(& kubectl get statefulset -n $restartNs --no-headers `
+        -o custom-columns="N:.metadata.name" 2>$null | Where-Object { $_ })
 
-$platform = if ($platforms.Count -eq 1) {
-    $platforms[0].Value
-} else {
-    Read-SelectValue `
-        -Title "Select cluster" `
-        -Message "On which cluster should the secret be rotated?" `
-        -Options $platforms -Default 0 `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint "Multiple installed clusters found"
-}
-if (-not $platform) { exit 0 }
-
-# ── 2. Kubecontext setzen ────────────────────────────────────────
-Set-ClusterContext -BaseDir $BaseDir -Platform $platform
-
-# ── 3. Backend initialisieren ────────────────────────────────────
-$backendType = switch ($platform) {
-    { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
-        if (-not (Test-Path (Join-Path $BaseDir ".openbao-state.json"))) {
-            Write-Host "  OpenBao not installed on $platform" -ForegroundColor Red; exit 1
-        }
-        "openbao"
-    }
-    "Azure AKS" {
-        $aksS = Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json
-        if (-not $aksS.VaultName) { Write-Host "  Azure Key Vault not configured for AKS" -ForegroundColor Red; exit 1 }
-        "azurekv"
-    }
-    "AWS EKS" {
-        $eksS = Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json
-        if (-not $eksS.Region) { Write-Host "  EKS state not found" -ForegroundColor Red; exit 1 }
-        "awssm"
-    }
-    "Google GKE" {
-        $gkeS = Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json
-        if (-not $gkeS.ProjectId) { Write-Host "  GKE state not found" -ForegroundColor Red; exit 1 }
-        "gcpsm"
-    }
-    default { Write-Host "  Secret rotation for $platform not yet supported" -ForegroundColor Red; exit 1 }
-}
-
-$rootToken = $null
-$vaultName = $null
-$projectId = $null
-$awsRegion = $null
-if ($backendType -eq "openbao") {
-    $rootToken = (Get-Content (Join-Path $BaseDir ".openbao-state.json") | ConvertFrom-Json).RootToken
-} elseif ($backendType -eq "azurekv") {
-    $vaultName = (Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json).VaultName
-    $exitCode = Invoke-WithSpinner -Message "Prüfe Azure Login..." -Executable "az" `
-        -Arguments @("account", "show")
-    if ($exitCode -ne 0) {
-        Write-Host "`n  Azure login erforderlich." -ForegroundColor Cyan
-        & az login --use-device-code
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Azure login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-} elseif ($backendType -eq "awssm") {
-    $awsRegion = (Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json).Region
-    & aws sts get-caller-identity 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Host "  AWS not configured. Please run 'aws configure'." -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $projectId = (Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json).ProjectId
-    $gcloudAccount = & gcloud config get-value account 2>$null
-    if ([string]::IsNullOrWhiteSpace($gcloudAccount) -or $gcloudAccount -eq "(unset)") {
-        Write-Host "`n  Google login erforderlich." -ForegroundColor Cyan
-        & gcloud auth login --no-launch-browser
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Google login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-    & gcloud config set project $projectId 2>&1 | Out-Null
-}
-
-# ── 4. Select secret (loader with spinner) ─────────────────────
-$selected = Read-SelectValue `
-    -Title "Select secret" `
-    -Message "Which secret should be rotated?" `
-    -Options @(@{ Label = "[ Lade... ]"; Value = "" }) `
-    -Default 0 `
-    -ContextTitle "Secret Rotation" `
-    -ContextHint "Reads SecretProviderClasses from the cluster" `
-    -ContextCurrent ([ordered]@{ Cluster = $platform }) `
-    -Loader {
-        param($path); $env:PATH = $path
-        $spcList = & kubectl get secretproviderclass -A -o json 2>$null | ConvertFrom-Json
-        $items = if ($spcList -and $spcList.items) { $spcList.items } else { @() }
-        if ($items.Count -eq 0) { return @(@{ Label = "[ No SecretProviderClasses found ]"; Value = "" }) }
-        $items | ForEach-Object {
-            @{ Label = "$($_.metadata.name)  ($($_.metadata.namespace))"; Value = "$($_.metadata.name)|$($_.metadata.namespace)" }
-        } | Sort-Object { $_.Label }
-    } `
-    -LoadingMessage "Lade SecretProviderClasses..."
-
-if (-not $selected) { exit 0 }
-
-$spcName   = ($selected -split '\|')[0]
-$spcNs     = ($selected -split '\|')[1]
-$vaultPath = $spcName -replace '-vault$', ''   # grafana-vault → grafana
-
-# ── 5. Aktuelles Secret lesen ────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-$currentRef = [ref]$null
-if ($backendType -eq "openbao") {
-    Invoke-WithSpinner -Message "Reading secret from OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv get -format=json secret/$vaultPath") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "azurekv") {
-    Invoke-WithSpinner -Message "Reading secret from Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "show",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--query", "value", "--output", "tsv") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "awssm") {
-    Invoke-WithSpinner -Message "Reading secret from AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "get-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--query", "SecretString", "--output", "text") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "gcpsm") {
-    Invoke-WithSpinner -Message "Reading secret from GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "access", "latest",
-                     "--secret", $vaultPath, "--project", $projectId) `
-        -OutputVariable $currentRef | Out-Null
-}
-if (-not ($currentRef.Value -and ($currentRef.Value -join "").Trim() -ne "")) {
-    Write-Host "  Secret '$vaultPath' not found in backend." -ForegroundColor Red; exit 1
-}
-Write-Host "  ✓ Secret found" -ForegroundColor Green
-
-# ── 6. Neues Passwort eingeben ───────────────────────────────────
-do {
-    $newPassword = Read-SecretPlainConfirm `
-        -Prompt1 "Neues Passwort (min. 8 Zeichen)" `
-        -Prompt2 "Passwort bestätigen" `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint  "Aktuell: ••••••••" `
-        -ContextCurrent ([ordered]@{ Secret = $spcName; Namespace = $spcNs; Cluster = $platform })
-    if ($newPassword.Length -lt 8) {
-        Write-Host "  Passwort muss mindestens 8 Zeichen haben." -ForegroundColor Red
-    }
-} while ($newPassword.Length -lt 8)
-
-# ── 7. Secret schreiben ──────────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-Write-Host "  Secret:    $spcName" -ForegroundColor Gray
-Write-Host "  Namespace: $spcNs" -ForegroundColor Gray
-Write-Host "  Cluster:   $platform" -ForegroundColor Gray
-Write-Host ""
-
-if ($backendType -eq "openbao") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv put secret/$vaultPath adminPassword=$newPassword")
-    if ($exitCode -ne 0) { Write-Host "  Error writing to OpenBao" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "azurekv") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "set",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--file", $tmpFile.FullName, "--encoding", "utf-8")
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to Azure Key Vault" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "awssm") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "put-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--secret-string", $newPassword)
-    if ($exitCode -ne 0) { Write-Host "  Error writing to AWS Secrets Manager" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "add", $vaultPath,
-                     "--project", $projectId, "--data-file", $tmpFile.FullName)
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to GCP Secret Manager" -ForegroundColor Red; exit 1 }
-}
-Write-Host "  ✓ Secret aktualisiert" -ForegroundColor Green
-Write-Host ""
-
-# ── 8. Betroffene Workloads neustarten ───────────────────────────
-$restarted = @()
-foreach ($kind in @("deployment", "statefulset", "daemonset")) {
-    $resources = & kubectl get $kind -n $spcNs -o json 2>$null | ConvertFrom-Json
-    if (-not $resources -or -not $resources.items) { continue }
-    foreach ($r in $resources.items) {
-        $usesSpc = $r.spec.template.spec.volumes | Where-Object {
-            $_.csi -and
-            $_.csi.driver -eq "secrets-store.csi.k8s.io" -and
-            $_.csi.volumeAttributes.secretProviderClass -eq $spcName
-        }
-        if ($usesSpc) { $restarted += @{ Kind = $kind; Name = $r.metadata.name } }
-    }
-}
-
-if ($restarted.Count -eq 0) {
-    Write-Host "  No workloads with SPC '$spcName' in '$spcNs' found." -ForegroundColor Yellow
-} else {
-    foreach ($w in $restarted) {
-        $exitCode = Invoke-WithSpinner -Message "Restarting $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "restart", "$($w.Kind)/$($w.Name)", "-n", $spcNs)
-        if ($exitCode -ne 0) { Write-Host "  ✗ Restart failed: $($w.Kind)/$($w.Name)" -ForegroundColor Red; continue }
-
-        $exitCode = Invoke-WithSpinner -Message "Waiting for $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "status", "$($w.Kind)/$($w.Name)", "-n", $spcNs, "--timeout=3m")
-        if ($exitCode -eq 0) {
-            Write-Host "  ✓ $($w.Kind)/$($w.Name) läuft mit neuem Passwort" -ForegroundColor Green
-        } else {
-            Write-Host "  ⚠ Rollout timeout — please check status manually" -ForegroundColor Yellow
+    if ($deploys.Count -gt 0) {
+        Write-Host "  Deployments in '$restartNs':" -ForegroundColor DarkGray
+        $deploys | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
+        $which = Read-Plain `
+            -Prompt "Restart which? (names comma-separated, 'all', or empty to skip)" `
+            -ContextTitle "Workload Restart"
+        if (-not [string]::IsNullOrWhiteSpace($which)) {
+            $targets = if ($which.Trim() -eq 'all') { $deploys } `
+                       else { @($which -split ',') | ForEach-Object { $_.Trim() } }
+            foreach ($t in $targets) {
+                & kubectl rollout restart deployment/$t -n $restartNs 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Restarted deployment/$t" -ForegroundColor Green }
+                else                     { Write-Host "  ⚠ Could not restart deployment/$t" -ForegroundColor Yellow }
+            }
         }
     }
-}
 
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Rotation complete" -ForegroundColor Green
-Write-Host "========================================`n" -ForegroundColor Green
-
-
-
-.Exception.Message)" -ForegroundColor Red
-    Write-Host "  At: $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor DarkGray
-    exit 1
-}
-
-# ── 1. Select platform ───────────────────────────────────────
-$platforms = @()
-if (Test-Path (Join-Path $BaseDir ".rke2-state.json"))  { $platforms += @{ Label = "RKE2 (On-Premise)";  Value = "RKE2 (On-Premise)" } }
-if (Test-Path (Join-Path $BaseDir ".kind-state.json"))  { $platforms += @{ Label = "Kind (Local)";        Value = "Kind (Local)" } }
-if (Test-Path (Join-Path $BaseDir ".aks-state.json"))   { $platforms += @{ Label = "Azure AKS";           Value = "Azure AKS" } }
-if (Test-Path (Join-Path $BaseDir ".eks-state.json"))   { $platforms += @{ Label = "AWS EKS";             Value = "AWS EKS" } }
-if (Test-Path (Join-Path $BaseDir ".gke-state.json"))   { $platforms += @{ Label = "Google GKE";          Value = "Google GKE" } }
-
-if ($platforms.Count -eq 0) { Write-Host "  No installed clusters found." -ForegroundColor Red; exit 1 }
-
-$platform = if ($platforms.Count -eq 1) {
-    $platforms[0].Value
-} else {
-    Read-SelectValue `
-        -Title "Select cluster" `
-        -Message "On which cluster should the secret be rotated?" `
-        -Options $platforms -Default 0 `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint "Multiple installed clusters found"
-}
-if (-not $platform) { exit 0 }
-
-# ── 2. Kubecontext setzen ────────────────────────────────────────
-Set-ClusterContext -BaseDir $BaseDir -Platform $platform
-
-# ── 3. Backend initialisieren ────────────────────────────────────
-$backendType = switch ($platform) {
-    { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
-        if (-not (Test-Path (Join-Path $BaseDir ".openbao-state.json"))) {
-            Write-Host "  OpenBao not installed on $platform" -ForegroundColor Red; exit 1
-        }
-        "openbao"
-    }
-    "Azure AKS" {
-        $aksS = Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json
-        if (-not $aksS.VaultName) { Write-Host "  Azure Key Vault not configured for AKS" -ForegroundColor Red; exit 1 }
-        "azurekv"
-    }
-    "AWS EKS" {
-        $eksS = Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json
-        if (-not $eksS.Region) { Write-Host "  EKS state not found" -ForegroundColor Red; exit 1 }
-        "awssm"
-    }
-    "Google GKE" {
-        $gkeS = Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json
-        if (-not $gkeS.ProjectId) { Write-Host "  GKE state not found" -ForegroundColor Red; exit 1 }
-        "gcpsm"
-    }
-    default { Write-Host "  Secret rotation for $platform not yet supported" -ForegroundColor Red; exit 1 }
-}
-
-$rootToken = $null
-$vaultName = $null
-$projectId = $null
-$awsRegion = $null
-if ($backendType -eq "openbao") {
-    $rootToken = (Get-Content (Join-Path $BaseDir ".openbao-state.json") | ConvertFrom-Json).RootToken
-} elseif ($backendType -eq "azurekv") {
-    $vaultName = (Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json).VaultName
-    $exitCode = Invoke-WithSpinner -Message "Prüfe Azure Login..." -Executable "az" `
-        -Arguments @("account", "show")
-    if ($exitCode -ne 0) {
-        Write-Host "`n  Azure login erforderlich." -ForegroundColor Cyan
-        & az login --use-device-code
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Azure login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-} elseif ($backendType -eq "awssm") {
-    $awsRegion = (Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json).Region
-    & aws sts get-caller-identity 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Host "  AWS not configured. Please run 'aws configure'." -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $projectId = (Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json).ProjectId
-    $gcloudAccount = & gcloud config get-value account 2>$null
-    if ([string]::IsNullOrWhiteSpace($gcloudAccount) -or $gcloudAccount -eq "(unset)") {
-        Write-Host "`n  Google login erforderlich." -ForegroundColor Cyan
-        & gcloud auth login --no-launch-browser
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Google login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-    & gcloud config set project $projectId 2>&1 | Out-Null
-}
-
-# ── 4. Select secret (loader with spinner) ─────────────────────
-$selected = Read-SelectValue `
-    -Title "Select secret" `
-    -Message "Which secret should be rotated?" `
-    -Options @(@{ Label = "[ Lade... ]"; Value = "" }) `
-    -Default 0 `
-    -ContextTitle "Secret Rotation" `
-    -ContextHint "Reads SecretProviderClasses from the cluster" `
-    -ContextCurrent ([ordered]@{ Cluster = $platform }) `
-    -Loader {
-        param($path); $env:PATH = $path
-        $spcList = & kubectl get secretproviderclass -A -o json 2>$null | ConvertFrom-Json
-        $items = if ($spcList -and $spcList.items) { $spcList.items } else { @() }
-        if ($items.Count -eq 0) { return @(@{ Label = "[ No SecretProviderClasses found ]"; Value = "" }) }
-        $items | ForEach-Object {
-            @{ Label = "$($_.metadata.name)  ($($_.metadata.namespace))"; Value = "$($_.metadata.name)|$($_.metadata.namespace)" }
-        } | Sort-Object { $_.Label }
-    } `
-    -LoadingMessage "Lade SecretProviderClasses..."
-
-if (-not $selected) { exit 0 }
-
-$spcName   = ($selected -split '\|')[0]
-$spcNs     = ($selected -split '\|')[1]
-$vaultPath = $spcName -replace '-vault$', ''   # grafana-vault → grafana
-
-# ── 5. Aktuelles Secret lesen ────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-$currentRef = [ref]$null
-if ($backendType -eq "openbao") {
-    Invoke-WithSpinner -Message "Reading secret from OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv get -format=json secret/$vaultPath") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "azurekv") {
-    Invoke-WithSpinner -Message "Reading secret from Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "show",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--query", "value", "--output", "tsv") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "awssm") {
-    Invoke-WithSpinner -Message "Reading secret from AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "get-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--query", "SecretString", "--output", "text") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "gcpsm") {
-    Invoke-WithSpinner -Message "Reading secret from GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "access", "latest",
-                     "--secret", $vaultPath, "--project", $projectId) `
-        -OutputVariable $currentRef | Out-Null
-}
-if (-not ($currentRef.Value -and ($currentRef.Value -join "").Trim() -ne "")) {
-    Write-Host "  Secret '$vaultPath' not found in backend." -ForegroundColor Red; exit 1
-}
-Write-Host "  ✓ Secret found" -ForegroundColor Green
-
-# ── 6. Neues Passwort eingeben ───────────────────────────────────
-do {
-    $newPassword = Read-SecretPlainConfirm `
-        -Prompt1 "Neues Passwort (min. 8 Zeichen)" `
-        -Prompt2 "Passwort bestätigen" `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint  "Aktuell: ••••••••" `
-        -ContextCurrent ([ordered]@{ Secret = $spcName; Namespace = $spcNs; Cluster = $platform })
-    if ($newPassword.Length -lt 8) {
-        Write-Host "  Passwort muss mindestens 8 Zeichen haben." -ForegroundColor Red
-    }
-} while ($newPassword.Length -lt 8)
-
-# ── 7. Secret schreiben ──────────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-Write-Host "  Secret:    $spcName" -ForegroundColor Gray
-Write-Host "  Namespace: $spcNs" -ForegroundColor Gray
-Write-Host "  Cluster:   $platform" -ForegroundColor Gray
-Write-Host ""
-
-if ($backendType -eq "openbao") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv put secret/$vaultPath adminPassword=$newPassword")
-    if ($exitCode -ne 0) { Write-Host "  Error writing to OpenBao" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "azurekv") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "set",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--file", $tmpFile.FullName, "--encoding", "utf-8")
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to Azure Key Vault" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "awssm") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "put-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--secret-string", $newPassword)
-    if ($exitCode -ne 0) { Write-Host "  Error writing to AWS Secrets Manager" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "add", $vaultPath,
-                     "--project", $projectId, "--data-file", $tmpFile.FullName)
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to GCP Secret Manager" -ForegroundColor Red; exit 1 }
-}
-Write-Host "  ✓ Secret aktualisiert" -ForegroundColor Green
-Write-Host ""
-
-# ── 8. Betroffene Workloads neustarten ───────────────────────────
-$restarted = @()
-foreach ($kind in @("deployment", "statefulset", "daemonset")) {
-    $resources = & kubectl get $kind -n $spcNs -o json 2>$null | ConvertFrom-Json
-    if (-not $resources -or -not $resources.items) { continue }
-    foreach ($r in $resources.items) {
-        $usesSpc = $r.spec.template.spec.volumes | Where-Object {
-            $_.csi -and
-            $_.csi.driver -eq "secrets-store.csi.k8s.io" -and
-            $_.csi.volumeAttributes.secretProviderClass -eq $spcName
-        }
-        if ($usesSpc) { $restarted += @{ Kind = $kind; Name = $r.metadata.name } }
-    }
-}
-
-if ($restarted.Count -eq 0) {
-    Write-Host "  No workloads with SPC '$spcName' in '$spcNs' found." -ForegroundColor Yellow
-} else {
-    foreach ($w in $restarted) {
-        $exitCode = Invoke-WithSpinner -Message "Restarting $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "restart", "$($w.Kind)/$($w.Name)", "-n", $spcNs)
-        if ($exitCode -ne 0) { Write-Host "  ✗ Restart failed: $($w.Kind)/$($w.Name)" -ForegroundColor Red; continue }
-
-        $exitCode = Invoke-WithSpinner -Message "Waiting for $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "status", "$($w.Kind)/$($w.Name)", "-n", $spcNs, "--timeout=3m")
-        if ($exitCode -eq 0) {
-            Write-Host "  ✓ $($w.Kind)/$($w.Name) läuft mit neuem Passwort" -ForegroundColor Green
-        } else {
-            Write-Host "  ⚠ Rollout timeout — please check status manually" -ForegroundColor Yellow
+    if ($stsets.Count -gt 0) {
+        Write-Host "  StatefulSets in '$restartNs':" -ForegroundColor DarkGray
+        $stsets | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
+        $which = Read-Plain `
+            -Prompt "Restart which? (names comma-separated, 'all', or empty to skip)" `
+            -ContextTitle "Workload Restart"
+        if (-not [string]::IsNullOrWhiteSpace($which)) {
+            $targets = if ($which.Trim() -eq 'all') { $stsets } `
+                       else { @($which -split ',') | ForEach-Object { $_.Trim() } }
+            foreach ($t in $targets) {
+                & kubectl rollout restart statefulset/$t -n $restartNs 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Restarted statefulset/$t" -ForegroundColor Green }
+                else                     { Write-Host "  ⚠ Could not restart statefulset/$t" -ForegroundColor Yellow }
+            }
         }
     }
-}
 
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Rotation complete" -ForegroundColor Green
-Write-Host "========================================`n" -ForegroundColor Green
-.Exception.Message)" -ForegroundColor Red
-    Write-Host "  At: $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor DarkGray
-    exit 1
-}
-
-# ── 1. Select platform ───────────────────────────────────────
-$platforms = @()
-if (Test-Path (Join-Path $BaseDir ".rke2-state.json"))  { $platforms += @{ Label = "RKE2 (On-Premise)";  Value = "RKE2 (On-Premise)" } }
-if (Test-Path (Join-Path $BaseDir ".kind-state.json"))  { $platforms += @{ Label = "Kind (Local)";        Value = "Kind (Local)" } }
-if (Test-Path (Join-Path $BaseDir ".aks-state.json"))   { $platforms += @{ Label = "Azure AKS";           Value = "Azure AKS" } }
-if (Test-Path (Join-Path $BaseDir ".eks-state.json"))   { $platforms += @{ Label = "AWS EKS";             Value = "AWS EKS" } }
-if (Test-Path (Join-Path $BaseDir ".gke-state.json"))   { $platforms += @{ Label = "Google GKE";          Value = "Google GKE" } }
-
-if ($platforms.Count -eq 0) { Write-Host "  No installed clusters found." -ForegroundColor Red; exit 1 }
-
-$platform = if ($platforms.Count -eq 1) {
-    $platforms[0].Value
-} else {
-    Read-SelectValue `
-        -Title "Select cluster" `
-        -Message "On which cluster should the secret be rotated?" `
-        -Options $platforms -Default 0 `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint "Multiple installed clusters found"
-}
-if (-not $platform) { exit 0 }
-
-# ── 2. Kubecontext setzen ────────────────────────────────────────
-Set-ClusterContext -BaseDir $BaseDir -Platform $platform
-
-# ── 3. Backend initialisieren ────────────────────────────────────
-$backendType = switch ($platform) {
-    { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
-        if (-not (Test-Path (Join-Path $BaseDir ".openbao-state.json"))) {
-            Write-Host "  OpenBao not installed on $platform" -ForegroundColor Red; exit 1
-        }
-        "openbao"
-    }
-    "Azure AKS" {
-        $aksS = Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json
-        if (-not $aksS.VaultName) { Write-Host "  Azure Key Vault not configured for AKS" -ForegroundColor Red; exit 1 }
-        "azurekv"
-    }
-    "AWS EKS" {
-        $eksS = Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json
-        if (-not $eksS.Region) { Write-Host "  EKS state not found" -ForegroundColor Red; exit 1 }
-        "awssm"
-    }
-    "Google GKE" {
-        $gkeS = Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json
-        if (-not $gkeS.ProjectId) { Write-Host "  GKE state not found" -ForegroundColor Red; exit 1 }
-        "gcpsm"
-    }
-    default { Write-Host "  Secret rotation for $platform not yet supported" -ForegroundColor Red; exit 1 }
-}
-
-$rootToken = $null
-$vaultName = $null
-$projectId = $null
-$awsRegion = $null
-if ($backendType -eq "openbao") {
-    $rootToken = (Get-Content (Join-Path $BaseDir ".openbao-state.json") | ConvertFrom-Json).RootToken
-} elseif ($backendType -eq "azurekv") {
-    $vaultName = (Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json).VaultName
-    $exitCode = Invoke-WithSpinner -Message "Prüfe Azure Login..." -Executable "az" `
-        -Arguments @("account", "show")
-    if ($exitCode -ne 0) {
-        Write-Host "`n  Azure login erforderlich." -ForegroundColor Cyan
-        & az login --use-device-code
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Azure login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-} elseif ($backendType -eq "awssm") {
-    $awsRegion = (Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json).Region
-    & aws sts get-caller-identity 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Host "  AWS not configured. Please run 'aws configure'." -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $projectId = (Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json).ProjectId
-    $gcloudAccount = & gcloud config get-value account 2>$null
-    if ([string]::IsNullOrWhiteSpace($gcloudAccount) -or $gcloudAccount -eq "(unset)") {
-        Write-Host "`n  Google login erforderlich." -ForegroundColor Cyan
-        & gcloud auth login --no-launch-browser
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Google login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-    & gcloud config set project $projectId 2>&1 | Out-Null
-}
-
-# ── 4. Select secret (loader with spinner) ─────────────────────
-$selected = Read-SelectValue `
-    -Title "Select secret" `
-    -Message "Which secret should be rotated?" `
-    -Options @(@{ Label = "[ Lade... ]"; Value = "" }) `
-    -Default 0 `
-    -ContextTitle "Secret Rotation" `
-    -ContextHint "Reads SecretProviderClasses from the cluster" `
-    -ContextCurrent ([ordered]@{ Cluster = $platform }) `
-    -Loader {
-        param($path); $env:PATH = $path
-        $spcList = & kubectl get secretproviderclass -A -o json 2>$null | ConvertFrom-Json
-        $items = if ($spcList -and $spcList.items) { $spcList.items } else { @() }
-        if ($items.Count -eq 0) { return @(@{ Label = "[ No SecretProviderClasses found ]"; Value = "" }) }
-        $items | ForEach-Object {
-            @{ Label = "$($_.metadata.name)  ($($_.metadata.namespace))"; Value = "$($_.metadata.name)|$($_.metadata.namespace)" }
-        } | Sort-Object { $_.Label }
-    } `
-    -LoadingMessage "Lade SecretProviderClasses..."
-
-if (-not $selected) { exit 0 }
-
-$spcName   = ($selected -split '\|')[0]
-$spcNs     = ($selected -split '\|')[1]
-$vaultPath = $spcName -replace '-vault$', ''   # grafana-vault → grafana
-
-# ── 5. Aktuelles Secret lesen ────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-$currentRef = [ref]$null
-if ($backendType -eq "openbao") {
-    Invoke-WithSpinner -Message "Reading secret from OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv get -format=json secret/$vaultPath") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "azurekv") {
-    Invoke-WithSpinner -Message "Reading secret from Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "show",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--query", "value", "--output", "tsv") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "awssm") {
-    Invoke-WithSpinner -Message "Reading secret from AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "get-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--query", "SecretString", "--output", "text") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "gcpsm") {
-    Invoke-WithSpinner -Message "Reading secret from GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "access", "latest",
-                     "--secret", $vaultPath, "--project", $projectId) `
-        -OutputVariable $currentRef | Out-Null
-}
-if (-not ($currentRef.Value -and ($currentRef.Value -join "").Trim() -ne "")) {
-    Write-Host "  Secret '$vaultPath' not found in backend." -ForegroundColor Red; exit 1
-}
-Write-Host "  ✓ Secret found" -ForegroundColor Green
-
-# ── 6. Neues Passwort eingeben ───────────────────────────────────
-do {
-    $newPassword = Read-SecretPlainConfirm `
-        -Prompt1 "Neues Passwort (min. 8 Zeichen)" `
-        -Prompt2 "Passwort bestätigen" `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint  "Aktuell: ••••••••" `
-        -ContextCurrent ([ordered]@{ Secret = $spcName; Namespace = $spcNs; Cluster = $platform })
-    if ($newPassword.Length -lt 8) {
-        Write-Host "  Passwort muss mindestens 8 Zeichen haben." -ForegroundColor Red
-    }
-} while ($newPassword.Length -lt 8)
-
-# ── 7. Secret schreiben ──────────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-Write-Host "  Secret:    $spcName" -ForegroundColor Gray
-Write-Host "  Namespace: $spcNs" -ForegroundColor Gray
-Write-Host "  Cluster:   $platform" -ForegroundColor Gray
-Write-Host ""
-
-if ($backendType -eq "openbao") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv put secret/$vaultPath adminPassword=$newPassword")
-    if ($exitCode -ne 0) { Write-Host "  Error writing to OpenBao" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "azurekv") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "set",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--file", $tmpFile.FullName, "--encoding", "utf-8")
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to Azure Key Vault" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "awssm") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "put-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--secret-string", $newPassword)
-    if ($exitCode -ne 0) { Write-Host "  Error writing to AWS Secrets Manager" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "add", $vaultPath,
-                     "--project", $projectId, "--data-file", $tmpFile.FullName)
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to GCP Secret Manager" -ForegroundColor Red; exit 1 }
-}
-Write-Host "  ✓ Secret aktualisiert" -ForegroundColor Green
-Write-Host ""
-
-# ── 8. Betroffene Workloads neustarten ───────────────────────────
-$restarted = @()
-foreach ($kind in @("deployment", "statefulset", "daemonset")) {
-    $resources = & kubectl get $kind -n $spcNs -o json 2>$null | ConvertFrom-Json
-    if (-not $resources -or -not $resources.items) { continue }
-    foreach ($r in $resources.items) {
-        $usesSpc = $r.spec.template.spec.volumes | Where-Object {
-            $_.csi -and
-            $_.csi.driver -eq "secrets-store.csi.k8s.io" -and
-            $_.csi.volumeAttributes.secretProviderClass -eq $spcName
-        }
-        if ($usesSpc) { $restarted += @{ Kind = $kind; Name = $r.metadata.name } }
-    }
-}
-
-if ($restarted.Count -eq 0) {
-    Write-Host "  No workloads with SPC '$spcName' in '$spcNs' found." -ForegroundColor Yellow
-} else {
-    foreach ($w in $restarted) {
-        $exitCode = Invoke-WithSpinner -Message "Restarting $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "restart", "$($w.Kind)/$($w.Name)", "-n", $spcNs)
-        if ($exitCode -ne 0) { Write-Host "  ✗ Restart failed: $($w.Kind)/$($w.Name)" -ForegroundColor Red; continue }
-
-        $exitCode = Invoke-WithSpinner -Message "Waiting for $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "status", "$($w.Kind)/$($w.Name)", "-n", $spcNs, "--timeout=3m")
-        if ($exitCode -eq 0) {
-            Write-Host "  ✓ $($w.Kind)/$($w.Name) läuft mit neuem Passwort" -ForegroundColor Green
-        } else {
-            Write-Host "  ⚠ Rollout timeout — please check status manually" -ForegroundColor Yellow
-        }
+    if ($deploys.Count -eq 0 -and $stsets.Count -eq 0) {
+        Write-Host "  No Deployments or StatefulSets found in namespace '$restartNs'." -ForegroundColor DarkGray
     }
 }
 
 Write-Host ""
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Rotation complete" -ForegroundColor Green
-Write-Host "========================================`n" -ForegroundColor Green
-
-
-.Exception.Message)" -ForegroundColor Red
-    Write-Host "  At: $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor DarkGray
-    exit 1
-}
-
-# ── 1. Select platform ───────────────────────────────────────
-$platforms = @()
-if (Test-Path (Join-Path $BaseDir ".rke2-state.json"))  { $platforms += @{ Label = "RKE2 (On-Premise)";  Value = "RKE2 (On-Premise)" } }
-if (Test-Path (Join-Path $BaseDir ".kind-state.json"))  { $platforms += @{ Label = "Kind (Local)";        Value = "Kind (Local)" } }
-if (Test-Path (Join-Path $BaseDir ".aks-state.json"))   { $platforms += @{ Label = "Azure AKS";           Value = "Azure AKS" } }
-if (Test-Path (Join-Path $BaseDir ".eks-state.json"))   { $platforms += @{ Label = "AWS EKS";             Value = "AWS EKS" } }
-if (Test-Path (Join-Path $BaseDir ".gke-state.json"))   { $platforms += @{ Label = "Google GKE";          Value = "Google GKE" } }
-
-if ($platforms.Count -eq 0) { Write-Host "  No installed clusters found." -ForegroundColor Red; exit 1 }
-
-$platform = if ($platforms.Count -eq 1) {
-    $platforms[0].Value
-} else {
-    Read-SelectValue `
-        -Title "Select cluster" `
-        -Message "On which cluster should the secret be rotated?" `
-        -Options $platforms -Default 0 `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint "Multiple installed clusters found"
-}
-if (-not $platform) { exit 0 }
-
-# ── 2. Kubecontext setzen ────────────────────────────────────────
-Set-ClusterContext -BaseDir $BaseDir -Platform $platform
-
-# ── 3. Backend initialisieren ────────────────────────────────────
-$backendType = switch ($platform) {
-    { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
-        if (-not (Test-Path (Join-Path $BaseDir ".openbao-state.json"))) {
-            Write-Host "  OpenBao not installed on $platform" -ForegroundColor Red; exit 1
-        }
-        "openbao"
-    }
-    "Azure AKS" {
-        $aksS = Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json
-        if (-not $aksS.VaultName) { Write-Host "  Azure Key Vault not configured for AKS" -ForegroundColor Red; exit 1 }
-        "azurekv"
-    }
-    "AWS EKS" {
-        $eksS = Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json
-        if (-not $eksS.Region) { Write-Host "  EKS state not found" -ForegroundColor Red; exit 1 }
-        "awssm"
-    }
-    "Google GKE" {
-        $gkeS = Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json
-        if (-not $gkeS.ProjectId) { Write-Host "  GKE state not found" -ForegroundColor Red; exit 1 }
-        "gcpsm"
-    }
-    default { Write-Host "  Secret rotation for $platform not yet supported" -ForegroundColor Red; exit 1 }
-}
-
-$rootToken = $null
-$vaultName = $null
-$projectId = $null
-$awsRegion = $null
-if ($backendType -eq "openbao") {
-    $rootToken = (Get-Content (Join-Path $BaseDir ".openbao-state.json") | ConvertFrom-Json).RootToken
-} elseif ($backendType -eq "azurekv") {
-    $vaultName = (Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json).VaultName
-    $exitCode = Invoke-WithSpinner -Message "Prüfe Azure Login..." -Executable "az" `
-        -Arguments @("account", "show")
-    if ($exitCode -ne 0) {
-        Write-Host "`n  Azure login erforderlich." -ForegroundColor Cyan
-        & az login --use-device-code
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Azure login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-} elseif ($backendType -eq "awssm") {
-    $awsRegion = (Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json).Region
-    & aws sts get-caller-identity 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Host "  AWS not configured. Please run 'aws configure'." -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $projectId = (Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json).ProjectId
-    $gcloudAccount = & gcloud config get-value account 2>$null
-    if ([string]::IsNullOrWhiteSpace($gcloudAccount) -or $gcloudAccount -eq "(unset)") {
-        Write-Host "`n  Google login erforderlich." -ForegroundColor Cyan
-        & gcloud auth login --no-launch-browser
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Google login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-    & gcloud config set project $projectId 2>&1 | Out-Null
-}
-
-# ── 4. Select secret (loader with spinner) ─────────────────────
-$selected = Read-SelectValue `
-    -Title "Select secret" `
-    -Message "Which secret should be rotated?" `
-    -Options @(@{ Label = "[ Lade... ]"; Value = "" }) `
-    -Default 0 `
-    -ContextTitle "Secret Rotation" `
-    -ContextHint "Reads SecretProviderClasses from the cluster" `
-    -ContextCurrent ([ordered]@{ Cluster = $platform }) `
-    -Loader {
-        param($path); $env:PATH = $path
-        $spcList = & kubectl get secretproviderclass -A -o json 2>$null | ConvertFrom-Json
-        $items = if ($spcList -and $spcList.items) { $spcList.items } else { @() }
-        if ($items.Count -eq 0) { return @(@{ Label = "[ No SecretProviderClasses found ]"; Value = "" }) }
-        $items | ForEach-Object {
-            @{ Label = "$($_.metadata.name)  ($($_.metadata.namespace))"; Value = "$($_.metadata.name)|$($_.metadata.namespace)" }
-        } | Sort-Object { $_.Label }
-    } `
-    -LoadingMessage "Lade SecretProviderClasses..."
-
-if (-not $selected) { exit 0 }
-
-$spcName   = ($selected -split '\|')[0]
-$spcNs     = ($selected -split '\|')[1]
-$vaultPath = $spcName -replace '-vault$', ''   # grafana-vault → grafana
-
-# ── 5. Aktuelles Secret lesen ────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-$currentRef = [ref]$null
-if ($backendType -eq "openbao") {
-    Invoke-WithSpinner -Message "Reading secret from OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv get -format=json secret/$vaultPath") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "azurekv") {
-    Invoke-WithSpinner -Message "Reading secret from Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "show",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--query", "value", "--output", "tsv") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "awssm") {
-    Invoke-WithSpinner -Message "Reading secret from AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "get-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--query", "SecretString", "--output", "text") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "gcpsm") {
-    Invoke-WithSpinner -Message "Reading secret from GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "access", "latest",
-                     "--secret", $vaultPath, "--project", $projectId) `
-        -OutputVariable $currentRef | Out-Null
-}
-if (-not ($currentRef.Value -and ($currentRef.Value -join "").Trim() -ne "")) {
-    Write-Host "  Secret '$vaultPath' not found in backend." -ForegroundColor Red; exit 1
-}
-Write-Host "  ✓ Secret found" -ForegroundColor Green
-
-# ── 6. Neues Passwort eingeben ───────────────────────────────────
-do {
-    $newPassword = Read-SecretPlainConfirm `
-        -Prompt1 "Neues Passwort (min. 8 Zeichen)" `
-        -Prompt2 "Passwort bestätigen" `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint  "Aktuell: ••••••••" `
-        -ContextCurrent ([ordered]@{ Secret = $spcName; Namespace = $spcNs; Cluster = $platform })
-    if ($newPassword.Length -lt 8) {
-        Write-Host "  Passwort muss mindestens 8 Zeichen haben." -ForegroundColor Red
-    }
-} while ($newPassword.Length -lt 8)
-
-# ── 7. Secret schreiben ──────────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-Write-Host "  Secret:    $spcName" -ForegroundColor Gray
-Write-Host "  Namespace: $spcNs" -ForegroundColor Gray
-Write-Host "  Cluster:   $platform" -ForegroundColor Gray
+Write-Host "  ════════════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "  Secret rotation complete." -ForegroundColor Cyan
+Write-Host "  ════════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host ""
 
-if ($backendType -eq "openbao") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv put secret/$vaultPath adminPassword=$newPassword")
-    if ($exitCode -ne 0) { Write-Host "  Error writing to OpenBao" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "azurekv") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "set",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--file", $tmpFile.FullName, "--encoding", "utf-8")
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to Azure Key Vault" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "awssm") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "put-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--secret-string", $newPassword)
-    if ($exitCode -ne 0) { Write-Host "  Error writing to AWS Secrets Manager" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "add", $vaultPath,
-                     "--project", $projectId, "--data-file", $tmpFile.FullName)
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to GCP Secret Manager" -ForegroundColor Red; exit 1 }
-}
-Write-Host "  ✓ Secret aktualisiert" -ForegroundColor Green
-Write-Host ""
-
-# ── 8. Betroffene Workloads neustarten ───────────────────────────
-$restarted = @()
-foreach ($kind in @("deployment", "statefulset", "daemonset")) {
-    $resources = & kubectl get $kind -n $spcNs -o json 2>$null | ConvertFrom-Json
-    if (-not $resources -or -not $resources.items) { continue }
-    foreach ($r in $resources.items) {
-        $usesSpc = $r.spec.template.spec.volumes | Where-Object {
-            $_.csi -and
-            $_.csi.driver -eq "secrets-store.csi.k8s.io" -and
-            $_.csi.volumeAttributes.secretProviderClass -eq $spcName
-        }
-        if ($usesSpc) { $restarted += @{ Kind = $kind; Name = $r.metadata.name } }
-    }
-}
-
-if ($restarted.Count -eq 0) {
-    Write-Host "  No workloads with SPC '$spcName' in '$spcNs' found." -ForegroundColor Yellow
-} else {
-    foreach ($w in $restarted) {
-        $exitCode = Invoke-WithSpinner -Message "Restarting $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "restart", "$($w.Kind)/$($w.Name)", "-n", $spcNs)
-        if ($exitCode -ne 0) { Write-Host "  ✗ Restart failed: $($w.Kind)/$($w.Name)" -ForegroundColor Red; continue }
-
-        $exitCode = Invoke-WithSpinner -Message "Waiting for $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "status", "$($w.Kind)/$($w.Name)", "-n", $spcNs, "--timeout=3m")
-        if ($exitCode -eq 0) {
-            Write-Host "  ✓ $($w.Kind)/$($w.Name) läuft mit neuem Passwort" -ForegroundColor Green
-        } else {
-            Write-Host "  ⚠ Rollout timeout — please check status manually" -ForegroundColor Yellow
-        }
-    }
-}
-
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Rotation complete" -ForegroundColor Green
-Write-Host "========================================`n" -ForegroundColor Green
-.Exception.Message)" -ForegroundColor Red
-    Write-Host "  At: $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor DarkGray
-    exit 1
-}
-
-# ── 1. Select platform ───────────────────────────────────────
-$platforms = @()
-if (Test-Path (Join-Path $BaseDir ".rke2-state.json"))  { $platforms += @{ Label = "RKE2 (On-Premise)";  Value = "RKE2 (On-Premise)" } }
-if (Test-Path (Join-Path $BaseDir ".kind-state.json"))  { $platforms += @{ Label = "Kind (Local)";        Value = "Kind (Local)" } }
-if (Test-Path (Join-Path $BaseDir ".aks-state.json"))   { $platforms += @{ Label = "Azure AKS";           Value = "Azure AKS" } }
-if (Test-Path (Join-Path $BaseDir ".eks-state.json"))   { $platforms += @{ Label = "AWS EKS";             Value = "AWS EKS" } }
-if (Test-Path (Join-Path $BaseDir ".gke-state.json"))   { $platforms += @{ Label = "Google GKE";          Value = "Google GKE" } }
-
-if ($platforms.Count -eq 0) { Write-Host "  No installed clusters found." -ForegroundColor Red; exit 1 }
-
-$platform = if ($platforms.Count -eq 1) {
-    $platforms[0].Value
-} else {
-    Read-SelectValue `
-        -Title "Select cluster" `
-        -Message "On which cluster should the secret be rotated?" `
-        -Options $platforms -Default 0 `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint "Multiple installed clusters found"
-}
-if (-not $platform) { exit 0 }
-
-# ── 2. Kubecontext setzen ────────────────────────────────────────
-Set-ClusterContext -BaseDir $BaseDir -Platform $platform
-
-# ── 3. Backend initialisieren ────────────────────────────────────
-$backendType = switch ($platform) {
-    { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
-        if (-not (Test-Path (Join-Path $BaseDir ".openbao-state.json"))) {
-            Write-Host "  OpenBao not installed on $platform" -ForegroundColor Red; exit 1
-        }
-        "openbao"
-    }
-    "Azure AKS" {
-        $aksS = Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json
-        if (-not $aksS.VaultName) { Write-Host "  Azure Key Vault not configured for AKS" -ForegroundColor Red; exit 1 }
-        "azurekv"
-    }
-    "AWS EKS" {
-        $eksS = Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json
-        if (-not $eksS.Region) { Write-Host "  EKS state not found" -ForegroundColor Red; exit 1 }
-        "awssm"
-    }
-    "Google GKE" {
-        $gkeS = Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json
-        if (-not $gkeS.ProjectId) { Write-Host "  GKE state not found" -ForegroundColor Red; exit 1 }
-        "gcpsm"
-    }
-    default { Write-Host "  Secret rotation for $platform not yet supported" -ForegroundColor Red; exit 1 }
-}
-
-$rootToken = $null
-$vaultName = $null
-$projectId = $null
-$awsRegion = $null
-if ($backendType -eq "openbao") {
-    $rootToken = (Get-Content (Join-Path $BaseDir ".openbao-state.json") | ConvertFrom-Json).RootToken
-} elseif ($backendType -eq "azurekv") {
-    $vaultName = (Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json).VaultName
-    $exitCode = Invoke-WithSpinner -Message "Prüfe Azure Login..." -Executable "az" `
-        -Arguments @("account", "show")
-    if ($exitCode -ne 0) {
-        Write-Host "`n  Azure login erforderlich." -ForegroundColor Cyan
-        & az login --use-device-code
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Azure login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-} elseif ($backendType -eq "awssm") {
-    $awsRegion = (Get-Content (Join-Path $BaseDir ".eks-state.json") | ConvertFrom-Json).Region
-    & aws sts get-caller-identity 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Host "  AWS not configured. Please run 'aws configure'." -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $projectId = (Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json).ProjectId
-    $gcloudAccount = & gcloud config get-value account 2>$null
-    if ([string]::IsNullOrWhiteSpace($gcloudAccount) -or $gcloudAccount -eq "(unset)") {
-        Write-Host "`n  Google login erforderlich." -ForegroundColor Cyan
-        & gcloud auth login --no-launch-browser
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Google login fehlgeschlagen." -ForegroundColor Red; exit 1 }
-    }
-    & gcloud config set project $projectId 2>&1 | Out-Null
-}
-
-# ── 4. Select secret (loader with spinner) ─────────────────────
-$selected = Read-SelectValue `
-    -Title "Select secret" `
-    -Message "Which secret should be rotated?" `
-    -Options @(@{ Label = "[ Lade... ]"; Value = "" }) `
-    -Default 0 `
-    -ContextTitle "Secret Rotation" `
-    -ContextHint "Reads SecretProviderClasses from the cluster" `
-    -ContextCurrent ([ordered]@{ Cluster = $platform }) `
-    -Loader {
-        param($path); $env:PATH = $path
-        $spcList = & kubectl get secretproviderclass -A -o json 2>$null | ConvertFrom-Json
-        $items = if ($spcList -and $spcList.items) { $spcList.items } else { @() }
-        if ($items.Count -eq 0) { return @(@{ Label = "[ No SecretProviderClasses found ]"; Value = "" }) }
-        $items | ForEach-Object {
-            @{ Label = "$($_.metadata.name)  ($($_.metadata.namespace))"; Value = "$($_.metadata.name)|$($_.metadata.namespace)" }
-        } | Sort-Object { $_.Label }
-    } `
-    -LoadingMessage "Lade SecretProviderClasses..."
-
-if (-not $selected) { exit 0 }
-
-$spcName   = ($selected -split '\|')[0]
-$spcNs     = ($selected -split '\|')[1]
-$vaultPath = $spcName -replace '-vault$', ''   # grafana-vault → grafana
-
-# ── 5. Aktuelles Secret lesen ────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-$currentRef = [ref]$null
-if ($backendType -eq "openbao") {
-    Invoke-WithSpinner -Message "Reading secret from OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv get -format=json secret/$vaultPath") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "azurekv") {
-    Invoke-WithSpinner -Message "Reading secret from Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "show",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--query", "value", "--output", "tsv") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "awssm") {
-    Invoke-WithSpinner -Message "Reading secret from AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "get-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--query", "SecretString", "--output", "text") `
-        -OutputVariable $currentRef | Out-Null
-} elseif ($backendType -eq "gcpsm") {
-    Invoke-WithSpinner -Message "Reading secret from GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "access", "latest",
-                     "--secret", $vaultPath, "--project", $projectId) `
-        -OutputVariable $currentRef | Out-Null
-}
-if (-not ($currentRef.Value -and ($currentRef.Value -join "").Trim() -ne "")) {
-    Write-Host "  Secret '$vaultPath' not found in backend." -ForegroundColor Red; exit 1
-}
-Write-Host "  ✓ Secret found" -ForegroundColor Green
-
-# ── 6. Neues Passwort eingeben ───────────────────────────────────
-do {
-    $newPassword = Read-SecretPlainConfirm `
-        -Prompt1 "Neues Passwort (min. 8 Zeichen)" `
-        -Prompt2 "Passwort bestätigen" `
-        -ContextTitle "Secret Rotation" `
-        -ContextHint  "Aktuell: ••••••••" `
-        -ContextCurrent ([ordered]@{ Secret = $spcName; Namespace = $spcNs; Cluster = $platform })
-    if ($newPassword.Length -lt 8) {
-        Write-Host "  Passwort muss mindestens 8 Zeichen haben." -ForegroundColor Red
-    }
-} while ($newPassword.Length -lt 8)
-
-# ── 7. Secret schreiben ──────────────────────────────────────────
-Clear-Host
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Secret Rotation" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
-Write-Host "  Secret:    $spcName" -ForegroundColor Gray
-Write-Host "  Namespace: $spcNs" -ForegroundColor Gray
-Write-Host "  Cluster:   $platform" -ForegroundColor Gray
-Write-Host ""
-
-if ($backendType -eq "openbao") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to OpenBao..." -Executable "kubectl" `
-        -Arguments @("exec", "openbao-0", "-n", "openbao", "--",
-                     "sh", "-c", "BAO_TOKEN=$rootToken bao kv put secret/$vaultPath adminPassword=$newPassword")
-    if ($exitCode -ne 0) { Write-Host "  Error writing to OpenBao" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "azurekv") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to Azure Key Vault..." -Executable "az" `
-        -Arguments @("keyvault", "secret", "set",
-                     "--vault-name", $vaultName, "--name", $vaultPath,
-                     "--file", $tmpFile.FullName, "--encoding", "utf-8")
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to Azure Key Vault" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "awssm") {
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to AWS Secrets Manager..." -Executable "aws" `
-        -Arguments @("secretsmanager", "put-secret-value",
-                     "--secret-id", $vaultPath, "--region", $awsRegion,
-                     "--secret-string", $newPassword)
-    if ($exitCode -ne 0) { Write-Host "  Error writing to AWS Secrets Manager" -ForegroundColor Red; exit 1 }
-} elseif ($backendType -eq "gcpsm") {
-    $tmpFile = New-TemporaryFile
-    Set-Content -Path $tmpFile.FullName -Value $newPassword -Encoding UTF8 -NoNewline
-    $exitCode = Invoke-WithSpinner -Message "Writing secret to GCP Secret Manager..." -Executable "gcloud" `
-        -Arguments @("secrets", "versions", "add", $vaultPath,
-                     "--project", $projectId, "--data-file", $tmpFile.FullName)
-    Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) { Write-Host "  Error writing to GCP Secret Manager" -ForegroundColor Red; exit 1 }
-}
-Write-Host "  ✓ Secret aktualisiert" -ForegroundColor Green
-Write-Host ""
-
-# ── 8. Betroffene Workloads neustarten ───────────────────────────
-$restarted = @()
-foreach ($kind in @("deployment", "statefulset", "daemonset")) {
-    $resources = & kubectl get $kind -n $spcNs -o json 2>$null | ConvertFrom-Json
-    if (-not $resources -or -not $resources.items) { continue }
-    foreach ($r in $resources.items) {
-        $usesSpc = $r.spec.template.spec.volumes | Where-Object {
-            $_.csi -and
-            $_.csi.driver -eq "secrets-store.csi.k8s.io" -and
-            $_.csi.volumeAttributes.secretProviderClass -eq $spcName
-        }
-        if ($usesSpc) { $restarted += @{ Kind = $kind; Name = $r.metadata.name } }
-    }
-}
-
-if ($restarted.Count -eq 0) {
-    Write-Host "  No workloads with SPC '$spcName' in '$spcNs' found." -ForegroundColor Yellow
-} else {
-    foreach ($w in $restarted) {
-        $exitCode = Invoke-WithSpinner -Message "Restarting $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "restart", "$($w.Kind)/$($w.Name)", "-n", $spcNs)
-        if ($exitCode -ne 0) { Write-Host "  ✗ Restart failed: $($w.Kind)/$($w.Name)" -ForegroundColor Red; continue }
-
-        $exitCode = Invoke-WithSpinner -Message "Waiting for $($w.Kind)/$($w.Name)..." -Executable "kubectl" `
-            -Arguments @("rollout", "status", "$($w.Kind)/$($w.Name)", "-n", $spcNs, "--timeout=3m")
-        if ($exitCode -eq 0) {
-            Write-Host "  ✓ $($w.Kind)/$($w.Name) läuft mit neuem Passwort" -ForegroundColor Green
-        } else {
-            Write-Host "  ⚠ Rollout timeout — please check status manually" -ForegroundColor Yellow
-        }
-    }
-}
-
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Rotation complete" -ForegroundColor Green
-Write-Host "========================================`n" -ForegroundColor Green
-
-
-
-
+exit 0
