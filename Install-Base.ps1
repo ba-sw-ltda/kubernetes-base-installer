@@ -26,14 +26,14 @@ function Start-Installation {
     Write-Host ""
     Write-Host "  ╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "  ║          Kubernetes Base Installer                       ║" -ForegroundColor Cyan
-    Write-Host "  ║          AKS · EKS · GKE · RKE2 · Kind                  ║" -ForegroundColor Cyan
+    Write-Host "  ║          AKS · EKS · GKE · RKE2 · Kind                   ║" -ForegroundColor Cyan
     Write-Host "  ╠══════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
     Write-Host "  ║  Installs a production-ready K8s stack including:        ║" -ForegroundColor DarkCyan
-    Write-Host "  ║  Ingress · Cert-Manager · Vault · Storage · Observ.     ║" -ForegroundColor DarkCyan
-    Write-Host "  ║  External Secrets · Reflector · ArgoCD · Rancher        ║" -ForegroundColor DarkCyan
+    Write-Host "  ║  Ingress · Cert-Manager · Vault · Storage · Observ.      ║" -ForegroundColor DarkCyan
+    Write-Host "  ║  External Secrets · Reflector · ArgoCD · Rancher         ║" -ForegroundColor DarkCyan
     Write-Host "  ╠══════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-    Write-Host "  ║  Copyright (c) 2026 BA Software LTDA                    ║" -ForegroundColor DarkGray
-    Write-Host "  ║  MIT License — provided as-is, without warranty         ║" -ForegroundColor DarkGray
+    Write-Host "  ║  Copyright (c) 2026 BA Software LTDA                     ║" -ForegroundColor DarkGray
+    Write-Host "  ║  MIT License — provided as-is, without warranty          ║" -ForegroundColor DarkGray
     Write-Host "  ║  github.com/ba-sw-ltda/kubernetes-base-installer         ║" -ForegroundColor DarkGray
     Write-Host "  ╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
     Write-Host ""
@@ -925,6 +925,96 @@ function Start-Installation {
                     }
                 }
             }
+        }
+
+        # ── Dependency validation ─────────────────────────────────────
+        # Build the full set of keys that will actually be installed.
+        # $compSel contains Screen-2 selections (value = SelKey).
+        # Single-component groups (no Screen 2) use their SelKey directly.
+        $willInstall = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $compSel.Keys | Where-Object { $compSel[$_] -eq $true } |
+            ForEach-Object { $willInstall.Add($_) | Out-Null }
+        if ("Storage (Longhorn)" -in $selectedComponentGroups) { $willInstall.Add("longhorn") | Out-Null }
+        if ("Management"         -in $selectedComponentGroups) { $willInstall.Add("rancher")  | Out-Null }
+        if ("GitOps"             -in $selectedComponentGroups) { $willInstall.Add("argocd")   | Out-Null }
+
+        # Hard deps: component is auto-deselected when dep is missing.
+        # Use SelKey values — same keys used in $compSel and $componentMap.
+        $hardDeps = @(
+            @{ C="wildcard-cert";           Needs="vault";            Reason="needs Vault to store the certificate" }
+            @{ C="wildcard-cert";           Needs="external-secrets"; Reason="needs ESO to sync the cert as a K8s Secret" }
+            @{ C="promtail";                Needs="loki";             Reason="has no log destination without Loki" }
+            @{ C="opentelemetry-collector"; Needs="tracing";          Reason="has no tracing backend (Tempo or Jaeger)" }
+            @{ C="proget-registry";         Needs="config-syncer";    Reason="Reflector is required to sync pull secrets to namespaces" }
+        )
+        # Soft deps: installs fine but something won't work — warn only.
+        $softDeps = @(
+            @{ C="rancher"; Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
+            @{ C="argocd";  Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
+            @{ C="grafana"; Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
+            @{ C="vault";   Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
+        )
+
+        $deselected = [System.Collections.Generic.List[hashtable]]::new()
+        $warnings   = [System.Collections.Generic.List[hashtable]]::new()
+        $seen       = [System.Collections.Generic.HashSet[string]]::new()
+
+        foreach ($dep in $hardDeps) {
+            if ($willInstall.Contains($dep.C) -and -not $willInstall.Contains($dep.Needs)) {
+                $willInstall.Remove($dep.C) | Out-Null
+                # Deselect in $compSel so installation loop skips it
+                $compSel[$dep.C] = $false
+                # Deselect the whole group for single-component groups
+                if ($dep.C -eq "rancher")  { [void]$selectedComponentGroups.Remove("Management") }
+                if ($dep.C -eq "argocd")   { [void]$selectedComponentGroups.Remove("GitOps") }
+                if ($dep.C -eq "longhorn") { [void]$selectedComponentGroups.Remove("Storage (Longhorn)") }
+                if ($seen.Add($dep.C)) { $deselected.Add($dep) | Out-Null }
+            }
+        }
+        foreach ($dep in $softDeps) {
+            if ($willInstall.Contains($dep.C) -and -not $willInstall.Contains($dep.Needs)) {
+                $warnings.Add($dep) | Out-Null
+            }
+        }
+
+        if ($deselected.Count -gt 0 -or $warnings.Count -gt 0) {
+            Clear-Host
+            Write-Host ""
+            Write-Host "  Dependency Check" -ForegroundColor Cyan
+            Write-Host "  ────────────────────────────────────────────────────" -ForegroundColor DarkGray
+
+            if ($deselected.Count -gt 0) {
+                Write-Host ""
+                Write-Host "  Automatically deselected — missing dependencies:" -ForegroundColor Red
+                Write-Host ""
+                foreach ($d in $deselected) {
+                    Write-Host "  ✗  $($d.C)" -ForegroundColor Red
+                    Write-Host "     → requires '$($d.Needs)': $($d.Reason)" -ForegroundColor DarkGray
+                }
+            }
+
+            if ($warnings.Count -gt 0) {
+                Write-Host ""
+                Write-Host "  Will install but functionality is limited:" -ForegroundColor Yellow
+                Write-Host ""
+                foreach ($w in $warnings) {
+                    Write-Host "  ⚠  $($w.C)" -ForegroundColor Yellow
+                    Write-Host "     → $($w.Reason)" -ForegroundColor DarkGray
+                }
+            }
+
+            Write-Host ""
+            Write-Host "  ────────────────────────────────────────────────────" -ForegroundColor DarkGray
+            Write-Host ""
+
+            $continue = Read-YesNo `
+                -Title "Continue with adjusted selection?" `
+                -DefaultYes $true `
+                -YesLabel "Continue — proceed with the adjustments above" `
+                -NoLabel  "Cancel — exit and re-run to reconfigure" `
+                -ContextTitle "Dependency Check"
+
+            if (-not $continue) { Write-Host "  Installation cancelled." -ForegroundColor Yellow; exit 0 }
         }
 
         # Update Windows hosts file upfront for Kind (127.0.0.1, single UAC prompt)
