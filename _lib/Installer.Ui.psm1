@@ -1399,6 +1399,44 @@ function Get-IngressClass {
 }
 
 # -------------------------
+# Clear-StaleHelmRelease — resolves a Helm release stuck in pending-install,
+# pending-upgrade, or pending-rollback state (typically caused by an aborted
+# network connection mid-deploy). Rolls back if a previous revision exists,
+# otherwise uninstalls so the next 'helm upgrade --install' starts clean.
+# -------------------------
+function Clear-StaleHelmRelease {
+    param(
+        [Parameter(Mandatory)][string]$ReleaseName,
+        [Parameter(Mandatory)][string]$Namespace
+    )
+
+    $statusJson = & helm status $ReleaseName -n $Namespace --output json 2>$null
+    if (-not $statusJson) { return }
+
+    try { $status = ($statusJson | ConvertFrom-Json).info.status } catch { return }
+
+    $pendingStates = @('pending-install', 'pending-upgrade', 'pending-rollback', 'failed')
+    if ($status -notin $pendingStates) { return }
+
+    Write-Host "  ⚠ Helm release '$ReleaseName' is stuck in '$status' — cleaning up..." -ForegroundColor Yellow
+
+    # Try rollback first (works when at least one previous revision exists)
+    & helm rollback $ReleaseName -n $Namespace 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✓ Rolled back '$ReleaseName' to previous revision" -ForegroundColor Green
+        return
+    }
+
+    # No prior revision — uninstall so the next run starts fresh
+    & helm uninstall $ReleaseName -n $Namespace --no-hooks 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✓ Removed stuck release '$ReleaseName'" -ForegroundColor Green
+    } else {
+        Write-Host "  ⚠ Could not clean up release '$ReleaseName' — deploy may fail" -ForegroundColor Yellow
+    }
+}
+
+# -------------------------
 # kubectl discovery cache — clears the local cache so newly installed CRDs
 # (e.g. ESO, cert-manager) are visible to kubectl apply without a 10-min wait.
 # Suppresses Write-Progress to avoid console noise from Remove-Item -Recurse.
@@ -1544,6 +1582,7 @@ $__exportFunctions = @(
   'Write-OpenBaoSecret'
   'Set-ClusterContext'
   'Clear-KubectlDiscoveryCache'
+  'Clear-StaleHelmRelease'
   'Write-ClusterSecret'
   'Write-AzureKeyVaultSecret'
   'Write-AwsSecretsManagerSecret'
