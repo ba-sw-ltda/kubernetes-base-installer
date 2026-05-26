@@ -125,14 +125,14 @@ if ($mount.Installed) {
     $writeOk = Write-ClusterSecret -Path "grafana" -BaseDir $BaseDir -Platform $Platform -Data @{
         adminPassword = $AdminPassword
     }
-    if (-not $writeOk) {
-        Write-Error "Credentials could not be written to vault — check vault status"
-        exit 1
+    if ($writeOk) {
+        $mount.SpcYaml | & kubectl apply -f - 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Error "SecretProviderClass could not be applied — check CSI driver installation"; exit 1 }
+        Write-Host "  ✓ Credentials written to vault + SecretProviderClass created" -ForegroundColor Green
+    } else {
+        Write-Host "  ⚠ Vault not available — falling back to direct password (no CSI mount)" -ForegroundColor Yellow
+        $mount.Installed = $false
     }
-
-    $mount.SpcYaml | & kubectl apply -f - 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Error "SecretProviderClass could not be applied — check CSI driver installation"; exit 1 }
-    Write-Host "  ✓ Credentials written to vault + SecretProviderClass created" -ForegroundColor Green
 }
 
 $cmdWrapper = "export GF_SECURITY_ADMIN_PASSWORD=`$(cat $($mount.MountPath)/adminPassword) && exec /run.sh"
