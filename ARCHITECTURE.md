@@ -1,34 +1,34 @@
-# Architektur — Komponenten & Kommunikation
+# Architecture — Components & Communication
 
-Dieses Dokument zeigt die von `Install-Base.ps1` installierten Komponenten, wie sie
-untereinander kommunizieren, wie ein eingehender Aufruf durch den Cluster läuft —
-und wie sich **MQTT** als zusätzliche Komponente einfügen würde (sowohl intern als
-auch von außerhalb des Clusters erreichbar).
+This document shows the components installed by `Install-Base.ps1`, how they
+communicate with each other, how an incoming call travels through the cluster —
+and how **MQTT** would fit in as an additional component (reachable both from
+inside and from outside the cluster).
 
-> Die Diagramme sind als [Mermaid](https://mermaid.js.org/) eingebettet. In VS Code
-> (Markdown-Preview), GitHub und den meisten Markdown-Renderern werden sie direkt als
-> Grafik dargestellt.
+> Diagrams are embedded as [Mermaid](https://mermaid.js.org/). VS Code
+> (Markdown Preview), GitHub, and most Markdown renderers display them directly
+> as graphics.
 
 ---
 
-## 1. Gesamtübersicht — Komponenten & Kommunikationswege
+## 1. Overview — Components & Communication Paths
 
 ```mermaid
 flowchart TB
-    Internet["🌐 Internet / externer Client"]
+    Internet["🌐 Internet / external client"]
     DNS["DNS (*.kubernetes.local)"]
 
     Internet --> DNS
 
-    subgraph LB["Externe Erreichbarkeit (MetalLB-Pools / Cloud-LB)"]
-        IngressLB["LoadBalancer :80 / :443\n(Pool: ingress-pool)"]
-        MqttLB["LoadBalancer :1883 / :8883\n(Pool: default-pool)"]
+    subgraph LB["External reachability (MetalLB pools / cloud LB)"]
+        IngressLB["LoadBalancer :80 / :443\n(pool: ingress-pool)"]
+        MqttLB["LoadBalancer :1883 / :8883\n(pool: default-pool)"]
     end
 
     DNS --> IngressLB
 
     subgraph NS_ING["ns: ingress-nginx / traefik"]
-        Ingress["Ingress Controller\n(NGINX oder Traefik)"]
+        Ingress["Ingress Controller\n(NGINX or Traefik)"]
     end
 
     subgraph NS_CERT["ns: cert-manager"]
@@ -36,13 +36,13 @@ flowchart TB
     end
 
     subgraph NS_VAULT["ns: openbao"]
-        Vault["OpenBao :8200\n(Secrets / Wildcard-Cert)"]
+        Vault["OpenBao :8200\n(Secrets / wildcard cert)"]
     end
 
     subgraph NS_ESO["ns: external-secrets / kube-system"]
         ESO["External Secrets Operator"]
         CSI["Secrets Store CSI Driver"]
-        Reflector["Reflector (Config-Syncer)"]
+        Reflector["Reflector (config syncer)"]
     end
 
     subgraph NS_MON["ns: monitoring"]
@@ -64,24 +64,24 @@ flowchart TB
         Longhorn["Longhorn"]
     end
 
-    subgraph NS_MQTT["ns: mqtt (NEU)"]
-        MqttBroker["MQTT-Broker\n(z. B. EMQX / Mosquitto)\n:1883 plain · :8883 TLS"]
+    subgraph NS_MQTT["ns: mqtt (NEW)"]
+        MqttBroker["MQTT broker\n(e.g. EMQX / Mosquitto)\n:1883 plain · :8883 TLS"]
     end
 
     IngressLB --> Ingress
-    Ingress -- "TLS-Terminierung,\nHost-Routing" --> Grafana
+    Ingress -- "TLS termination,\nhost routing" --> Grafana
     Ingress --> Rancher
     Ingress --> ArgoCD
     Ingress --> Longhorn
     Ingress --> Vault
 
-    CertMgr -- "Zertifikate ausstellen" --> Ingress
-    Vault -- "Wildcard-Cert" --> ESO
+    CertMgr -- "issue certificates" --> Ingress
+    Vault -- "wildcard cert" --> ESO
     ESO -- "sync → K8s Secret" --> Ingress
     ESO -- "sync → K8s Secret" --> MqttBroker
     CSI -- "mount Secret" --> Grafana
-    Reflector -- "ConfigMap/Secret-Spiegelung" --> NS_MON
-    Reflector -- "ConfigMap/Secret-Spiegelung" --> NS_MQTT
+    Reflector -- "ConfigMap/Secret mirroring" --> NS_MON
+    Reflector -- "ConfigMap/Secret mirroring" --> NS_MQTT
 
     Promtail --> Loki
     Otel -- "remote_write" --> Prom
@@ -96,32 +96,32 @@ flowchart TB
     ArgoCD -- "Deploy/Reconcile" --> NS_MQTT
     ArgoCD -- "Deploy/Reconcile" --> NS_MON
 
-    MqttLB -- "extern: Geräte/IoT/Clients" --> MqttBroker
-    MqttBroker -- "ClusterIP intern:\nmqtt-broker.mqtt:1883" --> NS_MON
-    MqttBroker -. "Metriken (optional)" .-> Otel
+    MqttLB -- "external: devices/IoT/clients" --> MqttBroker
+    MqttBroker -- "internal ClusterIP:\nmqtt-broker.mqtt:1883" --> NS_MON
+    MqttBroker -. "metrics (optional)" .-> Otel
 
-    Internet -. "MQTT-Client (TCP)" .-> MqttLB
+    Internet -. "MQTT client (TCP)" .-> MqttLB
 ```
 
-**Lesehinweise**
+**How to read this**
 
-- Alle **HTTP/HTTPS-UIs** (Grafana, Rancher, ArgoCD, Longhorn, OpenBao) laufen über
-  denselben Ingress-Controller → eine LoadBalancer-IP, Host-basiertes Routing,
-  TLS von `cert-manager`.
-- **MQTT ist kein HTTP-Protokoll** und kann daher nicht über den HTTP-Ingress laufen.
-  Es bekommt einen **eigenen LoadBalancer-Service** (eigene externe IP, Pool
-  `default-pool`) — analog zum bisherigen Muster, bei dem MetalLB schon zwei Pools
-  vorsieht (`ingress-pool` für HTTP, `default-pool` für alles andere).
-- Intern ist der Broker ganz normal per ClusterIP/DNS erreichbar
-  (`mqtt-broker.mqtt.svc.cluster.local:1883`), genau wie Prometheus oder Loki.
+- All **HTTP/HTTPS UIs** (Grafana, Rancher, ArgoCD, Longhorn, OpenBao) run behind
+  the same Ingress Controller → one LoadBalancer IP, host-based routing,
+  TLS from `cert-manager`.
+- **MQTT is not an HTTP protocol**, so it can't run over the HTTP Ingress.
+  It gets its **own LoadBalancer Service** (its own external IP, pool
+  `default-pool`) — following the existing pattern where MetalLB already
+  provides two pools (`ingress-pool` for HTTP, `default-pool` for everything else).
+- Internally the broker is reachable like any other service via ClusterIP/DNS
+  (`mqtt-broker.mqtt.svc.cluster.local:1883`), exactly like Prometheus or Loki.
 
 ---
 
-## 2. Aufruf-Beispiel 1 — Browser ruft Grafana auf (HTTPS via Ingress)
+## 2. Call example 1 — Browser calls Grafana (HTTPS via Ingress)
 
 ```mermaid
 sequenceDiagram
-    participant U as Browser (extern)
+    participant U as Browser (external)
     participant D as DNS
     participant LB as LoadBalancer :443
     participant ING as Ingress Controller
@@ -130,85 +130,121 @@ sequenceDiagram
     participant POD as Grafana Pod
 
     U->>D: grafana.kubernetes.local ?
-    D-->>U: externe IP des Ingress-LB
+    D-->>U: external IP of the Ingress LB
     U->>LB: HTTPS GET (Host: grafana.kubernetes.local)
-    LB->>ING: TCP :443 weiterleiten
-    Note over ING,CM: TLS-Zertifikat von cert-manager\n(Wildcard, via Vault + ESO synchronisiert)
-    ING->>ING: TLS terminieren, Host-Header prüfen
-    ING->>SVC: HTTP weiterleiten (ClusterIP)
-    SVC->>POD: an Grafana-Pod weiterleiten
-    POD-->>SVC: Response
-    SVC-->>ING: Response
-    ING-->>U: HTTPS Response
+    LB->>ING: forward TCP :443
+    Note over ING,CM: TLS certificate from cert-manager\n(wildcard, synced via Vault + ESO)
+    ING->>ING: terminate TLS, check Host header
+    ING->>SVC: forward HTTP (ClusterIP)
+    SVC->>POD: forward to Grafana pod
+    POD-->>SVC: response
+    SVC-->>ING: response
+    ING-->>U: HTTPS response
 ```
 
 ---
 
-## 3. Aufruf-Beispiel 2 — MQTT-Client (intern *und* extern)
+## 3. Call example 2 — MQTT client (internal *and* external)
 
 ```mermaid
 sequenceDiagram
-    participant EXT as Externes Gerät (z. B. IoT-Sensor)
+    participant EXT as External device (e.g. IoT sensor)
     participant LB as LoadBalancer :8883 (default-pool)
-    participant BRK as MQTT-Broker Pod (mqtt ns)
-    participant POD as interner Subscriber (z. B. App-Pod)
+    participant BRK as MQTT broker pod (mqtt ns)
+    participant POD as Internal subscriber (e.g. app pod)
 
-    EXT->>LB: MQTT CONNECT (TLS, Port 8883)
-    LB->>BRK: TCP weiterleiten (kein HTTP-Ingress nötig)
+    EXT->>LB: MQTT CONNECT (TLS, port 8883)
+    LB->>BRK: forward TCP (no HTTP ingress needed)
     BRK-->>EXT: CONNACK
     EXT->>BRK: PUBLISH sensors/temp 21.5
-    BRK->>POD: PUBLISH (Subscriber via ClusterIP\nmqtt-broker.mqtt.svc.cluster.local:1883)
-    POD-->>BRK: SUBACK / weitere Verarbeitung
+    BRK->>POD: PUBLISH (subscriber via ClusterIP\nmqtt-broker.mqtt.svc.cluster.local:1883)
+    POD-->>BRK: SUBACK / further processing
 ```
 
-**Zwei Zugriffspfade auf denselben Broker:**
+**Two access paths to the same broker:**
 
-| Aufrufer | Adresse | Port | Weg |
+| Caller | Address | Port | Path |
 |---|---|---|---|
-| Pod **innerhalb** des Clusters | `mqtt-broker.mqtt.svc.cluster.local` | `1883` (plain) | ClusterIP, kein Sprung über LB |
-| Client **außerhalb** des Clusters | öffentliche/MetalLB-IP des `mqtt`-LoadBalancer-Service | `8883` (TLS) | LoadBalancer-Service direkt auf den Broker, **ohne** HTTP-Ingress |
+| Pod **inside** the cluster | `mqtt-broker.mqtt.svc.cluster.local` | `1883` (plain) | ClusterIP, no hop through the LB |
+| Client **outside** the cluster | public/MetalLB IP of the `mqtt` LoadBalancer Service | `8883` (**mTLS**) | LoadBalancer Service straight to the broker, **without** the HTTP Ingress |
 
-TLS für `8883` nutzt dasselbe Wildcard-Zertifikat wie die übrigen Komponenten
-(Vault → External Secrets Operator → K8s-Secret im `mqtt`-Namespace).
+Port `8883` is **mTLS**, not just TLS: the broker presents the wildcard server
+certificate (Vault → External Secrets Operator → K8s Secret in the `mqtt`
+namespace, as usual), but additionally requires a **client certificate** from
+every external device — mandatory for CRA/NIS2-relevant compliance requirements
+around encryption and strong authentication across the cluster boundary.
+How those client certificates get issued is detailed in
+**[CERTIFICATES.md](CERTIFICATES.md)**.
 
 ---
 
-## 4. Namespace- und Port-Übersicht (inkl. MQTT)
+## 4. Namespace & port overview (incl. MQTT)
 
-| Namespace | Komponente | Port(s) | Extern erreichbar? |
+| Namespace | Component | Port(s) | Externally reachable? |
 |---|---|---|---|
 | `ingress-nginx` / `traefik` | Ingress Controller | 80, 443 | ✅ LoadBalancer (`ingress-pool`) |
-| `cert-manager` | cert-manager | – | ❌ intern |
-| `openbao` | OpenBao (Vault) | 8200 | optional über Ingress |
-| `external-secrets` / `kube-system` | ESO, CSI-Driver, Reflector | – | ❌ intern |
-| `longhorn-system` | Longhorn | 80 (UI) | optional über Ingress |
-| `cattle-system` | Rancher | 80/443 | ✅ über Ingress |
-| `monitoring` | Prometheus, Loki, Tempo/Jaeger, OTel, Grafana | 9090, 3100, 4317/4318, 3200/16686, 3000 | Grafana/Prometheus/Jaeger optional über Ingress, Rest intern |
-| `argocd` | ArgoCD | 8080 | ✅ über Ingress (optional) |
-| **`mqtt` (neu)** | **MQTT-Broker** | **1883 (plain, intern), 8883 (TLS, intern+extern)** | **✅ eigener LoadBalancer (`default-pool`), zusätzlich ClusterIP intern** |
+| `cert-manager` | cert-manager | – | ❌ internal |
+| `openbao` | OpenBao (Vault) | 8200 | optional via Ingress |
+| `external-secrets` / `kube-system` | ESO, CSI driver, Reflector | – | ❌ internal |
+| `longhorn-system` | Longhorn | 80 (UI) | optional via Ingress |
+| `cattle-system` | Rancher | 80/443 | ✅ via Ingress |
+| `monitoring` | Prometheus, Loki, Tempo/Jaeger, OTel, Grafana | 9090, 3100, 4317/4318, 3200/16686, 3000 | Grafana/Prometheus/Jaeger optional via Ingress, rest internal |
+| `argocd` | ArgoCD | 8080 | ✅ via Ingress (optional) |
+| **`mqtt` (new)** | **MQTT broker** | **1883 (plain, internal), 8883 (mTLS, internal+external)** | **✅ own LoadBalancer (`default-pool`), plus internal ClusterIP** |
 
 ---
 
-## 5. Wie würde MQTT als Komponente eingebaut werden?
+## 5. How would MQTT be added as a component?
 
-**Entscheidung:** MQTT wird **nicht** Teil dieser Baseline (kein `72-mqtt` in diesem
-Repo). Diese Baseline deckt nur clusterweite Infrastruktur ab (Ingress, Secrets,
-Storage, Observability, GitOps) — MQTT ist anwendungsspezifisch und gehört in ein
-**separates Install-Skript/Repo**, das auf einem bereits per Baseline aufgesetzten
-Cluster aufbaut.
+**Decision:** MQTT will **not** become part of this baseline (no `72-mqtt` in
+this repo). This baseline only covers cluster-wide infrastructure (ingress,
+secrets, storage, observability, GitOps) — MQTT is application-specific and
+belongs in a **separate install script/repo** that builds on a cluster already
+provisioned by this baseline.
 
-Das separate Skript würde dieselben Bausteine wiederverwenden, die die Baseline
-bereitstellt, statt sie zu duplizieren:
+That separate script would reuse the building blocks the baseline already
+provides instead of duplicating them:
 
-- **Namespace**: eigener (z. B. `mqtt`), nicht Teil der Baseline-Namespaces
-- **Helm-Chart**: z. B. `emqx/emqx` oder `bitnami/mosquitto`
-- **Service 1 (intern)**: `ClusterIP`, Port `1883` — für Pods im Cluster
-- **Service 2 (extern)**: `LoadBalancer`, Port `8883` (TLS), Annotation
-  `metallb.universe.tf/address-pool: default-pool` — nutzt den von der Baseline
-  bereits angelegten MetalLB-Pool, statt den HTTP-Ingress zu missbrauchen
-- **TLS**: Wildcard-Zertifikat, das bereits über Vault + External-Secrets-Operator
-  (Baseline-Komponenten) verteilt wird — nur zusätzlich in den `mqtt`-Namespace
-  synchronisiert
+- **Namespace**: its own (e.g. `mqtt`), not part of the baseline namespaces
+- **Helm chart**: e.g. `emqx/emqx` or `bitnami/mosquitto`
+- **Service 1 (internal)**: `ClusterIP`, port `1883` — for pods inside the cluster
+- **Service 2 (external)**: `LoadBalancer`, port `8883` (TLS), annotation
+  `metallb.universe.tf/address-pool: default-pool` — reuses the MetalLB pool the
+  baseline already created, instead of repurposing the HTTP Ingress
+- **Server TLS**: wildcard certificate already distributed via Vault + External
+  Secrets Operator (baseline components) — just additionally synced into the
+  `mqtt` namespace
+- **Client mTLS**: separate PKI solution, see below
 
-Das Diagramm oben zeigt den Zielzustand konzeptionell. Die tatsächliche Umsetzung
-(eigenes Skript/Repo) folgt später.
+The diagram above shows the conceptual target state. The actual implementation
+(its own script/repo) follows later.
+
+---
+
+## 6. Decision: client certificates for external MQTT clients (mTLS)
+
+**Background:** CRA/NIS2 and similar regulations require encrypted and
+strongly authenticated communication across the cluster boundary. Inside the
+cluster, `cert-manager` already handles this. For clients **outside** the
+cluster, something needs to issue and manage client certificates — only
+PKI-capable systems (OpenBao/HashiCorp Vault) qualify, not the plain KV stores
+the cloud providers offer (Azure Key Vault, AWS Secrets Manager, GCP Secret
+Manager).
+
+**Decision (2026-06-19):**
+- This baseline stays unchanged — no PKI component here.
+- The separate MQTT install script asks once: *"Are client certificates needed
+  for external clients?"*
+- **On-premise/Kind**: OpenBao is already running (baseline component
+  `23-openbao`) → the MQTT script only needs to additionally enable the `pki`
+  secrets engine + role on it.
+- **Cloud (AKS/EKS/GKE)**: no OpenBao runs there by default → the MQTT script
+  re-invokes `23-openbao/Install.ps1` from this baseline as-is, **solely** for
+  the PKI function. The cloud-native KV store keeps handling ordinary secrets
+  unchanged.
+- HashiCorp Vault was deliberately **not** added as an alternative — identical
+  PKI engine to OpenBao (OpenBao is the OSS fork of Vault), but an extra
+  install path to maintain with no added benefit.
+
+Detailed diagrams (PKI component overview, issuance flow, mTLS handshake):
+**[CERTIFICATES.md](CERTIFICATES.md)**.
