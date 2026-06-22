@@ -308,7 +308,7 @@ spec:
         - |
           BAO_ADDR=http://openbao.$($Namespace).svc.cluster.local:8200
           while true; do
-            CODE=`$(curl -sf -o /dev/null -w "%{http_code}" `$BAO_ADDR/v1/sys/health 2>/dev/null || echo "000")
+            CODE=`$(curl -s -o /dev/null -w "%{http_code}" `$BAO_ADDR/v1/sys/health 2>/dev/null || echo "000")
             if [ "`$CODE" = "503" ]; then
               KEY=`$(head -n1 /var/run/secrets/unseal/unseal-key)
               curl -sf -X PUT `$BAO_ADDR/v1/sys/unseal -d "{\"key\":\"`$KEY\"}" -o /dev/null
