@@ -4,6 +4,7 @@
     Repository      = "https://grafana.github.io/helm-charts"
     ChartName       = "promtail"
     Namespace       = "monitoring"
+    RancherProject  = "Observability"
     CreateNamespace = $false
 
     UserConfig = @{

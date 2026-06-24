@@ -1,6 +1,7 @@
 @{
-    Name      = "proget-registry"
-    Namespace = "registry"
+    Name           = "proget-registry"
+    Namespace      = "registry"
+    RancherProject = "Configuration"
 
     UserConfig = @{
         RegistryUrl   = ""   # set via Prompt.ps1 — e.g. registry.example.com

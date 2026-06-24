@@ -5,6 +5,7 @@
     Repository      = "https://traefik.github.io/charts"
     ChartName       = "traefik"
     Namespace       = "traefik"
+    RancherProject  = "Ingress"
     CreateNamespace = $true
 
     # User-configurable settings

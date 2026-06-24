@@ -5,6 +5,7 @@
     Repository      = "https://metallb.github.io/metallb"
     ChartName       = "metallb"
     Namespace       = "metallb-system"
+    RancherProject  = "Ingress"
     CreateNamespace = $true
 
     # User-configurable settings

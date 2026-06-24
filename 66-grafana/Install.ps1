@@ -196,7 +196,7 @@ if ($mount.Installed) {
     $HelmArgs += "--set-string", "adminPassword=$AdminPassword"
 }
 
-Clear-StaleHelmRelease -ReleaseName "grafana" -Namespace $Namespace
+Reset-StuckHelmRelease -ReleaseName "grafana" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying Grafana..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose

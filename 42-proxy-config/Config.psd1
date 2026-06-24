@@ -2,6 +2,7 @@
     # Component metadata (NOT configurable by end user)
     Name            = "proxy-config"
     Namespace       = "proxy-config"
+    RancherProject  = "Configuration"
     CreateNamespace = $true
 
     # User-configurable settings

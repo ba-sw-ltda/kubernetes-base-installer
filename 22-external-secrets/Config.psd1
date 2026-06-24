@@ -5,6 +5,7 @@
     Repository      = "https://charts.external-secrets.io"
     ChartName       = "external-secrets"
     Namespace       = "external-secrets"
+    RancherProject  = "Security"
     CreateNamespace = $true
 
     # User-configurable settings

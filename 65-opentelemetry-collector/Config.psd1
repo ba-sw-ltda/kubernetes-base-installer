@@ -4,6 +4,7 @@
     Repository      = "https://open-telemetry.github.io/opentelemetry-helm-charts"
     ChartName       = "opentelemetry-collector"
     Namespace       = "monitoring"
+    RancherProject  = "Observability"
     CreateNamespace = $false
 
     UserConfig = @{

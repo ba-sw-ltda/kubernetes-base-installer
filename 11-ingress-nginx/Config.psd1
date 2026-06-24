@@ -5,6 +5,7 @@
     Repository      = "https://kubernetes.github.io/ingress-nginx"
     ChartName       = "ingress-nginx"
     Namespace       = "ingress-nginx"
+    RancherProject  = "Ingress"
     CreateNamespace = $true
 
     # User-configurable settings

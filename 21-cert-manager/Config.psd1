@@ -5,6 +5,7 @@
     Repository      = "https://charts.jetstack.io"
     ChartName       = "cert-manager"
     Namespace       = "cert-manager"
+    RancherProject  = "Security"
     CreateNamespace = $true
 
     # User-configurable settings

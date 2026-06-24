@@ -5,6 +5,7 @@
     Repository      = "https://charts.longhorn.io"
     ChartName       = "longhorn"
     Namespace       = "longhorn-system"
+    RancherProject  = "Storage"
     CreateNamespace = $true
 
     # User-configurable settings

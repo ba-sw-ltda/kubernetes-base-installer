@@ -4,6 +4,7 @@
     Repository      = "https://openbao.github.io/openbao-helm"
     ChartName       = "openbao"
     Namespace       = "openbao"
+    RancherProject  = "Security"
     CreateNamespace = $true
 
     UserConfig = @{

@@ -4,6 +4,7 @@
     Repository      = "https://jaegertracing.github.io/helm-charts"
     ChartName       = "jaeger"
     Namespace       = "monitoring"
+    RancherProject  = "Observability"
     CreateNamespace = $false
 
     UserConfig = @{

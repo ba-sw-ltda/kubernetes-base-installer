@@ -5,6 +5,7 @@
     Repository = "https://argoproj.github.io/argo-helm"
     ChartName = "argo-cd"
     Namespace = "argocd"
+    RancherProject = "GitOps"
     CreateNamespace = $true
     
     # User-configurable settings
