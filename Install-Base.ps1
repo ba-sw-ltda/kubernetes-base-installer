@@ -60,6 +60,21 @@ function Start-Installation {
         exit
     }
 
+    # Step 1: Install Tools (before any platform-specific prompts, which
+    # call az/aws/gcloud directly and need them already on PATH)
+    Write-Section -Title "Step 1: Checking and Installing Tools — $platform" `
+        -Hint "Downloads kubectl, helm, rancher CLI, and the platform CLI if missing" `
+        -Current ([ordered]@{})
+    Write-Host ""
+    Write-Host "Installing tools" -ForegroundColor Cyan
+    Write-Host ""
+    Install-Kubectl
+    Install-Helm
+    Install-RancherCli
+    Install-PlatformTools -Platform $platform
+    Write-Host "`nTools ready." -ForegroundColor Green
+    Start-Sleep -Seconds 3
+
     # AKS variables
     $aksSubscriptionId = $null
     $aksResourceGroup  = $null
@@ -107,13 +122,12 @@ function Start-Installation {
         if (Test-Path $rke2StateFile) {
             $rke2ExistingState   = Get-Content $rke2StateFile | ConvertFrom-Json
             $rke2ChangeSettings  = Read-YesNo `
-                -Title "Existing RKE2 cluster: $($rke2ExistingState.SshServer) (connected $($rke2ExistingState.ConnectedAt))" `
+                -Title "Existing RKE2 cluster found" `
                 -DefaultYes $false `
                 -YesLabel "Change Settings  (re-enter SSH details and domain)" `
                 -NoLabel  "Use Existing Cluster" `
-                -ContextTitle "RKE2 (On-Premise)" `
-                -ContextHint "Use Existing = skip prompts, connect with saved settings" `
-                -ContextCurrent ([ordered]@{ Server = $rke2ExistingState.SshServer; User = $rke2ExistingState.SshUser; Domain = $rke2ExistingState.Domain })
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+                -ContextCurrent ([ordered]@{ Server = $rke2ExistingState.SshServer; User = $rke2ExistingState.SshUser; Domain = $rke2ExistingState.Domain; Connected = $rke2ExistingState.ConnectedAt })
             if (-not $rke2ChangeSettings) {
                 $rke2UseExisting    = $true
                 $rke2SshServer      = $rke2ExistingState.SshServer
@@ -134,7 +148,7 @@ function Start-Installation {
                     -DefaultYes $true `
                     -YesLabel "Auto-fetch via SSH  (script copies it from the server)" `
                     -NoLabel  "Manual path  (you already have the file locally)" `
-                    -ContextTitle "RKE2 (On-Premise)" `
+                    -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                     -ContextHint "SSH is available on this machine" `
                     -ContextCurrent ([ordered]@{})
             }
@@ -142,38 +156,39 @@ function Start-Installation {
             if ($useSsh) {
                 $authMethod = Read-SelectValue `
                     -Title "SSH Authentication" `
-                    -Message "How to authenticate with the server" `
                     -Options @(
                         @{ Label = "SSH Key  (recommended)"; Value = "key" }
                         @{ Label = "Password (via plink.exe)";  Value = "password" }
                     ) `
                     -Default 0 `
+                    -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+                    -ContextHint "How to authenticate with the server" `
                     -ContextCurrent ([ordered]@{})
 
                 $rke2SshServer = Read-Plain `
                     -Prompt "RKE2 server IP or hostname" `
-                    -ContextTitle "RKE2 (On-Premise) — SSH" `
+                    -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                     -ContextHint "The VIP or first control plane node IP" `
                     -ContextCurrent ([ordered]@{ Auth = $authMethod })
                 if ([string]::IsNullOrWhiteSpace($rke2SshServer)) { Write-Host "Server IP is required." -ForegroundColor Red; exit 1 }
 
                 $rke2SshUser = Read-Plain `
                     -Prompt "SSH user (default: root)" `
-                    -ContextTitle "RKE2 (On-Premise) — SSH" `
-                    -ContextCurrent ([ordered]@{ Server = $rke2SshServer; Auth = $authMethod })
+                    -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+                    -ContextCurrent ([ordered]@{ Auth = $authMethod; Server = $rke2SshServer })
                 if ([string]::IsNullOrWhiteSpace($rke2SshUser)) { $rke2SshUser = "root" }
 
                 if ($authMethod -eq "key") {
                     $rke2SshKeyPath = Read-Plain `
                         -Prompt "SSH key path (leave empty for ssh-agent / default key)" `
-                        -ContextTitle "RKE2 (On-Premise) — SSH" `
-                        -ContextCurrent ([ordered]@{ Server = $rke2SshServer; User = $rke2SshUser })
+                        -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+                        -ContextCurrent ([ordered]@{ Auth = $authMethod; Server = $rke2SshServer; User = $rke2SshUser })
                     if ([string]::IsNullOrWhiteSpace($rke2SshKeyPath)) { $rke2SshKeyPath = "" }
                 } else {
                     $rke2SshPassword = Read-SecretPlain `
                         -Prompt "SSH password for $rke2SshUser@$rke2SshServer" `
-                        -ContextTitle "RKE2 (On-Premise) — SSH" `
-                        -ContextCurrent ([ordered]@{ Server = $rke2SshServer; User = $rke2SshUser })
+                        -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+                        -ContextCurrent ([ordered]@{ Auth = $authMethod; Server = $rke2SshServer; User = $rke2SshUser })
                 }
 
                 $rke2KubeconfigPath = "$env:USERPROFILE\.kube\rke2-config"
@@ -181,7 +196,7 @@ function Start-Installation {
                 $defaultKubeconfig  = "$env:USERPROFILE\.kube\config"
                 $rke2KubeconfigPath = Read-Plain `
                     -Prompt "Local path to kubeconfig (default: $defaultKubeconfig)" `
-                    -ContextTitle "RKE2 (On-Premise)" `
+                    -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                     -ContextHint "Copy manually: scp user@<node>:/etc/rancher/rke2/rke2.yaml $defaultKubeconfig" `
                     -ContextCurrent ([ordered]@{})
                 if ([string]::IsNullOrWhiteSpace($rke2KubeconfigPath)) { $rke2KubeconfigPath = $defaultKubeconfig }
@@ -189,7 +204,7 @@ function Start-Installation {
 
             $rke2Domain = Read-Plain `
                 -Prompt "Cluster domain (default: kubernetes.example.com)" `
-                -ContextTitle "RKE2 (On-Premise)" `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -ContextHint "Wildcard *.{domain} should point to the MetalLB ingress IP in your DNS" `
                 -ContextCurrent ([ordered]@{})
             if ([string]::IsNullOrWhiteSpace($rke2Domain)) { $rke2Domain = "kubernetes.example.com" }
@@ -199,18 +214,19 @@ function Start-Installation {
     # Kind: ask for cluster name and handle existing cluster
     $kindClusterName = $null
     $kindReplaceCluster = $false
+    $kindClusterExisted = $false
     $kindDomain = $null
     if ($platform -eq "Kind (Local)") {
         $kindClusterName = Read-Plain `
             -Prompt "Kind cluster name (default: my-kind-cluster)" `
-            -ContextTitle "Kind (Local)" `
+            -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
             -ContextHint "Leave empty to use the default name" `
             -ContextCurrent ([ordered]@{})
         if ([string]::IsNullOrWhiteSpace($kindClusterName)) { $kindClusterName = "my-kind-cluster" }
 
         $kindDomain = Read-Plain `
             -Prompt "Local DNS domain (default: kubernetes.local)" `
-            -ContextTitle "Kind (Local)" `
+            -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
             -ContextHint "Wildcard *.{domain} will be routed to nginx via Acrylic DNS" `
             -ContextCurrent ([ordered]@{ Cluster = $kindClusterName })
         if ([string]::IsNullOrWhiteSpace($kindDomain)) { $kindDomain = "kubernetes.local" }
@@ -220,13 +236,13 @@ function Start-Installation {
         if (Test-Path $kindExe) {
             $existingClusters = & $kindExe get clusters 2>&1
             if ($existingClusters -contains $kindClusterName) {
+                $kindClusterExisted = $true
                 $kindReplaceCluster = Read-YesNo `
-                    -Title "Kind cluster '$kindClusterName' already exists" `
+                    -Title "Cluster already exists" `
                     -DefaultYes $false `
                     -YesLabel "Delete & Recreate  (all cluster data will be lost)" `
                     -NoLabel  "Keep Existing" `
-                    -ContextTitle "Kind (Local)" `
-                    -ContextHint "Keep Existing = continue with current cluster" `
+                    -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                     -ContextCurrent ([ordered]@{ Cluster = $kindClusterName })
             }
         }
@@ -239,7 +255,7 @@ function Start-Installation {
 
         # ── 1. Azure Login ──────────────────────────────────────────
         Clear-Host
-        Write-Context -Title "Azure AKS"
+        Write-Context -Title "Step 2: Initializing Cluster Environment — $platform" -Current ([ordered]@{})
         $exitCode = Invoke-WithSpinner -Message "Prüfe Azure Login..." -Executable "az" `
             -Arguments @("account", "show")
         if ($exitCode -ne 0) {
@@ -255,7 +271,7 @@ function Start-Installation {
         $aksSubscriptionId = Read-Plain `
             -Prompt "Azure Subscription ID" `
             -Default $defaultSub `
-            -ContextTitle "Azure AKS" `
+            -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
             -ContextHint "Find it in Azure Portal > Subscriptions" `
             -ContextCurrent ([ordered]@{})
         if ([string]::IsNullOrWhiteSpace($aksSubscriptionId)) {
@@ -275,7 +291,7 @@ function Start-Installation {
             -Options @(@{ Label = "[ Neuen AKS-Cluster erstellen ]"; Value = "__new__" }) `
             -Default 0 `
             -DefaultValue $preselectedCluster `
-            -ContextTitle "Azure AKS" `
+            -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
             -ContextCurrent ([ordered]@{ Subscription = $aksSubscriptionId }) `
             -Loader {
                 param($path); $env:PATH = $path
@@ -304,14 +320,14 @@ function Start-Installation {
         if (-not $aksUseExisting) {
             $aksClusterName = Read-Plain `
                 -Prompt "AKS cluster name (default: my-aks-cluster)" `
-                -ContextTitle "Azure AKS" `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -ContextHint "Lowercase letters, numbers, hyphens" `
                 -ContextCurrent ([ordered]@{ Subscription = $aksSubscriptionId })
             if ([string]::IsNullOrWhiteSpace($aksClusterName)) { $aksClusterName = "my-aks-cluster" }
 
             $aksResourceGroup = Read-Plain `
                 -Prompt "Resource group name (default: $aksClusterName-rg)" `
-                -ContextTitle "Azure AKS" `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -ContextHint "Will be created — all cluster resources go here" `
                 -ContextCurrent ([ordered]@{ Cluster = $aksClusterName })
             if ([string]::IsNullOrWhiteSpace($aksResourceGroup)) { $aksResourceGroup = "$aksClusterName-rg" }
@@ -331,6 +347,7 @@ function Start-Installation {
                     @{ Label = "Central US        (Iowa)";       Value = "centralus" }
                 ) `
                 -Default 0 `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -ContextCurrent ([ordered]@{ Cluster = $aksClusterName })
             if (-not $aksLocation) { Write-Host "Region is required." -ForegroundColor Red; exit 1 }
 
@@ -343,6 +360,7 @@ function Start-Installation {
                     @{ Label = "3 nodes (Standard_D2s_v3 — 2 vCPU / 8 GB RAM each)"; Value = "3" }
                 ) `
                 -Default 0 `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -ContextCurrent ([ordered]@{ Cluster = $aksClusterName; Region = $aksLocation })
             $aksNodeCount = [int]$nodeCountStr
             $aksVmSize    = if ($aksNodeCount -eq 1) { "Standard_D4s_v3" } else { "Standard_D2s_v3" }
@@ -358,7 +376,7 @@ function Start-Installation {
 
         # ── 1. AWS Credentials ──────────────────────────────────────
         Clear-Host
-        Write-Context -Title "AWS EKS"
+        Write-Context -Title "Step 2: Initializing Cluster Environment — $platform" -Current ([ordered]@{})
         $exitCode = Invoke-WithSpinner -Message "Prüfe AWS Credentials..." -Executable "aws" `
             -Arguments @("sts", "get-caller-identity")
         if ($exitCode -ne 0) {
@@ -366,14 +384,14 @@ function Start-Installation {
             $eksAccessKeyId = Read-Plain `
                 -Prompt "AWS Access Key ID" `
                 -Default $defaultKeyId `
-                -ContextTitle "AWS EKS" `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -ContextHint "IAM user with EKS + EC2 + CloudFormation + IAM permissions" `
                 -ContextCurrent ([ordered]@{})
             if ([string]::IsNullOrWhiteSpace($eksAccessKeyId)) { Write-Host "  Access Key ID is required." -ForegroundColor Red; exit 1 }
 
             $eksSecretAccessKey = Read-SecretPlain `
                 -Prompt "AWS Secret Access Key" `
-                -ContextTitle "AWS EKS" `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -ContextCurrent ([ordered]@{ AccessKeyId = $eksAccessKeyId })
             if ([string]::IsNullOrWhiteSpace($eksSecretAccessKey)) { Write-Host "  Secret Access Key is required." -ForegroundColor Red; exit 1 }
 
@@ -401,11 +419,11 @@ function Start-Installation {
             ) `
             -Default 0 `
             -DefaultValue $defaultRegion `
-            -ContextTitle "AWS EKS" `
+            -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
             -ContextCurrent ([ordered]@{})
         if (-not $eksRegion) { Write-Host "  Region is required." -ForegroundColor Red; exit 1 }
         Clear-Host
-        Write-Context -Title "AWS EKS"
+        Write-Context -Title "Step 2: Initializing Cluster Environment — $platform" -Current ([ordered]@{})
         Invoke-WithSpinner -Message "Setze Region '$eksRegion'..." -Executable "aws" `
             -Arguments @("configure", "set", "default.region", $eksRegion) | Out-Null
 
@@ -418,7 +436,7 @@ function Start-Installation {
             -Options @(@{ Label = "[ Neuen EKS-Cluster erstellen ]"; Value = "__new__" }) `
             -Default 0 `
             -DefaultValue $preselectedCluster `
-            -ContextTitle "AWS EKS" `
+            -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
             -ContextCurrent ([ordered]@{ Region = $eksRegion }) `
             -Loader {
                 param($path, $region); $env:PATH = $path
@@ -442,7 +460,7 @@ function Start-Installation {
         if (-not $eksUseExisting) {
             $eksClusterName = Read-Plain `
                 -Prompt "EKS cluster name (default: my-eks-cluster)" `
-                -ContextTitle "AWS EKS" `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -ContextHint "Lowercase letters, numbers, hyphens" `
                 -ContextCurrent ([ordered]@{ Region = $eksRegion })
             if ([string]::IsNullOrWhiteSpace($eksClusterName)) { $eksClusterName = "my-eks-cluster" }
@@ -450,7 +468,7 @@ function Start-Installation {
             $eksNodeType = Read-SelectValue `
                 -Title "Instance Type" `
                 -Message "Wähle einen Instance-Typ — bei Capacity-Problemen t3a oder m5 probieren" `
-                -ContextTitle "AWS EKS" `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -Options @(
                     @{ Label = "t3.medium   (2 vCPU / 4 GB  — Standard)";            Value = "t3.medium" }
                     @{ Label = "t3a.medium  (2 vCPU / 4 GB  — AMD, oft verfügbar)";  Value = "t3a.medium" }
@@ -467,7 +485,7 @@ function Start-Installation {
 
             $nodeCountStr = Read-SelectValue `
                 -Title "Number of nodes" `
-                -ContextTitle "AWS EKS" `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -Options @(
                     @{ Label = "1 node";  Value = "1" }
                     @{ Label = "2 nodes"; Value = "2" }
@@ -486,7 +504,7 @@ function Start-Installation {
 
         # ── 1. gcloud Login ─────────────────────────────────────────
         Clear-Host
-        Write-Context -Title "Google GKE"
+        Write-Context -Title "Step 2: Initializing Cluster Environment — $platform" -Current ([ordered]@{})
         $accountRef = [ref]$null
         Invoke-WithSpinner -Message "Prüfe Google Login..." -Executable "gcloud" `
             -Arguments @("config", "get-value", "account") -OutputVariable $accountRef | Out-Null
@@ -503,12 +521,12 @@ function Start-Installation {
         $gkeProjectId = Read-Plain `
             -Prompt "Google Cloud Project ID" `
             -Default $defaultProject `
-            -ContextTitle "Google GKE" `
+            -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
             -ContextHint "Find it in Google Cloud Console — top navigation bar" `
             -ContextCurrent ([ordered]@{})
         if ([string]::IsNullOrWhiteSpace($gkeProjectId)) { Write-Host "  Project ID is required." -ForegroundColor Red; exit 1 }
         Clear-Host
-        Write-Context -Title "Google GKE"
+        Write-Context -Title "Step 2: Initializing Cluster Environment — $platform" -Current ([ordered]@{})
         Invoke-WithSpinner -Message "Setze Projekt '$gkeProjectId'..." -Executable "gcloud" `
             -Arguments @("config", "set", "project", $gkeProjectId) | Out-Null
 
@@ -523,7 +541,7 @@ function Start-Installation {
             -Options @(@{ Label = "[ Neuen GKE-Cluster erstellen ]"; Value = "__new__" }) `
             -Default 0 `
             -DefaultValue $preselectedCluster `
-            -ContextTitle "Google GKE" `
+            -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
             -ContextCurrent ([ordered]@{ Project = $gkeProjectId }) `
             -Loader {
                 param($path, $projectId); $env:PATH = $path
@@ -564,12 +582,13 @@ function Start-Installation {
                     @{ Label = "asia-northeast1-a (Tokyo)";       Value = "asia-northeast1-a" }
                 ) `
                 -Default 0 `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -ContextCurrent ([ordered]@{ Project = $gkeProjectId })
             if (-not $gkeZone) { Write-Host "  Zone is required." -ForegroundColor Red; exit 1 }
 
             $gkeClusterName = Read-Plain `
                 -Prompt "GKE cluster name (default: my-gke-cluster)" `
-                -ContextTitle "Google GKE" `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -ContextHint "Lowercase letters, numbers, hyphens" `
                 -ContextCurrent ([ordered]@{ Project = $gkeProjectId; Zone = $gkeZone })
             if ([string]::IsNullOrWhiteSpace($gkeClusterName)) { $gkeClusterName = "my-gke-cluster" }
@@ -583,6 +602,7 @@ function Start-Installation {
                     @{ Label = "3 nodes (e2-standard-2 — 2 vCPU / 8 GB RAM each)"; Value = "3" }
                 ) `
                 -Default 0 `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -ContextCurrent ([ordered]@{ Project = $gkeProjectId; Cluster = $gkeClusterName; Zone = $gkeZone })
             $gkeNodeCount   = [int]$nodeCountStr
             $gkeMachineType = if ($gkeNodeCount -eq 1) { "e2-standard-4" } else { "e2-standard-2" }
@@ -590,18 +610,107 @@ function Start-Installation {
         }
     }
 
-    Write-Host "`nSelected Platform: $platform" -ForegroundColor Green
-    if ($kindClusterName) { Write-Host "Kind Cluster:  $kindClusterName" -ForegroundColor Green }
-    if ($kindDomain)      { Write-Host "Local Domain:  *.$kindDomain" -ForegroundColor Green }
-    if ($aksDomain)       { Write-Host "AKS Cluster:   $aksClusterName ($aksLocation)" -ForegroundColor Green }
-    if ($aksDomain)       { Write-Host "App Domain:    *.$aksDomain" -ForegroundColor Green }
-    if ($eksDomain)       { Write-Host "EKS Cluster:   $eksClusterName ($eksRegion)" -ForegroundColor Green }
-    if ($eksDomain)       { Write-Host "App Domain:    *.$eksDomain" -ForegroundColor Green }
-    if ($gkeDomain)       { Write-Host "GKE Cluster:   $gkeClusterName ($gkeZone)" -ForegroundColor Green }
-    if ($gkeDomain)       { Write-Host "App Domain:    *.$gkeDomain" -ForegroundColor Green }
+    # Context shown on Step 2's page below — same info the old plain-text
+    # summary used to print, just rendered through the shared context panel.
+    # Platform is the ContextTitle everywhere it's used, not an entry here.
+    $clusterContext = [ordered]@{}
+    if ($kindClusterName) { $clusterContext["Cluster"] = $kindClusterName; $clusterContext["Domain"] = "*.$kindDomain" }
+    if ($aksDomain)       { $clusterContext["Cluster"] = "$aksClusterName ($aksLocation)"; $clusterContext["Domain"] = "*.$aksDomain" }
+    if ($eksDomain)       { $clusterContext["Cluster"] = "$eksClusterName ($eksRegion)"; $clusterContext["Domain"] = "*.$eksDomain" }
+    if ($gkeDomain)       { $clusterContext["Cluster"] = "$gkeClusterName ($gkeZone)"; $clusterContext["Domain"] = "*.$gkeDomain" }
     if ($platform -eq "RKE2 (On-Premise)") {
-                          Write-Host "Kubeconfig:    $rke2KubeconfigPath" -ForegroundColor Green
-                          Write-Host "App Domain:    *.$rke2Domain" -ForegroundColor Green }
+        $clusterContext["Kubeconfig"] = $rke2KubeconfigPath
+        $clusterContext["Domain"]     = "*.$rke2Domain"
+    }
+
+    # Save state files before cluster init so a partial failure is recoverable
+    if ($platform -eq "Azure AKS" -and -not $aksUseExisting) {
+        @{ SubscriptionId = $aksSubscriptionId; ResourceGroup = $aksResourceGroup
+           ClusterName = $aksClusterName; Location = $aksLocation
+           CreatedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.aks-state.json" -Encoding UTF8
+    }
+    if ($platform -eq "AWS EKS" -and -not $eksUseExisting) {
+        @{ AccessKeyId = $eksAccessKeyId; Region = $eksRegion
+           ClusterName = $eksClusterName; NodeType = $eksNodeType; Domain = $eksDomain
+           CreatedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.eks-state.json" -Encoding UTF8
+    }
+    if ($platform -eq "Google GKE" -and -not $gkeUseExisting) {
+        @{ ProjectId = $gkeProjectId; Zone = $gkeZone
+           ClusterName = $gkeClusterName; Domain = $gkeDomain
+           CreatedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.gke-state.json" -Encoding UTF8
+    }
+    if ($platform -eq "RKE2 (On-Premise)" -and -not $rke2UseExisting) {
+        @{ SshServer = $rke2SshServer; SshUser = $rke2SshUser; SshKeyPath = $rke2SshKeyPath
+           Domain = $rke2Domain; KubeconfigPath = $rke2KubeconfigPath
+           ConnectedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.rke2-state.json" -Encoding UTF8
+    }
+    if ($platform -eq "Kind (Local)") {
+        @{ ClusterName = $kindClusterName; Domain = $kindDomain
+           CreatedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.kind-state.json" -Encoding UTF8
+    }
+
+    # Step 2: Configure Kubectl
+    # RKE2 never creates anything here (it's pre-existing on-prem infra) —
+    # this is only ever a connect. The other platforms either reused an
+    # existing cluster (selected from the list / kept on the "already
+    # exists" prompt) or are about to create a brand new one.
+    $usingExistingCluster = switch ($platform) {
+        "RKE2 (On-Premise)" { $true }
+        "Azure AKS"         { $aksUseExisting }
+        "AWS EKS"           { $eksUseExisting }
+        "Google GKE"        { $gkeUseExisting }
+        "Kind (Local)"      { $kindClusterExisted -and -not $kindReplaceCluster }
+        default             { $false }
+    }
+    $step2Hint   = if ($usingExistingCluster) { "Connects to the cluster and configures kubectl" } else { "Creates the cluster and configures kubectl" }
+    $step2Action = if ($usingExistingCluster) { "Connecting to cluster" } else { "Creating cluster" }
+
+    Write-Section -Title "Step 2: Initializing Cluster Environment — $platform" `
+        -Hint $step2Hint `
+        -Current $clusterContext
+    Write-Host ""
+    Write-Host $step2Action -ForegroundColor Cyan
+    Write-Host ""
+    # When reusing existing RKE2 state: skip SSH re-fetch if kubeconfig is already present
+    $rke2SshServerArg = if ($rke2UseExisting -and (Test-Path ($rke2KubeconfigPath -replace '^~', $env:USERPROFILE))) { "" } else { $rke2SshServer }
+    Initialize-ClusterEnvironment -Platform $platform `
+        -KindClusterName $kindClusterName -KindReplaceCluster $kindReplaceCluster -KindDomain $kindDomain `
+        -AksSubscriptionId $aksSubscriptionId -AksResourceGroup $aksResourceGroup `
+        -AksLocation $aksLocation -AksClusterName $aksClusterName `
+        -AksNodeCount $aksNodeCount -AksVmSize $aksVmSize `
+        -AksReplaceCluster $aksReplaceCluster -AksUseExisting $aksUseExisting `
+        -EksAccessKeyId $eksAccessKeyId -EksSecretAccessKey $eksSecretAccessKey `
+        -EksRegion $eksRegion -EksClusterName $eksClusterName `
+        -EksNodeCount $eksNodeCount -EksNodeType $eksNodeType `
+        -EksReplaceCluster $eksReplaceCluster -EksUseExisting $eksUseExisting `
+        -GkeProjectId $gkeProjectId -GkeZone $gkeZone -GkeClusterName $gkeClusterName `
+        -GkeNodeCount $gkeNodeCount -GkeMachineType $gkeMachineType `
+        -GkeReplaceCluster $gkeReplaceCluster -GkeUseExisting $gkeUseExisting `
+        -Rke2KubeconfigPath $rke2KubeconfigPath `
+        -Rke2SshServer $rke2SshServerArg -Rke2SshUser $rke2SshUser `
+        -Rke2SshKeyPath $rke2SshKeyPath -Rke2SshPassword $rke2SshPassword
+
+    Write-Host "`nBase installation complete for $platform." -ForegroundColor Green
+
+    # Kubernetes version check — components like OpenBao require >= 1.30
+    $k8sVersion = & kubectl version --output json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+    $serverVersion = if ($k8sVersion -and $k8sVersion.serverVersion) {
+        "$($k8sVersion.serverVersion.major).$($k8sVersion.serverVersion.minor -replace '[^0-9]','')"
+    } else { "0.0" }
+    $k8sMajor = [int]($serverVersion -split '\.')[0]
+    $k8sMinor = [int]($serverVersion -split '\.')[1]
+    if ($k8sMajor -lt 1 -or ($k8sMajor -eq 1 -and $k8sMinor -lt 30)) {
+        Write-Host ""
+        Write-Host "  ⚠ Kubernetes $serverVersion detected — some components (e.g. OpenBao) require >= 1.30." -ForegroundColor Yellow
+        Write-Host "  Bitte den Cluster auf 1.30+ upgraden." -ForegroundColor Yellow
+        Write-Host ""
+    }
+    Start-Sleep -Seconds 3
 
     # Build component options based on platform
     $ingressLabel = if ($platform -eq "RKE2 (On-Premise)" -or $platform -eq "Kind (Local)") {
@@ -644,96 +753,22 @@ function Start-Installation {
     # Optional Components Selection
     $selectedComponentGroups = Read-MultiSelectValues `
         -Title "Select Optional Component Groups" `
-        -Message "Use Space to select/deselect, Enter to confirm" `
         -Options $componentOptions `
         -DefaultValues $defaultValues `
         -ContextTitle $platform `
-        -ContextCurrent ([ordered]@{})
-    
+        -ContextCurrent $clusterContext
+
     if ($null -eq $selectedComponentGroups) {
         Write-Host "Installation cancelled." -ForegroundColor Red
         exit
     }
 
-    Clear-Host
-
-    # Step 1: Install Tools
-    Write-Host "`n--- Step 1: Checking and Installing Tools ---" -ForegroundColor Magenta
-    Install-Kubectl
-    Install-Helm
-    Install-PlatformTools -Platform $platform
-    
-    # Save state files before cluster init so a partial failure is recoverable
-    if ($platform -eq "Azure AKS" -and -not $aksUseExisting) {
-        @{ SubscriptionId = $aksSubscriptionId; ResourceGroup = $aksResourceGroup
-           ClusterName = $aksClusterName; Location = $aksLocation
-           CreatedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-        } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.aks-state.json" -Encoding UTF8
-    }
-    if ($platform -eq "AWS EKS" -and -not $eksUseExisting) {
-        @{ AccessKeyId = $eksAccessKeyId; Region = $eksRegion
-           ClusterName = $eksClusterName; NodeType = $eksNodeType; Domain = $eksDomain
-           CreatedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-        } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.eks-state.json" -Encoding UTF8
-    }
-    if ($platform -eq "Google GKE" -and -not $gkeUseExisting) {
-        @{ ProjectId = $gkeProjectId; Zone = $gkeZone
-           ClusterName = $gkeClusterName; Domain = $gkeDomain
-           CreatedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-        } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.gke-state.json" -Encoding UTF8
-    }
-    if ($platform -eq "RKE2 (On-Premise)" -and -not $rke2UseExisting) {
-        @{ SshServer = $rke2SshServer; SshUser = $rke2SshUser; SshKeyPath = $rke2SshKeyPath
-           Domain = $rke2Domain; KubeconfigPath = $rke2KubeconfigPath
-           ConnectedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-        } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.rke2-state.json" -Encoding UTF8
-    }
-    if ($platform -eq "Kind (Local)") {
-        @{ ClusterName = $kindClusterName; Domain = $kindDomain
-           CreatedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-        } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.kind-state.json" -Encoding UTF8
-    }
-
-    # Step 2: Configure Kubectl
-    Write-Host "`n--- Step 2: Initializing Cluster Environment ---" -ForegroundColor Magenta
-    # When reusing existing RKE2 state: skip SSH re-fetch if kubeconfig is already present
-    $rke2SshServerArg = if ($rke2UseExisting -and (Test-Path ($rke2KubeconfigPath -replace '^~', $env:USERPROFILE))) { "" } else { $rke2SshServer }
-    Initialize-ClusterEnvironment -Platform $platform `
-        -KindClusterName $kindClusterName -KindReplaceCluster $kindReplaceCluster -KindDomain $kindDomain `
-        -AksSubscriptionId $aksSubscriptionId -AksResourceGroup $aksResourceGroup `
-        -AksLocation $aksLocation -AksClusterName $aksClusterName `
-        -AksNodeCount $aksNodeCount -AksVmSize $aksVmSize `
-        -AksReplaceCluster $aksReplaceCluster -AksUseExisting $aksUseExisting `
-        -EksAccessKeyId $eksAccessKeyId -EksSecretAccessKey $eksSecretAccessKey `
-        -EksRegion $eksRegion -EksClusterName $eksClusterName `
-        -EksNodeCount $eksNodeCount -EksNodeType $eksNodeType `
-        -EksReplaceCluster $eksReplaceCluster -EksUseExisting $eksUseExisting `
-        -GkeProjectId $gkeProjectId -GkeZone $gkeZone -GkeClusterName $gkeClusterName `
-        -GkeNodeCount $gkeNodeCount -GkeMachineType $gkeMachineType `
-        -GkeReplaceCluster $gkeReplaceCluster -GkeUseExisting $gkeUseExisting `
-        -Rke2KubeconfigPath $rke2KubeconfigPath `
-        -Rke2SshServer $rke2SshServerArg -Rke2SshUser $rke2SshUser `
-        -Rke2SshKeyPath $rke2SshKeyPath -Rke2SshPassword $rke2SshPassword
-
-    Write-Host "`nBase installation complete for $platform." -ForegroundColor Green
-
     # Step 3: Install Optional Components
     if ($selectedComponentGroups.Count -gt 0) {
-        Write-Host "`n--- Step 3: Installing Optional Components ---" -ForegroundColor Magenta
-
-        # Kubernetes version check — components like OpenBao require >= 1.30
-        $k8sVersion = & kubectl version --output json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
-        $serverVersion = if ($k8sVersion -and $k8sVersion.serverVersion) {
-            "$($k8sVersion.serverVersion.major).$($k8sVersion.serverVersion.minor -replace '[^0-9]','')"
-        } else { "0.0" }
-        $k8sMajor = [int]($serverVersion -split '\.')[0]
-        $k8sMinor = [int]($serverVersion -split '\.')[1]
-        if ($k8sMajor -lt 1 -or ($k8sMajor -eq 1 -and $k8sMinor -lt 30)) {
-            Write-Host ""
-            Write-Host "  ⚠ Kubernetes $serverVersion detected — some components (e.g. OpenBao) require >= 1.30." -ForegroundColor Yellow
-            Write-Host "  Bitte den Cluster auf 1.30+ upgraden." -ForegroundColor Yellow
-            Write-Host ""
-        }
+        Write-Section -Title "Step 3: Installing Optional Components — $platform" `
+            -Hint "Select, then install, one component group at a time" `
+            -Current ([ordered]@{ Groups = $selectedComponentGroups })
+        Write-Host ""
 
         # Define component installation order
         # SelKey links each component to its Screen 2 value for filtering.
@@ -876,7 +911,6 @@ function Start-Installation {
             if ($section) {
                 $groupSel = Read-ComponentSelectionScreen `
                     -Title $group `
-                    -Message "Select components  —  Space = toggle / Enter = confirm" `
                     -Sections @($section)
                 if ($null -eq $groupSel) { Write-Host "Installation cancelled." -ForegroundColor Red; exit }
                 $groupSel.Keys | ForEach-Object { $compSel[$_] = $groupSel[$_] }
@@ -1094,8 +1128,10 @@ function Start-Installation {
                 }
             }
         }
+
+        Sync-RancherProjects -BaseDir $PSScriptRoot
     }
-    
+
     Write-Host "`n========================================" -ForegroundColor Green
     Write-Host "  All installations complete!" -ForegroundColor Green
     Write-Host "========================================`n" -ForegroundColor Green
