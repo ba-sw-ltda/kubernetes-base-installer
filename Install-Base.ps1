@@ -259,11 +259,12 @@ function Start-Installation {
         $exitCode = Invoke-WithSpinner -Message "Prüfe Azure Login..." -Executable "az" `
             -Arguments @("account", "show")
         if ($exitCode -ne 0) {
-            Write-Host "`n  Azure login required. Open the following URL in your browser:" -ForegroundColor Cyan
-            Write-Host "    https://microsoft.com/devicelogin" -ForegroundColor Yellow
-            Write-Host ""
-            & az login --use-device-code
-            if ($LASTEXITCODE -ne 0) { Write-Host "  Azure login failed." -ForegroundColor Red; exit 1 }
+            do {
+                Write-Host "`n  Azure login required. Open the following URL in your browser:" -ForegroundColor Cyan
+                Write-Host "    https://microsoft.com/devicelogin" -ForegroundColor Yellow
+                Write-Host ""
+                & az login --use-device-code
+            } while ($LASTEXITCODE -ne 0 -and (Confirm-RetryOrExit -Reason "Azure login failed"))
         }
 
         # ── 2. Subscription ─────────────────────────────────────────
@@ -381,22 +382,27 @@ function Start-Installation {
             -Arguments @("sts", "get-caller-identity")
         if ($exitCode -ne 0) {
             $defaultKeyId = if ($eksExistingState.AccessKeyId) { $eksExistingState.AccessKeyId } else { "" }
-            $eksAccessKeyId = Read-Plain `
-                -Prompt "AWS Access Key ID" `
-                -Default $defaultKeyId `
-                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
-                -ContextHint "IAM user with EKS + EC2 + CloudFormation + IAM permissions" `
-                -ContextCurrent ([ordered]@{})
-            if ([string]::IsNullOrWhiteSpace($eksAccessKeyId)) { Write-Host "  Access Key ID is required." -ForegroundColor Red; exit 1 }
+            do {
+                $eksAccessKeyId = Read-Plain `
+                    -Prompt "AWS Access Key ID" `
+                    -Default $defaultKeyId `
+                    -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+                    -ContextHint "IAM user with EKS + EC2 + CloudFormation + IAM permissions" `
+                    -ContextCurrent ([ordered]@{})
+                if ([string]::IsNullOrWhiteSpace($eksAccessKeyId)) { Write-Host "  Access Key ID is required." -ForegroundColor Red; exit 1 }
 
-            $eksSecretAccessKey = Read-SecretPlain `
-                -Prompt "AWS Secret Access Key" `
-                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
-                -ContextCurrent ([ordered]@{ AccessKeyId = $eksAccessKeyId })
-            if ([string]::IsNullOrWhiteSpace($eksSecretAccessKey)) { Write-Host "  Secret Access Key is required." -ForegroundColor Red; exit 1 }
+                $eksSecretAccessKey = Read-SecretPlain `
+                    -Prompt "AWS Secret Access Key" `
+                    -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+                    -ContextCurrent ([ordered]@{ AccessKeyId = $eksAccessKeyId })
+                if ([string]::IsNullOrWhiteSpace($eksSecretAccessKey)) { Write-Host "  Secret Access Key is required." -ForegroundColor Red; exit 1 }
 
-            & aws configure set aws_access_key_id     $eksAccessKeyId     2>&1 | Out-Null
-            & aws configure set aws_secret_access_key $eksSecretAccessKey 2>&1 | Out-Null
+                & aws configure set aws_access_key_id     $eksAccessKeyId     2>&1 | Out-Null
+                & aws configure set aws_secret_access_key $eksSecretAccessKey 2>&1 | Out-Null
+                & aws sts get-caller-identity 2>&1 | Out-Null
+                $awsAuthOk    = $LASTEXITCODE -eq 0
+                $defaultKeyId = $eksAccessKeyId
+            } while (-not $awsAuthOk -and (Confirm-RetryOrExit -Reason "AWS authentication failed — check Access Key ID and Secret"))
         } else {
             $eksAccessKeyId = (& aws configure get aws_access_key_id 2>$null).Trim()
         }
@@ -511,9 +517,10 @@ function Start-Installation {
         $gcloudAccount = ($accountRef.Value -join "").Trim()
         $notLoggedIn = [string]::IsNullOrWhiteSpace($gcloudAccount) -or $gcloudAccount -eq "(unset)"
         if ($notLoggedIn) {
-            Write-Host "`n  Google login erforderlich..." -ForegroundColor Cyan
-            & gcloud auth login --no-launch-browser
-            if ($LASTEXITCODE -ne 0) { Write-Host "  Google login fehlgeschlagen." -ForegroundColor Red; exit 1 }
+            do {
+                Write-Host "`n  Google login erforderlich..." -ForegroundColor Cyan
+                & gcloud auth login --no-launch-browser
+            } while ($LASTEXITCODE -ne 0 -and (Confirm-RetryOrExit -Reason "Google login failed"))
         }
 
         # ── 2. Project ID ────────────────────────────────────────────

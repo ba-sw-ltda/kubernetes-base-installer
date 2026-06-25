@@ -563,6 +563,7 @@ $__exportFunctions = @(
   'Read-SelectIndex'
   'Read-SelectValue'
   'Read-YesNo'
+  'Confirm-RetryOrExit'
   'Read-MultiSelectValues'
   'Read-Plain'
   'Read-SecretPlain'
