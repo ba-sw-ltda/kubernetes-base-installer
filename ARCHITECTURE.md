@@ -17,104 +17,37 @@ Redis, ...) is intentionally out of scope here — see the note at the bottom.
 
 ```mermaid
 flowchart TB
-    Internet["🌐 Internet / external client"]
-    DNS["DNS (*.kubernetes.local)"]
+    Internet["🌐 Internet / external client"] --> DNS["DNS (*.kubernetes.local)"]
+    DNS --> IngressLB["LoadBalancer :80 / :443"]
+    IngressLB --> Ingress["Ingress Controller\n(NGINX or Traefik)"]
 
-    Internet --> DNS
+    CertMgr["cert-manager"]
+    Vault["Vault\nOpenBao (RKE2/Kind) or cloud-native KV\nKV-v2 secrets + PKI root CA"]
+    Authelia["Authelia\nForward-auth gateway + OIDC Provider"]
+    Longhorn["Longhorn\n(Storage)"]
 
-    subgraph LB["External reachability (MetalLB pools / cloud LB)"]
-        IngressLB["LoadBalancer :80 / :443\n(pool: ingress-pool)"]
-    end
-
-    DNS --> IngressLB
-
-    subgraph NS_ING["ns: ingress-nginx / traefik"]
-        Ingress["Ingress Controller\n(NGINX or Traefik)"]
-    end
-
-    subgraph NS_CERT["ns: cert-manager"]
-        CertMgr["cert-manager"]
-    end
-
-    subgraph NS_VAULT["ns: openbao (RKE2/Kind)\nor cloud-native KV"]
-        Vault["OpenBao :8200\n(KV-v2 secrets + PKI root CA)\nAzure Key Vault / AWS Secrets Manager /\nGCP Secret Manager on cloud"]
-    end
-
-    subgraph NS_AUTH["ns: authelia"]
-        Authelia["Authelia :9091\nForward-auth gateway + OIDC Provider"]
-    end
-
-    subgraph NS_SUPPORT["ns: kube-system"]
-        CSI["Secrets Store CSI Driver"]
-        Reflector["Reflector (config syncer)"]
-    end
-
-    subgraph NS_REG["ns: registry / proxy-config"]
-        Registry["Private Registry credentials\n(imagePullSecrets via Reflector)"]
-        Proxy["Proxy Configuration\n(RKE2/Kind only)"]
-    end
-
-    subgraph NS_MON["ns: monitoring"]
-        Prom["Prometheus :9090"]
-        Loki["Loki :3100"]
-        Promtail["Promtail (DaemonSet)"]
-        Otel["OTel Collector :4317/:4318"]
-        Tempo["Tempo :4317 / :3200"]
-        Jaeger["Jaeger :4317 / :16686"]
-        Grafana["Grafana :3000\n(own native login)"]
-    end
-
-    subgraph NS_MGMT["ns: cattle-system / argocd"]
-        Rancher["Rancher\n(SSO via Authelia OIDC)"]
-        ArgoCD["ArgoCD Server :8080"]
-    end
-
-    subgraph NS_STORE["ns: longhorn-system"]
-        Longhorn["Longhorn UI\n(forward-auth via Authelia)"]
-    end
-
-    subgraph NS_BACKUP["ns: velero / minio"]
-        Velero["Velero\n(cluster resources + CSI volume snapshots)"]
-        Minio["MinIO :9000\n(S3-compatible backup target,\nRKE2/Kind only — internal only, no Ingress)"]
-    end
-
-    IngressLB --> Ingress
-    Ingress -- "TLS termination,\nhost routing" --> Grafana
+    Ingress -- "TLS, host routing" --> Longhorn
     Ingress -- "forward-auth check" --> Authelia
-    Ingress --> Rancher
-    Ingress --> ArgoCD
-    Ingress --> Longhorn
-    Ingress --> Vault
-    Ingress --> Prom
-    Ingress --> Jaeger
-    Ingress --> Authelia
-
-    Authelia -- "OIDC: authorize/token/userinfo" --> Rancher
-    Authelia -- "forward-auth: allow/deny" --> Longhorn
-    Authelia -- "forward-auth: allow/deny" --> Prom
-    Authelia -- "forward-auth: allow/deny" --> Jaeger
-
     Vault -- "PKI: sign per-hostname certs\n(ClusterIssuer: openbao-pki)" --> CertMgr
-    CertMgr -- "issue + auto-renew certificates" --> Ingress
-    CSI -- "mount Secret" --> Authelia
-    Reflector -- "ConfigMap/Secret mirroring" --> NS_MON
-    Reflector -- "imagePullSecrets" --> Registry
+    CertMgr -- "issue + auto-renew" --> Ingress
+    Vault -- "secrets (CSI mount)" --> Authelia
+    Authelia -- "forward-auth: allow/deny" --> Longhorn
 
-    Promtail --> Loki
-    Otel -- "remote_write" --> Prom
-    Otel -- "OTLP logs" --> Loki
-    Otel -- "OTLP traces" --> Tempo
-    Otel -- "OTLP traces" --> Jaeger
-    Grafana -- "Query" --> Prom
-    Grafana -- "Query" --> Loki
-    Grafana -- "Query" --> Tempo
-    Grafana -- "Query" --> Jaeger
+    subgraph OPT["Optional — selected per install run"]
+        direction TB
+        ConfigMgmt["Configuration Management\nRegistry credentials + Proxy config"]
+        Rancher["Rancher\n(SSO via Authelia OIDC)"]
+        Observability["Observability Stack\nPrometheus / Loki / Promtail /\nTracing / OTel / Grafana"]
+        Utilities["Utilities\nArgoCD (GitOps) + Velero/MinIO (Backup)"]
+    end
 
-    ArgoCD -- "Deploy/Reconcile" --> NS_MON
-
-    Velero -- "BackupStorageLocation (S3 API)" --> Minio
-    Velero -- "VolumeSnapshot (CSI)" --> Longhorn
-    Velero -- "Schedule: backs up\ncluster-wide resources" --> NS_MON
+    Ingress --> Rancher
+    Ingress --> Observability
+    Ingress --> Utilities
+    Vault -- "secrets" --> ConfigMgmt
+    Authelia -- "OIDC" --> Rancher
+    Authelia -- "forward-auth" --> Observability
+    Utilities -- "backs up" --> Longhorn
 ```
 
 **How to read this**
@@ -122,15 +55,15 @@ flowchart TB
 - All **HTTP/HTTPS UIs** run behind the same Ingress Controller → one
   LoadBalancer IP, host-based routing, TLS from `cert-manager`.
 - **Authelia plays two distinct roles**: it's a **forward-auth gateway** for
-  apps with no login of their own (Longhorn, Prometheus, Jaeger — the Ingress
-  Controller asks Authelia "is this request authenticated?" before letting it
-  through), and a full **OIDC Provider** for apps that integrate properly
-  (currently Rancher; more clients can register the same way via
+  apps with no login of their own (Longhorn, and Prometheus/Jaeger inside the
+  Observability Stack), and a full **OIDC Provider** for apps that integrate
+  properly (currently Rancher; more clients can register the same way via
   `Register-AutheliaOidcClient`).
-- **Grafana keeps its own native login** — not yet wired to Authelia.
-- **Velero/MinIO are RKE2/Kind only** today — cloud platforms aren't wired up
-  yet (their native object storage would replace MinIO as the backup target).
-  MinIO has no Ingress; it's purely an internal backup target.
+- **Ingress, cert-manager, Vault, Authelia, Longhorn are always installed** —
+  every other box is a separate, individually-selectable part of the install
+  run and may not be present in a given cluster.
+- Section 5's table has the per-component detail (ports, namespaces,
+  individual optionality) that this overview deliberately leaves out.
 
 ---
 
