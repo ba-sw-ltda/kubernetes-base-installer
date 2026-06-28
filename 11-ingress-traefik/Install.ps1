@@ -74,6 +74,8 @@ if ($UserConfig.MetalLbPool) {
     $HelmArgs += @("--set", "service.annotations.metallb\.universe\.tf/address-pool=$($UserConfig.MetalLbPool)")
 }
 
+Reset-StuckHelmRelease -ReleaseName "traefik" -Namespace $Namespace
+
 $exitCode = Invoke-WithSpinner -Message "Deploying Traefik..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Traefik (exit code $exitCode)"; exit 1 }
@@ -111,6 +113,10 @@ if ($Platform -eq "Azure AKS" -or $Platform -eq "Google GKE") {
 if ($verbose) {
     Write-Host ""
     & kubectl get pods -n $Namespace -l app.kubernetes.io/name=traefik
+}
+
+if ($FullConfig.RancherProject) {
+    Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
 Write-Host ""

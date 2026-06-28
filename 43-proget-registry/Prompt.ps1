@@ -1,6 +1,10 @@
 <#
 .SYNOPSIS
-    Collect ProGet (or any private Docker registry) credentials upfront.
+    Collect private container registry settings upfront (ProGet, Harbor,
+    Artifactory, or any registry that speaks the standard Docker config
+    format) — one host, then any number of feeds in a loop.
+.PARAMETER Platform
+    Target platform
 #>
 [CmdletBinding()]
 param([string]$Platform)
@@ -8,67 +12,60 @@ param([string]$Platform)
 $BaseDir = Split-Path $PSScriptRoot -Parent
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
 
-$FullConfig = Get-ComponentConfig -ScriptRoot $PSScriptRoot -Platform $Platform
-$UserConfig = $FullConfig.UserConfig
+$useRegistry = Read-YesNo `
+    -Title "Registry" `
+    -Message "Use a private container registry?" `
+    -DefaultYes $false `
+    -ContextTitle "Configuration/Registry — $Platform" `
+    -ContextHint "Only needed if your images come from a private registry (ProGet, Harbor, Artifactory, ...)"
 
-# Registry URL — prompt if not set in Config.psd1
-$registryUrl = $UserConfig.RegistryUrl
-if ([string]::IsNullOrWhiteSpace($registryUrl)) {
-    $registryUrl = Read-Plain `
-        -Prompt "Registry URL" `
-        -ContextTitle "ProGet Registry" `
-        -ContextHint "Hostname of your private Docker registry, e.g. registry.example.com"
-}
+if (-not $useRegistry) { return @{} }
 
-# Main feed name
-$feed = $UserConfig.Feed
-if ([string]::IsNullOrWhiteSpace($feed)) {
-    $feed = Read-Plain `
-        -Prompt "Docker feed name" `
-        -ContextTitle "ProGet Registry" `
-        -ContextHint "Name of the Docker feed in your registry" `
-        -ContextCurrent ([ordered]@{ Registry = $registryUrl })
-}
+$registryUrl = Read-Plain `
+    -Prompt "Registry host" `
+    -ContextTitle "Configuration/Registry — $Platform" `
+    -ContextHint "Hostname of your private registry, e.g. registry.example.com"
 
-# API token for main feed
-do {
-    $token = Read-SecretPlain `
-        -Prompt "API token for '$feed'" `
-        -ContextTitle "ProGet Registry" `
-        -ContextHint "Token for user '$($UserConfig.User)' on $registryUrl" `
-        -ContextCurrent ([ordered]@{ Registry = $registryUrl; Feed = $feed; User = $UserConfig.User })
-    if ([string]::IsNullOrWhiteSpace($token)) {
-        Write-Host "  Token must not be empty." -ForegroundColor Red
-    }
-} while ([string]::IsNullOrWhiteSpace($token))
+if ([string]::IsNullOrWhiteSpace($registryUrl)) { return @{} }
+$registryUrl = $registryUrl.Trim()
 
-$result = @{ Token = $token; RegistryUrl = $registryUrl; Feed = $feed }
+$feeds = [System.Collections.Generic.List[hashtable]]::new()
+$feedNum = 1
+while ($true) {
+    $feedName = Read-Plain `
+        -Prompt "Feed $feedNum name (Enter to finish)" `
+        -ContextTitle "Configuration/Registry — $Platform" `
+        -ContextHint "Name of the feed/repository on $registryUrl" `
+        -ContextCurrent ([ordered]@{ Registry = $registryUrl; "Feeds so far" = $feeds.Count })
+    if ([string]::IsNullOrWhiteSpace($feedName)) { break }
+    $feedName = $feedName.Trim()
 
-# On-premise: optional second feed for prototype/internal images
-if ($Platform -in @("RKE2 (On-Premise)", "Kind (Local)")) {
-    $prototypeFeed = $UserConfig.PrototypeFeed
-    if ([string]::IsNullOrWhiteSpace($prototypeFeed)) {
-        $prototypeFeed = Read-Plain `
-            -Prompt "Prototype feed name (Enter to skip)" `
-            -ContextTitle "ProGet Registry — Prototype Feed" `
-            -ContextHint "Optional: second feed for on-premise prototype images. Leave empty to skip." `
-            -ContextCurrent ([ordered]@{ Registry = $registryUrl })
+    $user = Read-Plain `
+        -Prompt "  User for '$feedName' (Enter for an anonymous/public feed)" `
+        -Default "api" `
+        -ContextTitle "Configuration/Registry — $Platform" `
+        -ContextCurrent ([ordered]@{ Registry = $registryUrl; Feed = $feedName })
+
+    $password = ""
+    if (-not [string]::IsNullOrWhiteSpace($user)) {
+        $password = Read-SecretPlain `
+            -Prompt "  Password/API token for '$user'" `
+            -ContextTitle "Configuration/Registry — $Platform" `
+            -ContextHint "Leave empty to make this feed anonymous/public after all" `
+            -ContextCurrent ([ordered]@{ Registry = $registryUrl; Feed = $feedName; User = $user })
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($prototypeFeed)) {
-        do {
-            $prototypeToken = Read-SecretPlain `
-                -Prompt "API token for '$prototypeFeed'" `
-                -ContextTitle "ProGet Registry — Prototype Feed" `
-                -ContextHint "Kubernetes install key for feed '$prototypeFeed' (on-premise only)" `
-                -ContextCurrent ([ordered]@{ Registry = $registryUrl; Feed = $prototypeFeed; User = $UserConfig.User })
-            if ([string]::IsNullOrWhiteSpace($prototypeToken)) {
-                Write-Host "  Token must not be empty." -ForegroundColor Red
-            }
-        } while ([string]::IsNullOrWhiteSpace($prototypeToken))
-        $result.PrototypeFeed  = $prototypeFeed
-        $result.PrototypeToken = $prototypeToken
-    }
+    $feeds.Add(@{
+        Name     = $feedName
+        User     = $user.Trim()
+        Password = $password.Trim()
+    }) | Out-Null
+    $feedNum++
 }
 
-return $result
+if ($feeds.Count -eq 0) { return @{} }
+
+return @{
+    RegistryUrl = $registryUrl
+    Feeds       = $feeds.ToArray()
+}

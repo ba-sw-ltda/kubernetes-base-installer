@@ -24,6 +24,7 @@ param(
 $ScriptRoot = $PSScriptRoot
 $BaseDir    = Split-Path $ScriptRoot -Parent
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
+Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
 # No proxy configured — clean up any existing proxy setup
@@ -83,6 +84,10 @@ if ($LASTEXITCODE -ne 0) {
     Write-Error "Failed to apply proxy Secret"; exit 1
 }
 Write-Host "  ✓ Secret '$($UserConfig.SecretName)' created in '$Namespace'" -ForegroundColor Green
+
+if ($FullConfig.RancherProject) {
+    Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+}
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

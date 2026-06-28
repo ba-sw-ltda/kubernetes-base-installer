@@ -39,7 +39,8 @@ function Start-Installation {
     Write-Host ""
     Write-Host "  All inputs are collected upfront. No prompts during installation." -ForegroundColor Gray
     Write-Host ""
-    Read-Host "  Press Enter to start"
+    Write-Host "Press any key to continue..." -ForegroundColor DarkGray
+    [Console]::ReadKey($true) | Out-Null
     Clear-Host
 
     # Platform Selection
@@ -73,7 +74,9 @@ function Start-Installation {
     Install-RancherCli
     Install-PlatformTools -Platform $platform
     Write-Host "`nTools ready." -ForegroundColor Green
-    Start-Sleep -Seconds 3
+    Start-Sleep -Seconds 1
+    Write-Host "Press any key to continue..." -ForegroundColor DarkGray
+    [Console]::ReadKey($true) | Out-Null
 
     # AKS variables
     $aksSubscriptionId = $null
@@ -717,35 +720,44 @@ function Start-Installation {
         Write-Host "  Bitte den Cluster auf 1.30+ upgraden." -ForegroundColor Yellow
         Write-Host ""
     }
-    Start-Sleep -Seconds 3
+    Start-Sleep -Seconds 1
+    Write-Host "Press any key to continue..." -ForegroundColor DarkGray
+    [Console]::ReadKey($true) | Out-Null
 
     # Build component options based on platform
-    $ingressLabel = if ($platform -eq "RKE2 (On-Premise)" -or $platform -eq "Kind (Local)") {
-        "10 - Ingress & Load Balancing (nginx-ingress/traefik, metallb)"
-    } else {
-        "10 - Ingress & Load Balancing (nginx-ingress/traefik)"
-    }
-    
+    # Numbering follows actual install order ($installOrder below), not the
+    # alphabetic/conceptual grouping — Storage installs before Security (so
+    # the Vault backend can use Longhorn as its StorageClass), so Storage is
+    # "20" and Security is "30", not the other way around.
+    $ingressLabel = "10 - Ingress & Load Balancing"
+
     $componentOptions = @(
         @{ Label = $ingressLabel; Value = "Ingress & Load Balancing" }
-        @{ Label = "20 - Security & Certificates (cert-manager, external-secrets, secrets-csi-driver, vault, wildcard-cert)"; Value = "Security & Certificates" }
     )
-    
-    # Add platform-specific options
+
+    # Storage (Longhorn) is only ever offered on RKE2 (other platforms have
+    # their own native StorageClass) — mandatory wherever it IS offered, same
+    # as Ingress & Load Balancing / Security & Certificates below.
+    $storageLabel = "20 - Storage"
     if ($platform -eq "RKE2 (On-Premise)") {
-        $componentOptions += @{ Label = "30 - Storage (longhorn)"; Value = "Storage (Longhorn)" }
+        $componentOptions += @{ Label = $storageLabel; Value = "Storage (Longhorn)" }
     }
-    
+
+    $componentOptions += @{ Label = "30 - Security & Certificates"; Value = "Security & Certificates" }
+
     $componentOptions += @(
-        @{ Label = if ($platform -in @("RKE2 (On-Premise)", "Kind (Local)")) { "40 - Configuration Management (config-syncer, proget-registry, proxy-config)" } else { "40 - Configuration Management (config-syncer, proget-registry)" }; Value = "Configuration Management" }
+        @{ Label = "40 - Configuration Management"; Value = "Configuration Management" }
     )
+    # "Rancher", not the generic "Management" — unlike Registry (39, generic
+    # on purpose, multiple products fit), there's only ever one product here,
+    # so naming it specifically is clearer, not less clear.
     $componentOptions += @{
-        Label = "50 - Management (Rancher Server / Agent)"
+        Label = "50 - Rancher"
         Value = "Management"
     }
     $componentOptions += @(
-        @{ Label = "60 - Observability Stack (prometheus, loki, promtail, tempo/jaeger, opentelemetry-collector)"; Value = "Observability Stack" }
-        @{ Label = "70 - GitOps (argocd)"; Value = "GitOps" }
+        @{ Label = "60 - Observability Stack"; Value = "Observability Stack" }
+        @{ Label = "90 - Utilities (DevOps)"; Value = "Utilities" }
     )
 
     # Build default values based on platform
@@ -758,10 +770,22 @@ function Start-Installation {
     }
     
     # Optional Components Selection
+    # Ingress & Load Balancing, Security & Certificates, Configuration
+    # Management, and (where offered) Storage are mandatory — shown checked
+    # and locked, not hidden, so it's clear they're part of the install
+    # rather than silently always-on.
+    $disabledGroups = @{
+        $ingressLabel                    = $true
+        "30 - Security & Certificates"   = $true
+        "40 - Configuration Management"  = $true
+    }
+    if ($platform -eq "RKE2 (On-Premise)") { $disabledGroups[$storageLabel] = $true }
+
     $selectedComponentGroups = Read-MultiSelectValues `
         -Title "Select Optional Component Groups" `
         -Options $componentOptions `
         -DefaultValues $defaultValues `
+        -Disabled $disabledGroups `
         -ContextTitle $platform `
         -ContextCurrent $clusterContext
 
@@ -790,32 +814,38 @@ function Start-Installation {
         $ingressComponents = [System.Collections.Generic.List[hashtable]]::new()
         $ingressComponents.Add(@{ Number="11"; Name="ingress"; SelKey="ingress"; DisplayName="Ingress Controller" }) | Out-Null
         if ($platform -in @("Kind (Local)", "RKE2 (On-Premise)")) {
-            $ingressComponents.Add(@{ Number="12"; Name="metallb"; SelKey="metallb"; DisplayName="MetalLB" }) | Out-Null
+            # No SelKey — always installed alongside ingress on these platforms,
+            # never shown or asked about (see comment above on no-SelKey components).
+            $ingressComponents.Add(@{ Number="12"; Name="metallb"; DisplayName="MetalLB" }) | Out-Null
         }
 
         $componentMap = @{
             "Ingress & Load Balancing" = $ingressComponents.ToArray()
+            # No SelKey on any of these — the whole group is mandatory baseline now
+            # (no ESO, no wildcard-cert: see ARCHITECTURE notes on why both were
+            # retired). Authelia included: it's the SSO every later component can
+            # rely on, not an optional add-on anymore.
             "Security & Certificates" = @(
-                @{ Number="21"; Name="cert-manager";       SelKey="cert-manager";       DisplayName="Certificate Manager" }
-                @{ Number="22"; Name="external-secrets";   SelKey="external-secrets";   DisplayName="External Secrets Operator" }
-                @{ Number="22"; Name="secrets-csi-driver"; SelKey="secrets-csi-driver"; DisplayName="Secrets Store CSI Driver" }
-                @{ Number="23"; Name=$vaultName;           SelKey="vault";              DisplayName="Vault" }
-                if ($platform -ne "Kind (Local)") {
-                    @{ Number="24"; Name="wildcard-cert"; SelKey="wildcard-cert"; DisplayName="Wildcard TLS Certificate" }
-                }
+                @{ Number="31"; Name="cert-manager";       DisplayName="Certificate Manager" }
+                @{ Number="32"; Name="secrets-csi-driver"; DisplayName="Secrets Store CSI Driver" }
+                @{ Number="33"; Name=$vaultName;           DisplayName="Vault" }
+                @{ Number="35"; Name="authelia";           DisplayName="Authelia (Single Sign-On)" }
             )
             "Storage (Longhorn)" = @(
-                @{ Number="31"; Name="longhorn"; SelKey="longhorn"; PromptPhase=1; PromptOrder="65"; DisplayName="Longhorn Storage" }
+                @{ Number="21"; Name="longhorn"; SelKey="longhorn"; PromptPhase=1; PromptOrder="65"; DisplayName="Longhorn Storage" }
             )
+            # No SelKey on any of these — mandatory baseline, no checkbox. Each
+            # still gets its own internal yes/no gate (Proxy Configuration and
+            # Registry both no-op cleanly if the user says no — same pattern).
             "Configuration Management" = @(
-                @{ Number="41"; Name="config-syncer";   SelKey="config-syncer";  DisplayName="Configuration Syncer" }
-                @{ Number="43"; Name="proget-registry"; SelKey="proget-registry"; DisplayName="ProGet Registry" }
+                @{ Number="41"; Name="config-syncer";   DisplayName="Configuration Syncer" }
+                @{ Number="43"; Name="proget-registry"; DisplayName="Registry" }
                 if ($platform -in @("RKE2 (On-Premise)", "Kind (Local)")) {
-                    @{ Number="42"; Name="proxy-config"; SelKey="proxy-config"; DisplayName="Proxy Configuration" }
+                    @{ Number="42"; Name="proxy-config"; DisplayName="Proxy Configuration" }
                 }
             )
             "Management" = @(
-                @{ Number="51"; Name="rancher"; SelKey="rancher"; DisplayName="Management (Rancher)" }
+                @{ Number="51"; Name="rancher"; SelKey="rancher"; DisplayName="Rancher" }
             )
             "Observability Stack" = @(
                 @{ Number="61"; Name="prometheus";              SelKey="prometheus";              DisplayName="Prometheus" }
@@ -825,8 +855,9 @@ function Start-Installation {
                 @{ Number="65"; Name="opentelemetry-collector"; SelKey="opentelemetry-collector"; DisplayName="OpenTelemetry Collector" }
                 @{ Number="66"; Name="grafana";                 SelKey="grafana";                 DisplayName="Grafana" }
             )
-            "GitOps" = @(
-                @{ Number="70"; Name="argocd"; SelKey="argocd"; DisplayName="ArgoCD" }
+            "Utilities" = @(
+                @{ Number="91"; Name="argocd"; SelKey="argocd"; DisplayName="ArgoCD" }
+                @{ Number="93"; Name="velero"; SelKey="velero"; DisplayName="Velero (Backup)" }
             )
         }
 
@@ -839,8 +870,11 @@ function Start-Installation {
 
         function Get-PromptExtraArgs($component) {
             $extra = @{}
-            if ($component.Name -in @("argocd", "grafana", "tracing", "prometheus", "longhorn", "openbao", "rancher")) {
+            if ($component.Name -in @("argocd", "grafana", "tracing", "prometheus", "longhorn", "openbao", "rancher", "authelia", "metallb")) {
                 if (-not [string]::IsNullOrWhiteSpace($domain)) { $extra.Domain = $domain }
+            }
+            if ($component.Name -eq "metallb" -and $componentInputs.ContainsKey("ingress")) {
+                $extra.IngressController = $componentInputs["ingress"].IngressController
             }
             return $extra
         }
@@ -856,46 +890,6 @@ function Start-Installation {
             # Build section data for groups that have real choices
             $section = $null
             switch ($group) {
-                "Ingress & Load Balancing" {
-                    $items = [System.Collections.Generic.List[hashtable]]::new()
-                    $items.Add(@{
-                        Label="Ingress"; Value="ingress"; Type="group"; Default=$true
-                        Children=@(
-                            @{ Label="NGINX Ingress Controller"; Value="nginx";   Type="radio"; RadioGroup="ingress"; Default=$true  }
-                            @{ Label="Traefik";                  Value="traefik"; Type="radio"; RadioGroup="ingress"; Default=$false }
-                        )
-                    }) | Out-Null
-                    if ($platform -in @("RKE2 (On-Premise)", "Kind (Local)")) {
-                        $items.Add(@{ Label="MetalLB"; Value="metallb"; Type="check"; Default=$true }) | Out-Null
-                    }
-                    $section = @{ Label=$group; Items=$items.ToArray() }
-                }
-                "Security & Certificates" {
-                    $vaultLabel2 = switch ($platform) {
-                        "Azure AKS"   { "Vault (Azure Key Vault)" }
-                        "AWS EKS"     { "Vault (AWS Secrets Manager)" }
-                        "Google GKE"  { "Vault (GCP Secret Manager)" }
-                        default       { "Vault (OpenBao)" }
-                    }
-                    $items = [System.Collections.Generic.List[hashtable]]::new()
-                    $items.Add(@{ Label="cert-manager";              Value="cert-manager";       Type="check"; Default=$true }) | Out-Null
-                    $items.Add(@{ Label="External Secrets Operator"; Value="external-secrets";   Type="check"; Default=$true }) | Out-Null
-                    $items.Add(@{ Label="Secrets Store CSI Driver";  Value="secrets-csi-driver"; Type="check"; Default=$true }) | Out-Null
-                    $items.Add(@{ Label=$vaultLabel2;                Value="vault";              Type="check"; Default=$true }) | Out-Null
-                    if ($platform -ne "Kind (Local)") {
-                        $items.Add(@{ Label="Wildcard TLS Certificate"; Value="wildcard-cert"; Type="check"; Default=$true }) | Out-Null
-                    }
-                    $section = @{ Label=$group; Items=$items.ToArray() }
-                }
-                "Configuration Management" {
-                    $items = [System.Collections.Generic.List[hashtable]]::new()
-                    $items.Add(@{ Label="Config Syncer (Reflector)"; Value="config-syncer";  Type="check"; Default=$true }) | Out-Null
-                    $items.Add(@{ Label="ProGet Registry";           Value="proget-registry"; Type="check"; Default=$true }) | Out-Null
-                    if ($platform -in @("RKE2 (On-Premise)", "Kind (Local)")) {
-                        $items.Add(@{ Label="Proxy Configuration"; Value="proxy-config"; Type="check"; Default=$true }) | Out-Null
-                    }
-                    $section = @{ Label=$group; Items=$items.ToArray() }
-                }
                 "Observability Stack" {
                     $section = @{ Label=$group; Items=@(
                         @{ Label="Prometheus (kube-prometheus-stack)"; Value="prometheus";              Type="check"; Default=$true }
@@ -912,6 +906,12 @@ function Start-Installation {
                         @{ Label="Grafana";                 Value="grafana";                 Type="check"; Default=$true }
                     )}
                 }
+                "Utilities" {
+                    $section = @{ Label=$group; Items=@(
+                        @{ Label="ArgoCD";          Value="argocd"; Type="check"; Default=$true }
+                        @{ Label="Velero (Backup)"; Value="velero"; Type="check"; Default=$true }
+                    )}
+                }
             }
 
             # Show per-group component selection (only if group has choices)
@@ -923,9 +923,15 @@ function Start-Installation {
                 $groupSel.Keys | ForEach-Object { $compSel[$_] = $groupSel[$_] }
             }
 
-            # Pre-fill radio-derived inputs
+            # Ingress & Load Balancing is mandatory and has no other choices left —
+            # ask the one remaining question directly instead of a checkbox screen.
             if ($group -eq "Ingress & Load Balancing") {
-                $ingressType = if ($compSel["nginx"]) { "nginx" } else { "traefik" }
+                $ingressType = Read-SelectValue -Title "Which Ingress Controller should be installed?" `
+                    -Options @(
+                        @{ Label = "NGINX Ingress Controller"; Value = "nginx" }
+                        @{ Label = "Traefik";                  Value = "traefik" }
+                    ) -Default 0 -ContextTitle "Ingress — $platform"
+                if ($null -eq $ingressType) { Write-Host "Installation cancelled." -ForegroundColor Red; exit }
                 $componentInputs["ingress"] = @{ IngressController = $ingressType }
                 if ($platform -eq "Azure AKS" -and -not [string]::IsNullOrWhiteSpace($aksDnsLabel)) {
                     $componentInputs["ingress"]["DnsLabel"] = $aksDnsLabel
@@ -975,25 +981,34 @@ function Start-Installation {
         $willInstall = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $compSel.Keys | Where-Object { $compSel[$_] -eq $true } |
             ForEach-Object { $willInstall.Add($_) | Out-Null }
+        # Ingress & Load Balancing and Security & Certificates are mandatory and have
+        # no Screen-2 checkboxes anymore — add their components directly so the
+        # soft-deps below still see them.
+        $willInstall.Add("ingress") | Out-Null
+        if ("Security & Certificates" -in $selectedComponentGroups) {
+            @("cert-manager", "secrets-csi-driver", "vault", "authelia") | ForEach-Object { $willInstall.Add($_) | Out-Null }
+        }
         if ("Storage (Longhorn)" -in $selectedComponentGroups) { $willInstall.Add("longhorn") | Out-Null }
         if ("Management"         -in $selectedComponentGroups) { $willInstall.Add("rancher")  | Out-Null }
-        if ("GitOps"             -in $selectedComponentGroups) { $willInstall.Add("argocd")   | Out-Null }
+        # Utilities now has a real Screen-2 (like Observability Stack) — argocd/velero
+        # come from the generic compSel loop above, no hardcoded add needed.
 
         # Hard deps: component is auto-deselected when dep is missing.
         # Use SelKey values — same keys used in $compSel and $componentMap.
         $hardDeps = @(
-            @{ C="wildcard-cert";           Needs="vault";            Reason="needs Vault to store the certificate" }
-            @{ C="wildcard-cert";           Needs="external-secrets"; Reason="needs ESO to sync the cert as a K8s Secret" }
             @{ C="promtail";                Needs="loki";             Reason="has no log destination without Loki" }
             @{ C="opentelemetry-collector"; Needs="tracing";          Reason="has no tracing backend (Tempo or Jaeger)" }
-            @{ C="proget-registry";         Needs="config-syncer";    Reason="Reflector is required to sync pull secrets to namespaces" }
+            # Registry needing config-syncer used to be a real hard-dep check —
+            # now both are mandatory members of the same group, so it can never
+            # actually be violated. Removed rather than left as dead code.
         )
         # Soft deps: installs fine but something won't work — warn only.
         $softDeps = @(
-            @{ C="rancher"; Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
-            @{ C="argocd";  Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
-            @{ C="grafana"; Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
-            @{ C="vault";   Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
+            @{ C="rancher";  Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
+            @{ C="argocd";   Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
+            @{ C="grafana";  Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
+            @{ C="vault";    Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
+            @{ C="authelia"; Needs="ingress"; Reason="login portal will not be reachable without an Ingress Controller" }
         )
 
         $deselected = [System.Collections.Generic.List[hashtable]]::new()
@@ -1007,7 +1022,7 @@ function Start-Installation {
                 $compSel[$dep.C] = $false
                 # Deselect the whole group for single-component groups
                 if ($dep.C -eq "rancher")  { [void]$selectedComponentGroups.Remove("Management") }
-                if ($dep.C -eq "argocd")   { [void]$selectedComponentGroups.Remove("GitOps") }
+                if ($dep.C -eq "argocd")   { [void]$selectedComponentGroups.Remove("Utilities") }
                 if ($dep.C -eq "longhorn") { [void]$selectedComponentGroups.Remove("Storage (Longhorn)") }
                 if ($seen.Add($dep.C)) { $deselected.Add($dep) | Out-Null }
             }
@@ -1081,7 +1096,7 @@ function Start-Installation {
             "Configuration Management"
             "Management"
             "Observability Stack"
-            "GitOps"
+            "Utilities"
         )
 
         Clear-Host
@@ -1135,8 +1150,6 @@ function Start-Installation {
                 }
             }
         }
-
-        Sync-RancherProjects -BaseDir $PSScriptRoot
     }
 
     Write-Host "`n========================================" -ForegroundColor Green

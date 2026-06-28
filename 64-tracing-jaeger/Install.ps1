@@ -18,6 +18,7 @@ param(
 $ScriptRoot = $PSScriptRoot
 $BaseDir    = Split-Path $ScriptRoot -Parent
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
+Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
 $verbose = $VerbosePreference -eq 'Continue'
@@ -68,6 +69,8 @@ $HelmArgs = @(
     "--set", "storage.badger.spanStoreTTL=$($UserConfig.Retention)"
 )
 
+Reset-StuckHelmRelease -ReleaseName "jaeger" -Namespace $Namespace
+
 # If a StatefulSet exists without a volumeClaimTemplate, recreate it so persistence can be added.
 $existingSs = & kubectl get statefulset -n $Namespace -l "app.kubernetes.io/instance=jaeger" `
     --no-headers -o custom-columns="N:.metadata.name" 2>$null | Select-Object -First 1
@@ -108,6 +111,9 @@ if ($exitCode -ne 0) { Write-Error "Rollout of Jaeger did not complete"; exit 1 
 Write-Host "  ✓ Jaeger ready" -ForegroundColor Green
 
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
+    $protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform
+    $authAnnotations = ($protect.Annotations.GetEnumerator() | ForEach-Object { "    $($_.Key): `"$($_.Value)`"" }) -join "`n"
+
     $ingressYaml = @"
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -116,6 +122,7 @@ metadata:
   namespace: $Namespace
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
+$authAnnotations
 spec:
   ingressClassName: $(Get-IngressClass)
   rules:
@@ -132,6 +139,10 @@ spec:
 "@
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
+}
+
+if ($FullConfig.RancherProject) {
+    Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
 Write-Host ""

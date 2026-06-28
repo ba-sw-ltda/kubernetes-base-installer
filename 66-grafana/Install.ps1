@@ -23,6 +23,7 @@ param(
 $ScriptRoot = $PSScriptRoot
 $BaseDir    = Split-Path $ScriptRoot -Parent
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
+Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
 # Standalone: if prompt parameters are missing, call Prompt.ps1 automatically
@@ -245,6 +246,10 @@ spec:
 "@
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
+}
+
+if ($FullConfig.RancherProject) {
+    Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
 Write-Host ""

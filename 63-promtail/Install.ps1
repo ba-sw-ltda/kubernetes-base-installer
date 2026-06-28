@@ -15,6 +15,7 @@ param(
 $ScriptRoot = $PSScriptRoot
 $BaseDir    = Split-Path $ScriptRoot -Parent
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
+Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
 $verbose = $VerbosePreference -eq 'Continue'
@@ -56,6 +57,8 @@ $HelmArgs = @(
     "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)"
 )
 
+Reset-StuckHelmRelease -ReleaseName "promtail" -Namespace $Namespace
+
 $exitCode = Invoke-WithSpinner -Message "Deploying Promtail..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Promtail (exit code $exitCode)"; exit 1 }
@@ -70,6 +73,10 @@ Write-Host "  ✓ Promtail ready" -ForegroundColor Green
 if ($verbose) {
     Write-Host ""
     & kubectl get pods -n $Namespace -l app.kubernetes.io/name=promtail
+}
+
+if ($FullConfig.RancherProject) {
+    Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
 Write-Host ""

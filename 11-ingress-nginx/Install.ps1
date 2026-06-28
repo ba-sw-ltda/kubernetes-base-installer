@@ -63,6 +63,19 @@ $HelmArgs = @(
     "--namespace", $Namespace, "--version", $ChartVersion,
     "--set", "controller.replicaCount=$replicaCount",
     "--set", "controller.service.type=$serviceType",
+    # Needed by 35-authelia's configuration-snippet annotation, which rewrites
+    # a known Rancher OIDC bug (rancher/dashboard#12477, #16351 — the
+    # dashboard never sends a 'scope' parameter) at the ingress before it
+    # reaches Authelia. Off by default since chart 4.x for security (arbitrary
+    # nginx config injection via Ingress annotations) — acceptable here since
+    # every Ingress in this cluster is created by this installer, not by
+    # untrusted self-service users. annotations-risk-level=Critical is also
+    # required as of controller 1.12 — its validating webhook blocks `set`/
+    # rewriting $args at the default "High" threshold even with snippets
+    # otherwise allowed (confirmed live: rejected with "contains risky
+    # annotation" until this was raised).
+    "--set", "controller.allowSnippetAnnotations=true",
+    "--set", "controller.config.annotations-risk-level=Critical",
     "--set", "controller.resources.limits.cpu=$($UserConfig.Resources.Limits.Cpu)",
     "--set", "controller.resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "controller.resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
@@ -82,6 +95,8 @@ if ($Platform -in @("Azure AKS", "AWS EKS")) {
 }
 
 $HelmArgs += @("--timeout", "10m")
+
+Reset-StuckHelmRelease -ReleaseName "ingress-nginx" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying NGINX Ingress Controller..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
@@ -120,6 +135,10 @@ if ($Platform -eq "Azure AKS" -or $Platform -eq "Google GKE") {
 if ($verbose) {
     Write-Host ""
     & kubectl get pods -n $Namespace -l app.kubernetes.io/name=ingress-nginx
+}
+
+if ($FullConfig.RancherProject) {
+    Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
 Write-Host ""

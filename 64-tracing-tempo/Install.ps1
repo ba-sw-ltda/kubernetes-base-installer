@@ -15,6 +15,7 @@ param(
 $ScriptRoot = $PSScriptRoot
 $BaseDir    = Split-Path $ScriptRoot -Parent
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
+Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
 $verbose = $VerbosePreference -eq 'Continue'
@@ -81,6 +82,8 @@ $HelmArgs = @(
     "--set", "ingester.resources.requests.memory=$($UserConfig.Resources.Requests.Memory)"
 )
 
+Reset-StuckHelmRelease -ReleaseName "tempo" -Namespace $Namespace
+
 # If the old single-binary tempo StatefulSet exists, remove it first — the
 # distributed chart uses a different StatefulSet name (tempo-ingester).
 & kubectl get statefulset tempo -n $Namespace 2>&1 | Out-Null
@@ -106,6 +109,10 @@ foreach ($dep in @("tempo-distributor", "tempo-querier", "tempo-query-frontend",
     if ($exitCode -ne 0) { Write-Error "Rollout of $dep did not complete"; exit 1 }
 }
 Write-Host "  ✓ Tempo Distributed ready" -ForegroundColor Green
+
+if ($FullConfig.RancherProject) {
+    Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+}
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

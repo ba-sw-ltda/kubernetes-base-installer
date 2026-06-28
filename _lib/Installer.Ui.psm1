@@ -197,9 +197,9 @@ function Read-DbSettings {
 }
 
 # -------------------------
-# ClusterSecret — platform-agnostic dispatcher that writes secrets to the
-# appropriate backend (OpenBao for RKE2/Kind, Azure Key Vault for AKS, etc.)
-# and ensures a ClusterSecretStore named 'cluster-secrets' is the target.
+# ClusterSecret — platform-agnostic dispatcher that writes secrets directly to
+# the appropriate backend (OpenBao for RKE2/Kind, Azure Key Vault for AKS,
+# etc.) via that backend's own CLI/API — no ESO/ExternalSecret involved.
 # Returns $true on success, $false if no secrets backend is configured.
 # -------------------------
 function Write-ClusterSecret {
@@ -223,7 +223,7 @@ function Write-ClusterSecret {
 
     $result = switch ($Platform) {
         { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
-            Write-OpenBaoSecret -Path $Path -Data $Data -BaseDir $BaseDir
+            Write-OpenBaoSecret -Path $Path -Data $Data -BaseDir $BaseDir -Platform $Platform
         }
         "Azure AKS" {
             Write-AzureKeyVaultSecret -Path $Path -Data $Data -BaseDir $BaseDir
@@ -246,6 +246,93 @@ function Write-ClusterSecret {
 }
 
 # -------------------------
+# Remove-ClusterSecret — deletion counterpart to Write-ClusterSecret. Same
+# per-platform dispatch. -Keys must match whatever -Data keys were originally
+# written (cloud backends name one secret per key once there's more than one).
+# Returns $true on success, $false if no secrets backend is configured.
+# -------------------------
+function Remove-ClusterSecret {
+    param(
+        [string]$Path,
+        [string[]]$Keys,
+        [string]$BaseDir  = $script:InstallerBaseDir,
+        [string]$Platform = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Platform)) {
+        $Platform = $script:InstallerPlatform
+        if (-not $Platform) {
+            Write-Error "Remove-ClusterSecret: -Platform ist erforderlich. Bitte Connect-Cluster aufrufen oder -Platform explizit übergeben."
+            return $false
+        }
+    }
+
+    $result = switch ($Platform) {
+        { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
+            Remove-OpenBaoSecret -Path $Path -BaseDir $BaseDir -Platform $Platform
+        }
+        "Azure AKS" {
+            Remove-AzureKeyVaultSecret -Path $Path -Keys $Keys -BaseDir $BaseDir
+        }
+        "AWS EKS" {
+            Remove-AwsSecretsManagerSecret -Path $Path -Keys $Keys -BaseDir $BaseDir
+        }
+        "Google GKE" {
+            Remove-GcpSecretManagerSecret -Path $Path -Keys $Keys -BaseDir $BaseDir
+        }
+        default { $false }
+    }
+
+    if ($result) {
+        Write-Host "  ✓ Secret '$Path' in Vault deaktiviert" -ForegroundColor Green
+    }
+    return $result
+}
+
+# -------------------------
+# OpenBao runs on both RKE2 and Kind, and installer scripts are routinely run
+# against either from the same BaseDir checkout (e.g. testing on Kind, then
+# deploying to RKE2) — a single shared ".openbao-state.json" would let
+# whichever platform was last (re-)installed silently overwrite the other's
+# root token, with no error until some later write fails with a confusing
+# permission-denied. Confirmed live: this exact collision broke a real RKE2
+# install after Kind-cluster testing from the same checkout. Every other
+# platform already gets its own state file (.rke2-state.json, .kind-state.json,
+# .aks-state.json, ...) — OpenBao's needs the same per-platform scoping.
+# -------------------------
+function Get-OpenBaoStateFile {
+    param(
+        [string]$BaseDir,
+        [string]$Platform
+    )
+    $slug = switch ($Platform) {
+        "RKE2 (On-Premise)" { "rke2" }
+        "Kind (Local)"      { "kind" }
+        default             { "unknown" }
+    }
+    return Join-Path $BaseDir ".openbao-state-$slug.json"
+}
+
+# -------------------------
+# Per-platform cert-manager ClusterIssuer name — components that render their
+# own Ingress (Authelia, Rancher, ...) call this to decide whether to add a
+# tls: block + cert-manager.io/cluster-issuer annotation. RKE2 and Kind both
+# run their own OpenBao with a PKI root CA (see 33-openbao/Install.ps1), so
+# both use the same issuer name — it's a different CA/ClusterIssuer instance
+# per cluster, just the same mechanism. Empty string means "no issuer
+# configured for this platform yet" — caller skips TLS (cloud platforms are
+# not wired up yet).
+# -------------------------
+function Get-ClusterIssuerName {
+    param([string]$Platform)
+    switch ($Platform) {
+        "RKE2 (On-Premise)" { return "openbao-pki" }
+        "Kind (Local)"      { return "openbao-pki" }
+        default             { return "" }
+    }
+}
+
+# -------------------------
 # OpenBao — writes key/value pairs to OpenBao KV-v2 at the given path.
 # Returns $true on success, $false if OpenBao is not installed or not ready.
 # Callers fall back to direct Helm --set when $false is returned.
@@ -254,22 +341,171 @@ function Write-OpenBaoSecret {
     param(
         [string]$Path,
         [hashtable]$Data,
-        [string]$BaseDir = $script:InstallerBaseDir
+        [string]$BaseDir  = $script:InstallerBaseDir,
+        [string]$Platform = ""
     )
 
-    $stateFile = Join-Path $BaseDir ".openbao-state.json"
-    if (-not (Test-Path $stateFile)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($Platform)) { $Platform = $script:InstallerPlatform }
+    $stateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+    if (-not (Test-Path $stateFile)) {
+        Write-Warning "Write-OpenBaoSecret('$Path'): no '$stateFile' — OpenBao not installed yet for '$Platform'?"
+        return $false
+    }
 
     $rootToken = (Get-Content $stateFile | ConvertFrom-Json).RootToken
-    if (-not $rootToken) { return $false }
+    if (-not $rootToken) {
+        Write-Warning "Write-OpenBaoSecret('$Path'): '$stateFile' has no RootToken"
+        return $false
+    }
+
+    # A single status read right after another component's Helm deploy can
+    # transiently miss — retry briefly instead of failing the whole write on
+    # what's usually just API-server/scheduler lag, confirmed live on RKE2.
+    $podStatus = $null
+    for ($i = 0; $i -lt 5; $i++) {
+        $podStatus = & kubectl get pod openbao-0 -n openbao `
+            --no-headers -o custom-columns="S:.status.phase" 2>$null
+        if ($podStatus -eq "Running") { break }
+        Start-Sleep -Seconds 2
+    }
+    if ($podStatus -ne "Running") {
+        Write-Warning "Write-OpenBaoSecret('$Path'): openbao-0 pod status is '$podStatus', not Running"
+        return $false
+    }
+
+    # Values go through a file + 'kubectl cp' + 'key=@file' rather than an inline
+    # "key=value" shell string — needed once a value can contain newlines/quotes
+    # (e.g. Authelia's rendered multi-line YAML config), and harmless for the
+    # simple single-line passwords/tokens every other caller writes.
+    $remoteDir = "/tmp/installer-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+    & kubectl exec openbao-0 -n openbao -- mkdir -p $remoteDir 2>$null | Out-Null
+
+    $kvArgs = [System.Collections.Generic.List[string]]::new()
+    foreach ($entry in $Data.GetEnumerator()) {
+        $tmpFile = New-TemporaryFile
+        Set-Content -Path $tmpFile.FullName -Value $entry.Value -Encoding UTF8 -NoNewline
+        $remoteFile = "$remoteDir/$($entry.Key -replace '[^\w.-]', '_')"
+        # kubectl cp on Windows misparses an absolute "C:\..." local path as a
+        # remote namespace:path spec (the drive letter looks like a colon
+        # prefix) — cd into the temp file's folder and pass a relative name.
+        Push-Location (Split-Path $tmpFile.FullName)
+        & kubectl cp "./$(Split-Path $tmpFile.FullName -Leaf)" "openbao/openbao-0:$remoteFile" 2>$null | Out-Null
+        Pop-Location
+        Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
+        $kvArgs.Add("$($entry.Key)=@$remoteFile") | Out-Null
+    }
+
+    $putOut = & kubectl exec openbao-0 -n openbao -- `
+        sh -c "BAO_TOKEN=$rootToken bao kv put secret/$Path $($kvArgs -join ' ')" 2>&1
+    $ok = $LASTEXITCODE -eq 0
+    if (-not $ok) { Write-Warning "Write-OpenBaoSecret('$Path'): bao kv put failed — $putOut" }
+
+    & kubectl exec openbao-0 -n openbao -- rm -rf $remoteDir 2>$null | Out-Null
+    return $ok
+}
+
+# -------------------------
+# Get-OpenBaoSecret — read-back counterpart to Write-OpenBaoSecret. KV-v2
+# returns the whole document in one call, so (unlike the cloud backends)
+# there's no need to know the key names ahead of time.
+# -------------------------
+function Get-OpenBaoSecret {
+    param(
+        [string]$Path,
+        [string]$BaseDir  = $script:InstallerBaseDir,
+        [string]$Platform = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Platform)) { $Platform = $script:InstallerPlatform }
+    $stateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+    if (-not (Test-Path $stateFile)) { return $null }
+    $rootToken = (Get-Content $stateFile | ConvertFrom-Json).RootToken
+    if (-not $rootToken) { return $null }
+
+    $raw = & kubectl exec openbao-0 -n openbao -- `
+        sh -c "BAO_TOKEN=$rootToken bao kv get -format=json secret/$Path" 2>$null
+    if (-not $raw) { return $null }
+
+    $joined    = $raw -join "`n"
+    $jsonStart = $joined.IndexOf('{')
+    if ($jsonStart -lt 0) { return $null }
+
+    try {
+        $parsed = $joined.Substring($jsonStart) | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    } catch { return $null }
+
+    if (-not $parsed -or -not $parsed['data'] -or -not $parsed['data']['data']) { return $null }
+    return $parsed['data']['data']
+}
+
+# -------------------------
+# Get-ClusterSecret — read-back counterpart to Write-ClusterSecret. For the
+# cloud backends, -Keys must be the same list (same count) used in the
+# original Write-ClusterSecret -Data call — secret names are computed from
+# the count ("$Path" if one key, "$Path-$key" per key otherwise), so the
+# count has to match to land on the same names. OpenBao ignores -Keys and
+# returns everything stored at the path, since KV-v2 has no such limitation.
+# Returns $null if the path doesn't exist or the backend is unavailable.
+# -------------------------
+function Get-ClusterSecret {
+    param(
+        [string]$Path,
+        [string[]]$Keys = @(),
+        [string]$BaseDir  = $script:InstallerBaseDir,
+        [string]$Platform = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Platform)) {
+        $Platform = $script:InstallerPlatform
+        if (-not $Platform) {
+            Write-Error "Get-ClusterSecret: -Platform ist erforderlich. Bitte Connect-Cluster aufrufen oder -Platform explizit übergeben."
+            return $null
+        }
+    }
+
+    switch ($Platform) {
+        { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
+            return Get-OpenBaoSecret -Path $Path -BaseDir $BaseDir -Platform $Platform
+        }
+        "Azure AKS"  { return Get-AzureKeyVaultSecret -Path $Path -Keys $Keys -BaseDir $BaseDir }
+        "AWS EKS"    { return Get-AwsSecretsManagerSecret -Path $Path -Keys $Keys -BaseDir $BaseDir }
+        "Google GKE" { return Get-GcpSecretManagerSecret -Path $Path -Keys $Keys -BaseDir $BaseDir }
+        default      { return $null }
+    }
+}
+
+# -------------------------
+# OpenBao — soft-deletes a KV-v2 path (recoverable via 'bao kv undelete').
+# -------------------------
+function Remove-OpenBaoSecret {
+    param(
+        [string]$Path,
+        [string]$BaseDir  = $script:InstallerBaseDir,
+        [string]$Platform = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Platform)) { $Platform = $script:InstallerPlatform }
+    $stateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+    if (-not (Test-Path $stateFile)) {
+        Write-Warning "Remove-OpenBaoSecret('$Path'): no '$stateFile' — OpenBao not installed yet for '$Platform'?"
+        return $false
+    }
+
+    $rootToken = (Get-Content $stateFile | ConvertFrom-Json).RootToken
+    if (-not $rootToken) {
+        Write-Warning "Remove-OpenBaoSecret('$Path'): '$stateFile' has no RootToken"
+        return $false
+    }
 
     $podStatus = & kubectl get pod openbao-0 -n openbao `
         --no-headers -o custom-columns="S:.status.phase" 2>$null
-    if ($podStatus -ne "Running") { return $false }
+    if ($podStatus -ne "Running") {
+        Write-Warning "Remove-OpenBaoSecret('$Path'): openbao-0 pod status is '$podStatus', not Running"
+        return $false
+    }
 
-    $kvData  = ($Data.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join " "
     & kubectl exec openbao-0 -n openbao -- `
-        sh -c "BAO_TOKEN=$rootToken bao kv put secret/$Path $kvData" 2>$null | Out-Null
+        sh -c "BAO_TOKEN=$rootToken bao kv delete secret/$Path" 2>$null | Out-Null
 
     return $LASTEXITCODE -eq 0
 }
@@ -314,12 +550,42 @@ function New-CsiSecretMount {
     # ── Platform-specific auth setup + SPC YAML ──────────────────
     $spcYaml = switch ($Platform) {
         { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
-            if (-not (Test-Path (Join-Path $BaseDir ".openbao-state.json"))) { return $notInstalled }
-            $baoState  = Get-Content (Join-Path $BaseDir ".openbao-state.json") | ConvertFrom-Json
+            $baoStateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+            if (-not (Test-Path $baoStateFile)) { return $notInstalled }
+            $baoState  = Get-Content $baoStateFile | ConvertFrom-Json
             $rootToken = $baoState.RootToken
 
+            # Least privilege: a dedicated policy per app, scoped to that app's own
+            # path only — never a shared policy that would let any app read every
+            # other app's secrets just because it can authenticate at all.
+            # Policy content goes through a file + kubectl cp, NOT a heredoc piped
+            # through sh -c — a heredoc here is silently corrupted by Windows CRLF
+            # line endings (the 'POLICY' terminator line gets a trailing \r, sh
+            # never recognizes it as the end of input, and the literal word
+            # "POLICY" ends up as bogus policy content) — confirmed live, not
+            # hypothetical. Same temp-file/kubectl-cp/relative-path idiom already
+            # proven in Write-OpenBaoSecret.
+            $policyName = "$AppName-readonly"
+            $policyHcl  = @"
+path "secret/data/$VaultPath" {
+  capabilities = ["read","list"]
+}
+path "secret/metadata/$VaultPath" {
+  capabilities = ["read","list"]
+}
+"@
+            $policyTmpFile = New-TemporaryFile
+            Set-Content -Path $policyTmpFile.FullName -Value $policyHcl -Encoding UTF8 -NoNewline
+            $remotePolicyFile = "/tmp/$AppName-readonly-policy.hcl"
+            Push-Location (Split-Path $policyTmpFile.FullName)
+            & kubectl cp "./$(Split-Path $policyTmpFile.FullName -Leaf)" "openbao/openbao-0:$remotePolicyFile" 2>$null | Out-Null
+            Pop-Location
+            Remove-Item $policyTmpFile.FullName -Force -ErrorAction SilentlyContinue
+            & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$rootToken bao policy write $policyName $remotePolicyFile" 2>$null | Out-Null
+            & kubectl exec openbao-0 -n openbao -- rm -f $remotePolicyFile 2>$null | Out-Null
+
             # Vault Kubernetes auth role — single line to avoid shell backtick/continuation issues
-            $baoCmd = "BAO_TOKEN=$rootToken bao write auth/kubernetes/role/$AppName bound_service_account_names='$ServiceAccount' bound_service_account_namespaces='$Namespace' policies='csi-readonly' ttl='1h'"
+            $baoCmd = "BAO_TOKEN=$rootToken bao write auth/kubernetes/role/$AppName bound_service_account_names='$ServiceAccount' bound_service_account_namespaces='$Namespace' policies='$policyName' ttl='1h'"
             & kubectl exec openbao-0 -n openbao -- sh -c $baoCmd 2>$null | Out-Null
 
             $objects = ($Keys | ForEach-Object { @"
@@ -490,6 +756,432 @@ $secrets
 }
 
 # -------------------------
+# Remove-CsiSecretMount — deletion counterpart to New-CsiSecretMount. Reverses
+# whatever Workload Identity binding/role was created (OpenBao: Kubernetes-auth
+# role + the per-app least-privilege policy; AKS: Federated Credential; GKE:
+# IAM policy binding — AWS EKS's IRSA is just a ServiceAccount annotation,
+# nothing extra to revoke there) and deletes the SecretProviderClass itself.
+# Identity-binding revocation is best-effort (warnings, not failures) since the
+# SecretProviderClass deletion — the part that actually determines whether the
+# secret is still reachable from the cluster — happens either way.
+# -------------------------
+function Remove-CsiSecretMount {
+    param(
+        [string]$AppName,
+        [string]$Namespace,
+        [string]$ServiceAccount,
+        [string]$BaseDir  = $script:InstallerBaseDir,
+        [string]$Platform = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Platform)) {
+        $Platform = $script:InstallerPlatform
+        if (-not $Platform) {
+            Write-Error "Remove-CsiSecretMount: -Platform ist erforderlich. Bitte Connect-Cluster aufrufen oder -Platform explizit übergeben."
+            return $false
+        }
+    }
+
+    $spcName = "$AppName-vault"
+
+    switch ($Platform) {
+        { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
+            $stateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+            if (Test-Path $stateFile) {
+                $rootToken = (Get-Content $stateFile | ConvertFrom-Json).RootToken
+                if ($rootToken) {
+                    & kubectl exec openbao-0 -n openbao -- `
+                        sh -c "BAO_TOKEN=$rootToken bao delete auth/kubernetes/role/$AppName" 2>$null | Out-Null
+                    & kubectl exec openbao-0 -n openbao -- `
+                        sh -c "BAO_TOKEN=$rootToken bao policy delete $AppName-readonly" 2>$null | Out-Null
+                }
+            }
+        }
+        "Azure AKS" {
+            $aksState = Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json
+            if ($aksState.MiName) {
+                & az identity federated-credential delete --name "$AppName-csi" `
+                    --identity-name $aksState.MiName --resource-group $aksState.ResourceGroup --yes 2>$null | Out-Null
+            }
+        }
+        "Google GKE" {
+            $gkeState = Get-Content (Join-Path $BaseDir ".gke-state.json") | ConvertFrom-Json
+            if ($gkeState.CsiGsaEmail) {
+                & gcloud iam service-accounts remove-iam-policy-binding $gkeState.CsiGsaEmail `
+                    --project $gkeState.ProjectId --role "roles/iam.workloadIdentityUser" `
+                    --member "serviceAccount:$($gkeState.ProjectId).svc.id.goog[$Namespace/$ServiceAccount]" 2>$null | Out-Null
+            }
+        }
+        # AWS EKS: IRSA is just a ServiceAccount annotation -- nothing else to revoke.
+    }
+
+    & kubectl delete secretproviderclass $spcName -n $Namespace --ignore-not-found 2>$null | Out-Null
+    return $true
+}
+
+# -------------------------
+# Generates an htpasswd-format bcrypt hash via a throwaway pod (httpd:alpine
+# ships htpasswd) — avoids needing the binary on the machine running this
+# installer. Not exported; internal to Protect-ComponentIngress.
+# -------------------------
+function Get-HtpasswdHash {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', 'Password',
+        Justification = 'htpasswd requires plain text; password is not logged or stored')]
+    param([string]$Username, [string]$Password)
+
+    $podName = "htpasswd-gen-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+    $output  = & kubectl run $podName --rm -i --restart=Never --quiet `
+        --image=httpd:alpine --command -- htpasswd -nbB $Username $Password 2>$null
+
+    $escapedUser = [regex]::Escape($Username)
+    $line = $output | Where-Object { $_ -match "^${escapedUser}:\`$2[aby]?\`$" } | Select-Object -First 1
+    return $line
+}
+
+# -------------------------
+# Generates an Authelia-format pbkdf2-sha512 secret hash via a throwaway pod
+# running Authelia's own CLI (same "throwaway pod, regex out the result line"
+# idiom as Get-HtpasswdHash, just using the tool's own hashing command
+# instead of hand-rolling the digest format). Output format confirmed against
+# Authelia's own CLI reference docs at design time, not yet against a live
+# run — if the regex below ever returns $null, check the pod's raw output
+# first (kubectl logs), the "Digest: " prefix (or lack of it) is the likely
+# culprit.
+# -------------------------
+function Get-AutheliaSecretHash {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', 'Secret',
+        Justification = 'authelia crypto hash generate requires plain text; value is not logged or stored')]
+    param([string]$Secret)
+
+    $podName = "authelia-hash-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+    $output  = & kubectl run $podName --rm -i --restart=Never --quiet `
+        --image=authelia/authelia:latest --command -- `
+        authelia crypto hash generate pbkdf2 --variant sha512 --password $Secret --no-confirm 2>$null
+
+    $line = $output | Where-Object { $_ -match '\$pbkdf2-sha512\$' } | Select-Object -First 1
+    if ($line -and ($line -match '(\$pbkdf2-sha512\$\S+)')) { return $Matches[1] }
+    return $null
+}
+
+# -------------------------
+# Protect-ComponentIngress — platform-agnostic auth gate for an app's Ingress.
+# Authelia is mandatory baseline, so this always returns forward-auth
+# annotations — they're static references to Authelia's fixed in-cluster
+# Service address, correct the moment Authelia exists and harmless before
+# that (nginx's auth_request just gets a connection error, fails closed, not
+# an open Ingress). Deliberately does not check Test-AutheliaInstalled —
+# doesn't matter whether it's live yet, and nothing needs to come back and
+# retrofit this annotation later, so callers never need to special-case
+# install order. Returns @{ Annotations = @{ ... } } to merge into the
+# caller's own Ingress YAML metadata.annotations — same "pieces to merge"
+# convention as New-CsiSecretMount.
+# -------------------------
+function Protect-ComponentIngress {
+    param(
+        [Parameter(Mandatory)][string]$Hostname,
+        [string]$Platform = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Platform)) {
+        $Platform = $script:InstallerPlatform
+        if (-not $Platform) {
+            Write-Error "Protect-ComponentIngress: -Platform ist erforderlich. Bitte Connect-Cluster aufrufen oder -Platform explizit übergeben."
+            return @{ Annotations = @{} }
+        }
+    }
+
+    $autheliaHost = & kubectl get ingress authelia -n authelia -o jsonpath='{.spec.rules[0].host}' 2>$null
+    if (-not $autheliaHost) { $autheliaHost = "authelia.$($Hostname -replace '^[^.]+\.', '')" }
+    return @{
+        Annotations = @{
+            "nginx.ingress.kubernetes.io/auth-url"              = "http://authelia.authelia.svc.cluster.local/api/verify"
+            "nginx.ingress.kubernetes.io/auth-signin"           = "http://$autheliaHost/?rd=`$scheme://`$host`$request_uri"
+            "nginx.ingress.kubernetes.io/auth-response-headers" = "Remote-User,Remote-Groups,Remote-Name,Remote-Email"
+            # auth-snippet (X-Forwarded-Method) deliberately omitted — needs
+            # allow-snippet-annotations enabled, which ingress-nginx disables
+            # by default for good reason (arbitrary nginx config injection).
+            # Not re-enabling that just for this one header.
+        }
+    }
+}
+
+# -------------------------
+# Sync-AutheliaConfiguration — (re)assembles Authelia's full configuration.yaml
+# + users_database.yml from whatever's currently in Vault (admin credential,
+# OIDC provider keys, registered OIDC clients) and pushes it to the same
+# Vault path Authelia's own CSI mount reads from (authelia/rendered-config).
+# Restarts Authelia if it's already deployed, so a later OIDC client
+# registration takes effect without a full re-install.
+# Used by 35-authelia/Install.ps1 itself (first render, before Authelia's
+# Helm deploy even runs) and by Register-AutheliaOidcClient (every later
+# client registration) — the only place that knows how to build this file,
+# so both produce the same shape.
+# -------------------------
+function Sync-AutheliaConfiguration {
+    param(
+        [string]$BaseDir  = $script:InstallerBaseDir,
+        [string]$Platform = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Platform)) {
+        $Platform = $script:InstallerPlatform
+        if (-not $Platform) {
+            Write-Error "Sync-AutheliaConfiguration: -Platform ist erforderlich. Bitte Connect-Cluster aufrufen oder -Platform explizit übergeben."
+            return $false
+        }
+    }
+
+    # ── Admin user + hostname (written by 35-authelia/Install.ps1) ──
+    $admin = Get-ClusterSecret -Path "authelia/admin-credential" -Keys @("username", "password", "hostname") -BaseDir $BaseDir -Platform $Platform
+    if (-not $admin -or -not $admin["hostname"]) {
+        Write-Error "Sync-AutheliaConfiguration: no admin credential found in vault — run 35-authelia/Install.ps1 first."
+        return $false
+    }
+    $hostname      = $admin["hostname"]
+    $clusterDomain = $hostname -replace '^[^.]+\.', ''
+    $adminHash     = Get-HtpasswdHash -Username "admin" -Password $admin["password"]
+    if (-not $adminHash) { Write-Error "Sync-AutheliaConfiguration: could not hash the admin password"; return $false }
+    $adminHashOnly = ($adminHash -split ":", 2)[1]
+
+    # ── OIDC provider keys — generate once, persist, reuse (machine-to-machine
+    # secrets, not something a human re-types like the admin password) ──
+    $providerState = Get-ClusterSecret -Path "authelia/oidc-provider" -Keys @("hmac_secret", "private_key") -BaseDir $BaseDir -Platform $Platform
+    if ($providerState -and $providerState["hmac_secret"] -and $providerState["private_key"]) {
+        $hmacSecret = $providerState["hmac_secret"]
+        $rsaPem     = $providerState["private_key"]
+    } else {
+        $hmacSecret = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 64 | ForEach-Object { [char]$_ })
+        $rsa        = [System.Security.Cryptography.RSA]::Create(2048)
+        $rsaPem     = "-----BEGIN PRIVATE KEY-----`n" +
+            [Convert]::ToBase64String($rsa.ExportPkcs8PrivateKey(), [Base64FormattingOptions]::InsertLineBreaks) +
+            "`n-----END PRIVATE KEY-----"
+        Write-ClusterSecret -Path "authelia/oidc-provider" -BaseDir $BaseDir -Platform $Platform -Data @{
+            hmac_secret = $hmacSecret
+            private_key = $rsaPem
+        } | Out-Null
+    }
+
+    # ── Registered OIDC clients ──
+    $registry  = Get-ClusterSecret -Path "authelia/oidc-clients-registry" -Keys @("ids") -BaseDir $BaseDir -Platform $Platform
+    $clientIds = @()
+    if ($registry -and $registry["ids"]) { $clientIds = @($registry["ids"] -split ',' | Where-Object { $_ }) }
+
+    $clientYamlBlocks = foreach ($id in $clientIds) {
+        $client = Get-ClusterSecret -Path "authelia/oidc-clients/$id" -Keys @("secret", "name", "redirect_uris", "scopes") -BaseDir $BaseDir -Platform $Platform
+        if (-not $client -or -not $client["secret"]) { continue }
+        $hashedSecret = Get-AutheliaSecretHash -Secret $client["secret"]
+        if (-not $hashedSecret) { Write-Warning "  Sync-AutheliaConfiguration: could not hash secret for OIDC client '$id' — skipping it this round"; continue }
+        $redirectUris = @($client["redirect_uris"] -split ',' | Where-Object { $_ })
+        $scopes       = if ($client["scopes"]) { @($client["scopes"] -split ',' | Where-Object { $_ }) } else { @("openid", "profile", "email", "groups") }
+        # offline_access is what makes Authelia issue a refresh_token at all —
+        # without it (and without refresh_token below in grant_types), Rancher's
+        # periodic group-membership refresh has nothing to call, and its OIDC
+        # client mishandles that failure badly enough to corrupt its own claims
+        # parsing (confirmed live: "failed to unmarshal claims: invalid
+        # character 'T'", and the user's group principal never gets attached —
+        # admin group membership granted via GlobalRoleBinding never applies).
+        if ($scopes -notcontains "offline_access") { $scopes += "offline_access" }
+        $redirectYaml = ($redirectUris | ForEach-Object { "          - `"$_`"" }) -join "`n"
+        $scopesYaml   = ($scopes | ForEach-Object { "          - `"$_`"" }) -join "`n"
+@"
+      - client_id: "$id"
+        client_secret: "$hashedSecret"
+        client_name: "$($client["name"])"
+        redirect_uris:
+$redirectYaml
+        scopes:
+$scopesYaml
+        grant_types:
+          - "authorization_code"
+          - "refresh_token"
+        response_types:
+          - "code"
+        token_endpoint_auth_method: "client_secret_basic"
+        # Authelia defaults OIDC clients to two_factor regardless of the
+        # access_control policy below — no 2FA enrollment flow (TOTP/WebAuthn)
+        # is built yet, so without this every OIDC login dead-ends on a
+        # "register your first device" screen. Matches the one_factor stance
+        # already used for the web-portal access_control rule. Revisit once
+        # real 2FA enrollment is actually built.
+        authorization_policy: "one_factor"
+        # Since Authelia 4.39's claims-policy overhaul, granting a scope no
+        # longer puts its claims in the ID token by default — they only show
+        # up via the userinfo endpoint unless a claims_policy explicitly lists
+        # them under id_token. Confirmed live with the authelia debug oidc
+        # claims command: the groups claim was present in userinfo but
+        # completely absent from the ID token. Rancher's group-membership
+        # sync reads the ID token, so without this it silently computes zero
+        # groups (no error — the GlobalRoleBinding for the admins group just
+        # never applies, and the user sees no clusters).
+        claims_policy: "default"
+"@
+    }
+    $clientsYaml = $clientYamlBlocks -join "`n"
+
+    $oidcBlock = if ($clientIds.Count -gt 0) {
+@"
+
+identity_providers:
+  oidc:
+    hmac_secret: "$hmacSecret"
+    jwks:
+      - key_id: "main"
+        algorithm: "RS256"
+        key: |
+$(($rsaPem -split "`n" | ForEach-Object { "          $_" }) -join "`n")
+    claims_policies:
+      default:
+        id_token:
+          - "groups"
+          - "email"
+          - "email_verified"
+          - "preferred_username"
+          - "name"
+    clients:
+$clientsYaml
+"@
+    } else { "" }
+
+    $usersYaml = @"
+users:
+  admin:
+    displayname: "Admin"
+    password: "$adminHashOnly"
+    groups:
+      - "admins"
+"@
+
+    $configYaml = @"
+---
+server:
+  address: 'tcp://0.0.0.0:9091'
+
+log:
+  level: info
+
+authentication_backend:
+  file:
+    path: /mnt/secrets/users_database.yml
+    password:
+      algorithm: bcrypt
+
+access_control:
+  default_policy: deny
+  rules:
+    - domain: "*.$clusterDomain"
+      subject: "user:admin"
+      policy: one_factor
+
+# Authelia requires a secure (https) scheme for authelia_url/default_redirection_url
+# even though this codebase's internal admin tools otherwise run over plain HTTP
+# (ssl-redirect: "false" everywhere else) — a real gap to close before production
+# use, flagged here rather than silently worked around.
+session:
+  cookies:
+    - domain: $clusterDomain
+      authelia_url: https://$hostname
+      default_redirection_url: https://$hostname/
+
+# /config is the chart's persistence.enabled PVC mount path (35-authelia
+# enables it) — OIDC consent records and the regulation/ban-list otherwise
+# live on /tmp and get wiped on every pod restart.
+storage:
+  local:
+    path: /config/db.sqlite3
+
+notifier:
+  filesystem:
+    filename: /config/notification.txt
+$oidcBlock
+"@
+
+    $writeOk = Write-ClusterSecret -Path "authelia/rendered-config" -BaseDir $BaseDir -Platform $Platform -Data @{
+        "configuration.yaml" = $configYaml
+        "users_database.yml" = $usersYaml
+    }
+    if (-not $writeOk) {
+        Write-Warning "  Sync-AutheliaConfiguration: could not write rendered config to vault"
+        return $false
+    }
+
+    # Best-effort — Authelia may not be deployed yet (first install, before the
+    # Helm deploy that follows this call) or may not exist at all on this
+    # platform's vault backend yet. Mounted-secret content changing alone
+    # doesn't trigger a new Pod, so an existing Deployment needs an explicit
+    # nudge to pick up the change.
+    $exists = & kubectl get deployment authelia -n authelia --ignore-not-found -o name 2>$null
+    if ($exists) {
+        & kubectl rollout restart deployment/authelia -n authelia 2>$null | Out-Null
+    }
+    return $true
+}
+
+# -------------------------
+# Register-AutheliaOidcClient — generic "register this app as an OIDC client
+# of Authelia" primitive, called by any component's own Install.ps1 (Rancher
+# first, more to follow — Grafana named as the next one). Never shares a
+# secret between clients; each gets its own, generated once and persisted.
+# -------------------------
+function Register-AutheliaOidcClient {
+    param(
+        [Parameter(Mandatory)][string]$ClientId,
+        [Parameter(Mandatory)][string]$ClientName,
+        [Parameter(Mandatory)][string[]]$RedirectUris,
+        [string[]]$Scopes = @("openid", "profile", "email", "groups"),
+        [string]$BaseDir  = $script:InstallerBaseDir,
+        [string]$Platform = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Platform)) {
+        $Platform = $script:InstallerPlatform
+        if (-not $Platform) {
+            Write-Error "Register-AutheliaOidcClient: -Platform ist erforderlich. Bitte Connect-Cluster aufrufen oder -Platform explizit übergeben."
+            return $null
+        }
+    }
+
+    # Generate-or-reuse this client's own plaintext secret — never shared.
+    $existing = Get-ClusterSecret -Path "authelia/oidc-clients/$ClientId" -Keys @("secret", "name", "redirect_uris", "scopes") -BaseDir $BaseDir -Platform $Platform
+    $secret = if ($existing -and $existing["secret"]) {
+        $existing["secret"]
+    } else {
+        -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 48 | ForEach-Object { [char]$_ })
+    }
+
+    $writeOk = Write-ClusterSecret -Path "authelia/oidc-clients/$ClientId" -BaseDir $BaseDir -Platform $Platform -Data @{
+        secret        = $secret
+        name          = $ClientName
+        redirect_uris = ($RedirectUris -join ',')
+        scopes        = ($Scopes -join ',')
+    }
+    if (-not $writeOk) {
+        Write-Error "Register-AutheliaOidcClient: could not write client '$ClientId' to vault"
+        return $null
+    }
+
+    # Add this client to the registry Sync-AutheliaConfiguration reads, if not already there.
+    $registry  = Get-ClusterSecret -Path "authelia/oidc-clients-registry" -Keys @("ids") -BaseDir $BaseDir -Platform $Platform
+    $clientIds = if ($registry -and $registry["ids"]) { @($registry["ids"] -split ',' | Where-Object { $_ }) } else { @() }
+    if ($ClientId -notin $clientIds) {
+        $clientIds += $ClientId
+        Write-ClusterSecret -Path "authelia/oidc-clients-registry" -BaseDir $BaseDir -Platform $Platform -Data @{
+            ids = ($clientIds -join ',')
+        } | Out-Null
+    }
+
+    if (-not (Sync-AutheliaConfiguration -BaseDir $BaseDir -Platform $Platform)) {
+        Write-Error "Register-AutheliaOidcClient: client '$ClientId' was registered but Authelia's configuration could not be synced"
+        return $null
+    }
+
+    $autheliaHost = & kubectl get ingress authelia -n authelia -o jsonpath='{.spec.rules[0].host}' 2>$null
+    return @{
+        ClientSecret = $secret
+        Issuer       = "https://$autheliaHost"
+    }
+}
+
+# -------------------------
 # kubectl discovery cache — clears the local cache so newly installed CRDs
 # (e.g. ESO, cert-manager) are visible to kubectl apply without a 10-min wait.
 # Suppresses Write-Progress to avoid console noise from Remove-Item -Recurse.
@@ -577,15 +1269,31 @@ $__exportFunctions = @(
   'Merge-Config'
   'Get-IngressClass'
   'Reset-StuckHelmRelease'
-  'Write-OpenBaoSecret'
   'Set-ClusterContext'
   'Clear-KubectlDiscoveryCache'
   'Write-ClusterSecret'
+  'Write-OpenBaoSecret'
+  'Get-ClusterSecret'
+  'Get-OpenBaoSecret'
+  'Remove-ClusterSecret'
+  'Remove-OpenBaoSecret'
+  'Get-OpenBaoStateFile'
+  'Get-ClusterIssuerName'
   'Write-AzureKeyVaultSecret'
   'Write-AwsSecretsManagerSecret'
   'Write-GcpSecretManagerSecret'
+  'Remove-AzureKeyVaultSecret'
+  'Remove-AwsSecretsManagerSecret'
+  'Remove-GcpSecretManagerSecret'
   'New-CsiSecretMount'
-  'Get-ExternalSecretData'
+  'Remove-CsiSecretMount'
+  'Protect-ComponentIngress'
+  'Get-HtpasswdHash'
+  'Get-AutheliaSecretHash'
+  'Sync-AutheliaConfiguration'
+  'Register-AutheliaOidcClient'
+  'Test-AutheliaInstalled'
+  'Get-BasicAuthIngresses'
   'Read-ComponentSelectionScreen'
 )
 

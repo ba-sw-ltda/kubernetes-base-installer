@@ -15,6 +15,7 @@ param(
 $ScriptRoot = $PSScriptRoot
 $BaseDir    = Split-Path $ScriptRoot -Parent
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
+Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
 $verbose = $VerbosePreference -eq 'Continue'
@@ -54,6 +55,8 @@ $HelmArgs = @(
     "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)"
 )
 
+Reset-StuckHelmRelease -ReleaseName "reflector" -Namespace $Namespace
+
 $exitCode = Invoke-WithSpinner -Message "Deploying Reflector..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Reflector (exit code $exitCode)"; exit 1 }
@@ -68,6 +71,10 @@ Write-Host "  ✓ Reflector ready" -ForegroundColor Green
 if ($verbose) {
     Write-Host ""
     & kubectl get pods -n $Namespace -l app.kubernetes.io/name=reflector
+}
+
+if ($FullConfig.RancherProject) {
+    Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
 Write-Host ""

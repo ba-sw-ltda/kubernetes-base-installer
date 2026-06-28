@@ -15,6 +15,7 @@ param(
 $ScriptRoot = $PSScriptRoot
 $BaseDir    = Split-Path $ScriptRoot -Parent
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
+Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
 $verbose = $VerbosePreference -eq 'Continue'
@@ -116,6 +117,8 @@ $HelmArgs = @(
     "--values", $tempValues
 )
 
+Reset-StuckHelmRelease -ReleaseName "opentelemetry-collector" -Namespace $Namespace
+
 $exitCode = Invoke-WithSpinner -Message "Deploying OpenTelemetry Collector..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 Remove-Item $tempValues -Force -ErrorAction SilentlyContinue
@@ -146,6 +149,10 @@ data:
 $otlpConfigMap | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) {
     Write-Host "  ✓ OTLP endpoints ConfigMap published (reflected to all namespaces)" -ForegroundColor Green
+}
+
+if ($FullConfig.RancherProject) {
+    Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
 Write-Host ""

@@ -6,6 +6,7 @@
     ChartName       = "reflector"
     Namespace       = "kube-system"
     CreateNamespace = $false
+    RancherProject  = "Security"
 
     # User-configurable settings
     UserConfig = @{

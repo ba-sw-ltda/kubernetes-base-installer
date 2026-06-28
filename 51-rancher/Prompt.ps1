@@ -1,20 +1,20 @@
 <#
 .SYNOPSIS
     Collect Rancher settings upfront.
+.DESCRIPTION
+    No bootstrap-password prompt — login goes through Authelia/OIDC (the
+    'admins' group gets full admin rights automatically), so the local
+    bootstrap admin is just a break-glass fallback. Install.ps1 generates
+    and persists that password in Vault on its own, no user input needed.
 .PARAMETER Platform
     Target platform
 .PARAMETER Domain
     Cluster domain (from Install-Base.ps1)
-.PARAMETER BootstrapPassword
-    Pre-fill bootstrap password (skip prompt — for dev/test only)
 #>
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', 'BootstrapPassword',
-    Justification = 'Dev/test pre-fill only — remove before production use')]
 [CmdletBinding()]
 param(
     [string]$Platform,
-    [string]$Domain = "kubernetes.local",
-    [string]$BootstrapPassword = ""
+    [string]$Domain = "kubernetes.local"
 )
 
 $BaseDir = Split-Path $PSScriptRoot -Parent
@@ -28,18 +28,16 @@ $mode = Read-SelectValue `
         @{ Label = "Rancher Agent   (import this cluster into existing Rancher)"; Value = "Agent" }
     ) `
     -Default 0 `
-    -ContextTitle "Management" `
-    -ContextHint "Full = Rancher UI runs here. Agent = cluster is registered in an external Rancher." `
-    -ContextCurrent ([ordered]@{ Platform = $Platform })
+    -ContextTitle "Rancher — $Platform" `
+    -ContextHint "Full = Rancher UI runs here. Agent = cluster is registered in an external Rancher."
 
 if (-not $mode) { return $null }
 
 if ($mode -eq "Agent") {
     $registrationUrl = Read-Plain `
         -Prompt "Rancher registration URL" `
-        -ContextTitle "Rancher Agent" `
-        -ContextHint "In Rancher UI: Import Existing → Generic → Create → copy the URL ending in .yaml" `
-        -ContextCurrent ([ordered]@{ Platform = $Platform })
+        -ContextTitle "Rancher/Agent — $Platform" `
+        -ContextHint "In Rancher UI: Import Existing → Generic → Create → copy the URL ending in .yaml"
     return @{ ManagementMode = "Agent"; RegistrationUrl = $registrationUrl.Trim() }
 }
 
@@ -48,21 +46,11 @@ $defaultHostname = "rancher.$Domain"
 $hostname = Read-Plain `
     -Prompt "Rancher hostname" `
     -Default $defaultHostname `
-    -ContextTitle "Rancher Server" `
+    -ContextTitle "Rancher/Server — $Platform" `
     -ContextHint "DNS name under which Rancher will be reachable — must resolve to your ingress IP" `
-    -ContextCurrent ([ordered]@{ Platform = $Platform; Domain = $Domain })
-
-if ([string]::IsNullOrWhiteSpace($BootstrapPassword)) {
-    $BootstrapPassword = Read-SecretPlainConfirm `
-        -Prompt1 "Bootstrap admin password (min. 12 chars)" `
-        -Prompt2 "Confirm bootstrap password" `
-        -ContextTitle "Rancher Server" `
-        -ContextHint "Initial password for the 'admin' user — change it after first login" `
-        -ContextCurrent ([ordered]@{ Platform = $Platform; Hostname = $hostname })
-}
+    -ContextCurrent ([ordered]@{ Domain = $Domain })
 
 return @{
-    ManagementMode    = "Full"
-    Hostname          = $hostname.Trim()
-    BootstrapPassword = $BootstrapPassword.Trim()
+    ManagementMode = "Full"
+    Hostname       = $hostname.Trim()
 }

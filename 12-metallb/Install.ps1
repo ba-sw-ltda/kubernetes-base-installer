@@ -22,6 +22,7 @@ param(
 $ScriptRoot = $PSScriptRoot
 $BaseDir = Split-Path $ScriptRoot -Parent
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
+Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
 $verbose = $VerbosePreference -eq 'Continue'
@@ -103,6 +104,8 @@ $HelmArgs = @(
     "--set", "controller.resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
     "--set", "controller.resources.requests.memory=$($UserConfig.Resources.Requests.Memory)"
 )
+
+Reset-StuckHelmRelease -ReleaseName "metallb" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying MetalLB..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
@@ -209,6 +212,10 @@ if ($Platform -eq "RKE2 (On-Premise)") {
 if ($verbose) {
     Write-Host ""
     & kubectl get pods -n $Namespace
+}
+
+if ($FullConfig.RancherProject) {
+    Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
 Write-Host ""

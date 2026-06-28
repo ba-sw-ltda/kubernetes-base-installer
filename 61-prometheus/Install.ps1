@@ -123,6 +123,9 @@ if ($exitCode -ne 0) { Write-Error "Rollout of prometheus did not complete"; exi
 Write-Host "  ✓ prometheus ready" -ForegroundColor Green
 
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
+    $protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform
+    $authAnnotations = ($protect.Annotations.GetEnumerator() | ForEach-Object { "    $($_.Key): `"$($_.Value)`"" }) -join "`n"
+
     $ingressYaml = @"
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -131,6 +134,7 @@ metadata:
   namespace: $Namespace
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
+$authAnnotations
 spec:
   ingressClassName: $(Get-IngressClass)
   rules:
@@ -166,6 +170,10 @@ if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Service alias 'prometheus' created"
 if ($verbose) {
     Write-Host ""
     & kubectl get pods -n $Namespace
+}
+
+if ($FullConfig.RancherProject) {
+    Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
 Write-Host ""
