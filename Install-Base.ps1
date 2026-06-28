@@ -847,13 +847,18 @@ function Start-Installation {
             "Management" = @(
                 @{ Number="51"; Name="rancher"; SelKey="rancher"; DisplayName="Rancher" }
             )
+            # No SelKey on any of these — mandatory baseline like Security/
+            # Configuration Management, no checkbox. OpenTelemetry Collector
+            # still gets its own yes/no gate (its own Prompt.ps1, same pattern
+            # as Registry's), and Tracing's Tempo/Jaeger choice is asked
+            # directly by 64-tracing/Prompt.ps1 — neither needs a Screen-2.
             "Observability Stack" = @(
-                @{ Number="61"; Name="prometheus";              SelKey="prometheus";              DisplayName="Prometheus" }
-                @{ Number="62"; Name="loki";                    SelKey="loki";                    DisplayName="Loki" }
-                @{ Number="63"; Name="promtail";                SelKey="promtail";                DisplayName="Promtail" }
-                @{ Number="64"; Name="tracing";                 SelKey="tracing";                 DisplayName="Tracing" }
-                @{ Number="65"; Name="opentelemetry-collector"; SelKey="opentelemetry-collector"; DisplayName="OpenTelemetry Collector" }
-                @{ Number="66"; Name="grafana";                 SelKey="grafana";                 DisplayName="Grafana" }
+                @{ Number="61"; Name="prometheus";              DisplayName="Prometheus" }
+                @{ Number="62"; Name="loki";                    DisplayName="Loki" }
+                @{ Number="63"; Name="promtail";                DisplayName="Promtail" }
+                @{ Number="64"; Name="tracing";                 DisplayName="Tracing" }
+                @{ Number="65"; Name="opentelemetry-collector"; DisplayName="OpenTelemetry Collector" }
+                @{ Number="66"; Name="grafana";                 DisplayName="Grafana" }
             )
             "Utilities" = @(
                 @{ Number="91"; Name="argocd"; SelKey="argocd"; DisplayName="ArgoCD" }
@@ -890,22 +895,6 @@ function Start-Installation {
             # Build section data for groups that have real choices
             $section = $null
             switch ($group) {
-                "Observability Stack" {
-                    $section = @{ Label=$group; Items=@(
-                        @{ Label="Prometheus (kube-prometheus-stack)"; Value="prometheus";              Type="check"; Default=$true }
-                        @{ Label="Loki";                               Value="loki";                    Type="check"; Default=$true }
-                        @{ Label="Promtail";                           Value="promtail";                Type="check"; Default=$true }
-                        @{
-                            Label="Tracing"; Value="tracing"; Type="group"; Default=$true
-                            Children=@(
-                                @{ Label="Tempo";  Value="tempo";  Type="radio"; RadioGroup="tracing"; Default=$true  }
-                                @{ Label="Jaeger"; Value="jaeger"; Type="radio"; RadioGroup="tracing"; Default=$false }
-                            )
-                        }
-                        @{ Label="OpenTelemetry Collector"; Value="opentelemetry-collector"; Type="check"; Default=$true }
-                        @{ Label="Grafana";                 Value="grafana";                 Type="check"; Default=$true }
-                    )}
-                }
                 "Utilities" {
                     $section = @{ Label=$group; Items=@(
                         @{ Label="ArgoCD";          Value="argocd"; Type="check"; Default=$true }
@@ -937,11 +926,6 @@ function Start-Installation {
                     $componentInputs["ingress"]["DnsLabel"] = $aksDnsLabel
                 }
             }
-            if ($group -eq "Observability Stack") {
-                $tracingType = if ($compSel["tempo"]) { "tempo" } else { "jaeger" }
-                $componentInputs["tracing"] = @{ TracingBackend = $tracingType }
-            }
-
             # Collect parameters for selected components of this group immediately after selection
             if ($componentMap.ContainsKey($group)) {
                 $groupComponents = @($componentMap[$group] | Where-Object {
@@ -990,17 +974,24 @@ function Start-Installation {
         }
         if ("Storage (Longhorn)" -in $selectedComponentGroups) { $willInstall.Add("longhorn") | Out-Null }
         if ("Management"         -in $selectedComponentGroups) { $willInstall.Add("rancher")  | Out-Null }
-        # Utilities now has a real Screen-2 (like Observability Stack) — argocd/velero
-        # come from the generic compSel loop above, no hardcoded add needed.
+        if ("Observability Stack" -in $selectedComponentGroups) {
+            # Mandatory members, no Screen-2 checkbox — added directly so the
+            # grafana->ingress soft-dep below still sees them. OpenTelemetry
+            # Collector stays out: it's genuinely optional (own yes/no gate)
+            # and nothing currently checks for it here.
+            @("prometheus", "loki", "promtail", "tracing", "grafana") | ForEach-Object { $willInstall.Add($_) | Out-Null }
+        }
+        # Utilities has a real Screen-2 — argocd/velero come from the generic
+        # compSel loop above, no hardcoded add needed.
 
         # Hard deps: component is auto-deselected when dep is missing.
         # Use SelKey values — same keys used in $compSel and $componentMap.
         $hardDeps = @(
-            @{ C="promtail";                Needs="loki";             Reason="has no log destination without Loki" }
-            @{ C="opentelemetry-collector"; Needs="tracing";          Reason="has no tracing backend (Tempo or Jaeger)" }
-            # Registry needing config-syncer used to be a real hard-dep check —
-            # now both are mandatory members of the same group, so it can never
-            # actually be violated. Removed rather than left as dead code.
+            # promtail->loki and opentelemetry-collector->tracing used to be
+            # real hard-dep checks — now Promtail/Loki/Tracing are all
+            # mandatory members of the same group (like Registry/config-syncer
+            # before them), so neither can actually be violated anymore.
+            # Removed rather than left as dead code.
         )
         # Soft deps: installs fine but something won't work — warn only.
         $softDeps = @(

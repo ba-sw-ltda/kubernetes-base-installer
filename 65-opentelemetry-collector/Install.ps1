@@ -5,11 +5,15 @@
     Target platform
 .PARAMETER ConfigPath
     Path to custom configuration file (optional)
+.PARAMETER Enabled
+    Whether to install the collector at all (from Prompt.ps1) — defaults to
+    true for standalone runs.
 #>
 [CmdletBinding()]
 param(
     [string]$Platform,
-    [string]$ConfigPath
+    [string]$ConfigPath,
+    [bool]$Enabled = $true
 )
 
 $ScriptRoot = $PSScriptRoot
@@ -17,6 +21,8 @@ $BaseDir    = Split-Path $ScriptRoot -Parent
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
 Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
+
+if (-not $Enabled) { Write-Host "  Skipped — OpenTelemetry Collector declined." -ForegroundColor Gray; exit 0 }
 
 $verbose = $VerbosePreference -eq 'Continue'
 
