@@ -5,6 +5,7 @@
 .gke-state.json
 .kind-state.json
 .openbao-state.json
+.openbao-state-*.json
 .ingress-ip
 
 # Generated kubeconfig copies

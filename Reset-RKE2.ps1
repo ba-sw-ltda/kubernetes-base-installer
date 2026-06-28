@@ -343,7 +343,7 @@ if ($obaoNsExists) {
     Write-Host "  ✓ Namespace openbao already gone" -ForegroundColor Green
 }
 
-Remove-Item (Join-Path $PSScriptRoot ".openbao-state.json") -Force -ErrorAction SilentlyContinue
+Remove-Item (Get-OpenBaoStateFile -BaseDir $PSScriptRoot -Platform "RKE2 (On-Premise)") -Force -ErrorAction SilentlyContinue
 
 # ── 12. Longhorn (31) — nach allen Workloads die Storage nutzen ──
 Write-Host "`n--- 12. Longhorn (PVCs, CRDs, Namespace) ---" -ForegroundColor Magenta
@@ -394,11 +394,6 @@ if ($longhornCrdNames) {
 }
 
 Remove-Namespace -Namespace "longhorn-system"
-
-# ── 13. External Secrets (22) ───────────────────────────────────
-Write-Host "`n--- 13. External Secrets ---" -ForegroundColor Magenta
-Remove-HelmRelease -Release "external-secrets" -Namespace "external-secrets"
-Remove-Namespace   -Namespace "external-secrets"
 
 # ── 14. Cert-Manager (21) ───────────────────────────────────────
 Write-Host "`n--- 14. Cert-Manager ---" -ForegroundColor Magenta

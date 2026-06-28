@@ -57,7 +57,7 @@ if ($releases) {
 Write-Section "Namespaces"
 $expectedGone = @(
     "argocd", "monitoring", "cattle-system", "rancher-operator-system",
-    "proxy-config", "longhorn-system", "openbao", "external-secrets",
+    "proxy-config", "longhorn-system", "openbao",
     "cert-manager", "metallb-system", "ingress-nginx", "traefik"
 )
 $existingNs = & kubectl get namespaces --no-headers -o custom-columns="NAME:.metadata.name" 2>$null

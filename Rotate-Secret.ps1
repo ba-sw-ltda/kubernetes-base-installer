@@ -2,8 +2,8 @@
 .SYNOPSIS
     Rotate a secret in the cluster vault backend — platform-agnostic.
     Reads the current keys from OpenBao / Azure Key Vault / AWS Secrets Manager / GCP Secret Manager,
-    accepts new values, writes them to the backend, forces ESO to resync, and optionally
-    restarts affected workloads.
+    accepts new values, writes them to the backend, and optionally restarts
+    affected workloads so they pick up the new value.
 #>
 [CmdletBinding()]
 param()
@@ -61,7 +61,7 @@ Write-Host "  Reading current secret keys..." -ForegroundColor DarkGray
 $currentKeys = @()
 switch ($platform) {
     { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
-        $stateFile = Join-Path $BaseDir ".openbao-state.json"
+        $stateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $platform
         if (Test-Path $stateFile) {
             $rootToken = (Get-Content $stateFile | ConvertFrom-Json).RootToken
             $raw = & kubectl exec openbao-0 -n openbao -- `
@@ -181,46 +181,12 @@ if (-not $ok) {
     exit 1
 }
 
-# ── 6. Force ESO resync ──────────────────────────────────────────
-Write-Host ""
-Write-Host "  Searching for ExternalSecrets that reference '$secretPath'..." -ForegroundColor DarkGray
-
-$syncTs  = Get-Date -Format 'yyyyMMddHHmmss'
-$synced  = 0
-$esRaw   = & kubectl get externalsecret -A -o json 2>$null
-$esList  = if ($esRaw) { ($esRaw | ConvertFrom-Json -ErrorAction SilentlyContinue).items } else { @() }
-
-foreach ($es in @($esList)) {
-    $ns   = $es.metadata.namespace
-    $name = $es.metadata.name
-
-    $matched = $false
-    foreach ($d in @($es.spec.data)) {
-        if ($d.remoteRef.key -like "*$secretPath*") { $matched = $true; break }
-    }
-    if (-not $matched) {
-        foreach ($df in @($es.spec.dataFrom)) {
-            if ($df.extract.key -like "*$secretPath*") { $matched = $true; break }
-        }
-    }
-
-    if ($matched) {
-        & kubectl annotate externalsecret $name -n $ns `
-            "force-sync=$syncTs" --overwrite 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  ✓ Triggered resync: $name  ($ns)" -ForegroundColor Green
-            $synced++
-        }
-    }
-}
-
-if ($synced -eq 0) {
-    Write-Host "  ⚠ No matching ExternalSecrets found — resync not triggered automatically." -ForegroundColor Yellow
-    Write-Host "    Trigger manually:" -ForegroundColor DarkGray
-    Write-Host "    kubectl annotate externalsecret <name> -n <ns> force-sync=$syncTs --overwrite" -ForegroundColor DarkGray
-}
-
-# ── 7. Restart affected workloads (optional) ─────────────────────
+# ── 6. Restart affected workloads (optional) ─────────────────────
+# The Secrets Store CSI Driver polls and re-mounts changed files on its own
+# (rotationPollInterval, configured in 32-secrets-csi-driver) — there's no
+# separate force-resync step needed here. A pod that only reads its mounted
+# secret file once at startup still needs an actual restart to pick up the
+# new value, which is what this step is for.
 Write-Host ""
 $restartNs = Read-Plain `
     -Prompt "Restart workloads in namespace" `
