@@ -13,17 +13,17 @@ Supports **AKS · EKS · GKE · RKE2 (On-Premise) · Kind (Local)** from a singl
 |---|---|---|
 | 11 | **Ingress** (NGINX or Traefik) | Auto-selects between controllers |
 | 12 | **MetalLB** | On-premise / Kind only |
-| 21 | **cert-manager** | TLS certificate management |
-| 22 | **External Secrets Operator** | Sync secrets from vault to K8s |
-| 22 | **Secrets Store CSI Driver** | Mount secrets directly into pods |
-| 23 | **Vault** (OpenBao / Azure Key Vault / AWS Secrets Manager / GCP Secret Manager) | Platform-native |
-| 24 | **Wildcard TLS Certificate** | PFX import → Vault → ESO → K8s Secret |
-| 31 | **Longhorn** | Distributed block storage (on-premise) |
+| 21 | **Longhorn** | Distributed block storage (on-premise / Kind) |
+| 31 | **cert-manager** | TLS certificate management — issuer created by 33 (RKE2/Kind only) |
+| 32 | **Secrets Store CSI Driver** | Mount secrets directly into pods |
+| 33 | **Vault** (OpenBao / Azure Key Vault / AWS Secrets Manager / GCP Secret Manager) | Platform-native; OpenBao (RKE2/Kind) also runs a PKI root CA |
+| 35 | **Authelia** | Single sign-on (forward-auth + OIDC) |
 | 41 | **Config Syncer (Reflector)** | Sync ConfigMaps/Secrets across namespaces |
 | 43 | **Private Registry** | imagePullSecrets via Reflector |
-| 51 | **Rancher** | Cluster management UI |
+| 51 | **Rancher** | Cluster management UI, SSO via Authelia OIDC |
 | 61–66 | **Observability Stack** | Prometheus · Loki · Promtail · Tempo/Jaeger · OTel · Grafana |
-| 70 | **ArgoCD** | GitOps |
+| 91 | **ArgoCD** | Utilities (DevOps) |
+| 93 | **Velero** (Backup) | Utilities (DevOps) — cluster resources + CSI volume snapshots; backs onto in-cluster MinIO (RKE2/Kind) — not yet wired for cloud platforms |
 
 All inputs are collected **upfront** before any installation starts.  
 No prompts mid-install. No manual `kubectl` commands required.
@@ -59,7 +59,6 @@ Follow the interactive prompts — group selection, then component selection and
 | `Reset-AKS.ps1` / `Reset-EKS.ps1` / `Reset-GKE.ps1` | Delete cloud cluster and clean up resources |
 | `Verify-RKE2.ps1` | Verify a clean reset — lists any remaining resources |
 | `Rotate-Secret.ps1` | Rotate a secret in the vault and restart affected workloads |
-| `Rotate-Cert.ps1` | Replace the wildcard TLS certificate (PFX → Vault → auto-sync) |
 
 ---
 

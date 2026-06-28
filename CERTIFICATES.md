@@ -1,9 +1,10 @@
 # Certificate Handling — External mTLS for MQTT Clients
 
 This document covers **client certificate issuance** for MQTT clients that sit
-outside the cluster — the part that doesn't fit in [ARCHITECTURE.md](ARCHITECTURE.md)
-section 6. See that document first for the overall MQTT placement decision
-(separate install script, not part of this baseline).
+outside the cluster — a speculative design for a future, separate MQTT install
+script that is **not part of this baseline** and **not yet implemented**. See
+[ARCHITECTURE.md](ARCHITECTURE.md) ("Out of scope" section) for why MQTT isn't
+covered there.
 
 > Diagrams are embedded as [Mermaid](https://mermaid.js.org/) — rendered
 > directly as graphics in VS Code Markdown Preview, GitHub, etc.
@@ -26,7 +27,7 @@ TLS (mTLS, client certificate required) closes that gap.
 None of the cloud-native secret stores this baseline already uses
 (Azure Key Vault, AWS Secrets Manager, GCP Secret Manager) act as a general
 PKI/CA — they only store values. Only OpenBao's `pki` secrets engine does, and
-it's already part of the baseline for on-prem/Kind (`23-openbao`).
+it's already part of the baseline for on-prem/Kind (`33-openbao`).
 
 ---
 
@@ -36,7 +37,7 @@ it's already part of the baseline for on-prem/Kind (`23-openbao`).
 flowchart TB
     subgraph ONPREM["On-premise / Kind"]
         direction TB
-        OB1["OpenBao (baseline component 23-openbao)\nKV-v2 secrets + PKI engine (added by MQTT script)\nrole: mqtt-client"]
+        OB1["OpenBao (baseline component 33-openbao)\nKV-v2 secrets + PKI engine (added by MQTT script)\nrole: mqtt-client"]
         MB1["MQTT broker (mqtt ns)"]
         OB1 -- "issues client certs" --> EXT1["External MQTT clients"]
         OB1 -- "issues + syncs server cert\n(via ESO, existing pattern)" --> MB1
@@ -45,7 +46,7 @@ flowchart TB
     subgraph CLOUD["Cloud (AKS / EKS / GKE)"]
         direction TB
         NativeKV["Native KV store\n(Key Vault / Secrets Manager / Secret Manager)\nunchanged — ordinary secrets only"]
-        OB2["Dedicated OpenBao instance\n(MQTT script reuses baseline's\n23-openbao/Install.ps1)\nPKI engine only · role: mqtt-client"]
+        OB2["Dedicated OpenBao instance\n(MQTT script reuses baseline's\n33-openbao/Install.ps1)\nPKI engine only · role: mqtt-client"]
         MB2["MQTT broker (mqtt ns)"]
         OB2 -- "issues client certs" --> EXT2["External MQTT clients"]
         OB2 -- "issues + syncs server cert" --> MB2
@@ -114,7 +115,7 @@ sequenceDiagram
     Dev->>LB: TCP SYN
     LB->>BRK: forward TCP (no HTTP ingress)
     Dev->>BRK: TLS ClientHello
-    BRK-->>Dev: ServerHello + server certificate\n(wildcard cert, same as other components)
+    BRK-->>Dev: ServerHello + server certificate\n(per-hostname cert from cert-manager's\nopenbao-pki ClusterIssuer, same as other components)
     BRK->>Dev: CertificateRequest
     Dev->>BRK: client certificate (issued by OpenBao's CA)
     Note over BRK: Broker validates the client cert\nagainst OpenBao's CA chain\n(trusted CA bundle loaded into the broker)
@@ -207,10 +208,10 @@ Revisit this section once the device provisioning process is defined.
 
 | Platform | CA for client certs | Extra deployment needed? | Ordinary secrets backend (unchanged) |
 |---|---|---|---|
-| RKE2 / Kind (on-prem) | OpenBao (`23-openbao`, already running) | No — just enable `pki` engine + role | OpenBao (same instance) |
-| AKS | Dedicated OpenBao (PKI only) | Yes — MQTT script runs `23-openbao/Install.ps1` | Azure Key Vault |
-| EKS | Dedicated OpenBao (PKI only) | Yes — MQTT script runs `23-openbao/Install.ps1` | AWS Secrets Manager |
-| GKE | Dedicated OpenBao (PKI only) | Yes — MQTT script runs `23-openbao/Install.ps1` | GCP Secret Manager |
+| RKE2 / Kind (on-prem) | OpenBao (`33-openbao`, already running) | No — just enable `pki` engine + role | OpenBao (same instance) |
+| AKS | Dedicated OpenBao (PKI only) | Yes — MQTT script runs `33-openbao/Install.ps1` | Azure Key Vault |
+| EKS | Dedicated OpenBao (PKI only) | Yes — MQTT script runs `33-openbao/Install.ps1` | AWS Secrets Manager |
+| GKE | Dedicated OpenBao (PKI only) | Yes — MQTT script runs `33-openbao/Install.ps1` | GCP Secret Manager |
 
 **Considered and rejected:** native cloud PKI services (AWS Private CA, GCP
 Certificate Authority Service) and HashiCorp Vault. Native cloud PKI would mean
@@ -223,9 +224,12 @@ parallel install path to maintain for no functional gain.
 ## 9. Not yet implemented
 
 Everything above is the target architecture for the **separate MQTT install
-script** (see the placement decision in [ARCHITECTURE.md](ARCHITECTURE.md)
-section 5). Nothing in this repository currently enables the `pki` engine,
-writes the `mqtt-client` role, or deploys a second OpenBao instance on cloud
-platforms — this is the design to build against once that script is started.
+script** (see the "Out of scope" note in [ARCHITECTURE.md](ARCHITECTURE.md) for
+why MQTT isn't part of this baseline). The baseline's `33-openbao` already
+enables the `pki` engine and
+a root CA on RKE2/Kind (for ingress certs, via cert-manager's `openbao-pki`
+ClusterIssuer) — but nothing in this repository yet writes the dedicated
+`mqtt-client` role, or deploys a second OpenBao instance on cloud platforms;
+that's still the design to build against once the MQTT script is started.
 Enrollment/bootstrap (§7) is still open and needs to be resolved before this
 can be built end-to-end.
