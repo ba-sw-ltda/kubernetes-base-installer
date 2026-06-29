@@ -705,8 +705,6 @@ function Start-Installation {
         -Rke2SshServer $rke2SshServerArg -Rke2SshUser $rke2SshUser `
         -Rke2SshKeyPath $rke2SshKeyPath -Rke2SshPassword $rke2SshPassword
 
-    Write-Host "`nBase installation complete for $platform." -ForegroundColor Green
-
     # Kubernetes version check — components like OpenBao require >= 1.30
     $k8sVersion = & kubectl version --output json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
     $serverVersion = if ($k8sVersion -and $k8sVersion.serverVersion) {
@@ -720,6 +718,19 @@ function Start-Installation {
         Write-Host "  Bitte den Cluster auf 1.30+ upgraden." -ForegroundColor Yellow
         Write-Host ""
     }
+
+    # Detect mandatory groups that are already fully installed on the
+    # connected cluster — lets the selection screen in Step 3 unlock and
+    # pre-uncheck them, so re-running the installer to test a later group
+    # (e.g. Observability Stack) doesn't force reinstalling everything before
+    # it. Runs as one more connectivity check alongside the ones above, so
+    # "Base installation complete" below stays the section's closing line.
+    $preinstalledGroups = Get-PreinstalledGroups -Platform $platform
+    if ($preinstalledGroups.Count -gt 0) {
+        Write-Host "  ✓ Already installed, will be unlocked in the next step: $($preinstalledGroups -join ', ')" -ForegroundColor Green
+    }
+
+    Write-Host "`nBase installation complete for $platform." -ForegroundColor Green
     Start-Sleep -Seconds 1
     Write-Host "Press any key to continue..." -ForegroundColor DarkGray
     [Console]::ReadKey($true) | Out-Null
@@ -729,7 +740,14 @@ function Start-Installation {
     # alphabetic/conceptual grouping — Storage installs before Security (so
     # the Vault backend can use Longhorn as its StorageClass), so Storage is
     # "20" and Security is "30", not the other way around.
-    $ingressLabel = "10 - Ingress & Load Balancing"
+    $ingressLabel    = "10 - Ingress & Load Balancing"
+    $storageLabel    = "20 - Storage"
+    $securityLabel   = "30 - Security & Certificates"
+    $configMgmtLabel = "40 - Configuration Management"
+    if ($preinstalledGroups.Contains("Ingress & Load Balancing")) { $ingressLabel    += " (already installed)" }
+    if ($preinstalledGroups.Contains("Storage (Longhorn)"))       { $storageLabel    += " (already installed)" }
+    if ($preinstalledGroups.Contains("Security & Certificates"))  { $securityLabel   += " (already installed)" }
+    if ($preinstalledGroups.Contains("Configuration Management")) { $configMgmtLabel += " (already installed)" }
 
     $componentOptions = @(
         @{ Label = $ingressLabel; Value = "Ingress & Load Balancing" }
@@ -738,15 +756,14 @@ function Start-Installation {
     # Storage (Longhorn) is only ever offered on RKE2 (other platforms have
     # their own native StorageClass) — mandatory wherever it IS offered, same
     # as Ingress & Load Balancing / Security & Certificates below.
-    $storageLabel = "20 - Storage"
     if ($platform -eq "RKE2 (On-Premise)") {
         $componentOptions += @{ Label = $storageLabel; Value = "Storage (Longhorn)" }
     }
 
-    $componentOptions += @{ Label = "30 - Security & Certificates"; Value = "Security & Certificates" }
+    $componentOptions += @{ Label = $securityLabel; Value = "Security & Certificates" }
 
     $componentOptions += @(
-        @{ Label = "40 - Configuration Management"; Value = "Configuration Management" }
+        @{ Label = $configMgmtLabel; Value = "Configuration Management" }
     )
     # "Rancher", not the generic "Management" — unlike Registry (39, generic
     # on purpose, multiple products fit), there's only ever one product here,
@@ -760,26 +777,34 @@ function Start-Installation {
         @{ Label = "90 - Utilities (DevOps)"; Value = "Utilities" }
     )
 
-    # Build default values based on platform
-    $defaultValues = @("Ingress & Load Balancing", "Security & Certificates", "Configuration Management")
+    # Build default values based on platform — a mandatory group that's
+    # already installed (see $preinstalledGroups above) starts unchecked
+    # instead, since $disabledGroups below also leaves it unlocked.
+    $defaultValues = @()
+    if (-not $preinstalledGroups.Contains("Ingress & Load Balancing")) { $defaultValues += "Ingress & Load Balancing" }
+    if (-not $preinstalledGroups.Contains("Security & Certificates"))  { $defaultValues += "Security & Certificates" }
+    if (-not $preinstalledGroups.Contains("Configuration Management")) { $defaultValues += "Configuration Management" }
     if ($platform -in @("RKE2 (On-Premise)", "Kind (Local)")) {
         $defaultValues += "Management"
     }
-    if ($platform -eq "RKE2 (On-Premise)") {
+    if ($platform -eq "RKE2 (On-Premise)" -and -not $preinstalledGroups.Contains("Storage (Longhorn)")) {
         $defaultValues += "Storage (Longhorn)"
     }
-    
+
     # Optional Components Selection
     # Ingress & Load Balancing, Security & Certificates, Configuration
     # Management, and (where offered) Storage are mandatory — shown checked
     # and locked, not hidden, so it's clear they're part of the install
-    # rather than silently always-on.
-    $disabledGroups = @{
-        $ingressLabel                    = $true
-        "30 - Security & Certificates"   = $true
-        "40 - Configuration Management"  = $true
+    # rather than silently always-on. Already-installed ones are the one
+    # exception: still shown, but unlocked and unchecked by default, so a
+    # re-run testing a later group doesn't force reinstalling them too.
+    $disabledGroups = @{}
+    if (-not $preinstalledGroups.Contains("Ingress & Load Balancing")) { $disabledGroups[$ingressLabel] = $true }
+    if (-not $preinstalledGroups.Contains("Security & Certificates"))  { $disabledGroups[$securityLabel] = $true }
+    if (-not $preinstalledGroups.Contains("Configuration Management")) { $disabledGroups[$configMgmtLabel] = $true }
+    if ($platform -eq "RKE2 (On-Premise)" -and -not $preinstalledGroups.Contains("Storage (Longhorn)")) {
+        $disabledGroups[$storageLabel] = $true
     }
-    if ($platform -eq "RKE2 (On-Premise)") { $disabledGroups[$storageLabel] = $true }
 
     $selectedComponentGroups = Read-MultiSelectValues `
         -Title "Select Optional Component Groups" `

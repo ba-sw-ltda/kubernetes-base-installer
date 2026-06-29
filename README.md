@@ -28,6 +28,12 @@ Supports **AKS · EKS · GKE · RKE2 (On-Premise) · Kind (Local)** from a singl
 All inputs are collected **upfront** before any installation starts.  
 No prompts mid-install. No manual `kubectl` commands required.
 
+Re-running against a cluster that already has some groups installed marks
+those `(already installed)` and unlocks their checkbox (normally locked-on
+as mandatory) so you can deselect them and jump straight to a later group —
+e.g. testing just the Observability Stack without redoing Ingress/Storage/
+Security/Configuration Management first.
+
 ---
 
 ## Requirements
