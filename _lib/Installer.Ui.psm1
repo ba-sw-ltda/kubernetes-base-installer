@@ -872,9 +872,21 @@ function Get-AutheliaSecretHash {
 # an open Ingress). Deliberately does not check Test-AutheliaInstalled —
 # doesn't matter whether it's live yet, and nothing needs to come back and
 # retrofit this annotation later, so callers never need to special-case
-# install order. Returns @{ Annotations = @{ ... } } to merge into the
-# caller's own Ingress YAML metadata.annotations — same "pieces to merge"
+# install order. Returns @{ Annotations = @{ ... }; TlsBlock = "..." } to
+# merge into the caller's own Ingress YAML — same "pieces to merge"
 # convention as New-CsiSecretMount.
+#
+# TlsBlock/ssl-redirect/cluster-issuer (same shape 35-authelia/Install.ps1
+# already uses for its own Ingress) are included here, not left to each
+# caller, because they're not optional polish: Authelia's session cookie is
+# Secure (it only ever runs behind HTTPS — see Sync-AutheliaConfiguration's
+# authelia_url), so a protected app still served over plain HTTP never
+# receives that cookie back, and current browsers actively block the
+# https->http downgrade redirect anyway ("insecure redirect blocked").
+# Confirmed live: Longhorn and Prometheus both bounced back to the Authelia
+# login screen after a successful login until this was added. Cloud
+# platforms get no TlsBlock and keep ssl-redirect "false", same as before —
+# Get-ClusterIssuerName returns "" there (no ClusterIssuer wired up yet).
 # -------------------------
 function Protect-ComponentIngress {
     param(
@@ -886,22 +898,40 @@ function Protect-ComponentIngress {
         $Platform = $script:InstallerPlatform
         if (-not $Platform) {
             Write-Error "Protect-ComponentIngress: -Platform ist erforderlich. Bitte Connect-Cluster aufrufen oder -Platform explizit übergeben."
-            return @{ Annotations = @{} }
+            return @{ Annotations = @{}; TlsBlock = "" }
         }
     }
 
     $autheliaHost = & kubectl get ingress authelia -n authelia -o jsonpath='{.spec.rules[0].host}' 2>$null
     if (-not $autheliaHost) { $autheliaHost = "authelia.$($Hostname -replace '^[^.]+\.', '')" }
+
+    $issuerName    = Get-ClusterIssuerName -Platform $Platform
+    $tlsSecretName = "$($Hostname -replace '\.', '-')-tls"
+    $sslRedirect   = if ($issuerName) { "true" } else { "false" }
+    $tlsBlock = if ($issuerName) {
+@"
+  tls:
+  - hosts:
+    - $Hostname
+    secretName: $tlsSecretName
+"@
+    } else { "" }
+
+    $annotations = @{
+        "nginx.ingress.kubernetes.io/auth-url"              = "http://authelia.authelia.svc.cluster.local/api/verify"
+        "nginx.ingress.kubernetes.io/auth-signin"           = "http://$autheliaHost/?rd=`$scheme://`$host`$request_uri"
+        "nginx.ingress.kubernetes.io/auth-response-headers" = "Remote-User,Remote-Groups,Remote-Name,Remote-Email"
+        "nginx.ingress.kubernetes.io/ssl-redirect"          = $sslRedirect
+        # auth-snippet (X-Forwarded-Method) deliberately omitted — needs
+        # allow-snippet-annotations enabled, which ingress-nginx disables
+        # by default for good reason (arbitrary nginx config injection).
+        # Not re-enabling that just for this one header.
+    }
+    if ($issuerName) { $annotations["cert-manager.io/cluster-issuer"] = $issuerName }
+
     return @{
-        Annotations = @{
-            "nginx.ingress.kubernetes.io/auth-url"              = "http://authelia.authelia.svc.cluster.local/api/verify"
-            "nginx.ingress.kubernetes.io/auth-signin"           = "http://$autheliaHost/?rd=`$scheme://`$host`$request_uri"
-            "nginx.ingress.kubernetes.io/auth-response-headers" = "Remote-User,Remote-Groups,Remote-Name,Remote-Email"
-            # auth-snippet (X-Forwarded-Method) deliberately omitted — needs
-            # allow-snippet-annotations enabled, which ingress-nginx disables
-            # by default for good reason (arbitrary nginx config injection).
-            # Not re-enabling that just for this one header.
-        }
+        Annotations = $annotations
+        TlsBlock    = $tlsBlock
     }
 }
 

@@ -121,10 +121,10 @@ metadata:
   name: jaeger
   namespace: $Namespace
   annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
 $authAnnotations
 spec:
   ingressClassName: $(Get-IngressClass)
+$($protect.TlsBlock)
   rules:
   - host: $Hostname
     http:
