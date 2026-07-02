@@ -47,11 +47,10 @@ if ([string]::IsNullOrWhiteSpace($Schedule)) {
 
 $verbose = $VerbosePreference -eq 'Continue'
 
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Installing: 93 - Velero (Backup)" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
-
 if ($Platform -notin @("RKE2 (On-Premise)", "Kind (Local)")) {
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "  Installing: 93 - Velero (Backup)" -ForegroundColor Cyan
+    Write-Host "========================================`n" -ForegroundColor Cyan
     Write-Host "  Velero is not yet wired up for $Platform." -ForegroundColor Yellow
     Write-Host "  RKE2/Kind back onto an in-cluster MinIO instance; $Platform would" -ForegroundColor Gray
     Write-Host "  instead use its native object storage (S3/Blob/GCS) as the backup" -ForegroundColor Gray
@@ -69,15 +68,19 @@ $Namespace       = $FullConfig.Namespace
 $CreateNamespace = $FullConfig.CreateNamespace
 $UserConfig      = $FullConfig.UserConfig
 
-Write-Host "  Chart:      $ChartName v$ChartVersion" -ForegroundColor Gray
-Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
-Write-Host "  Schedule:   $Schedule  |  Retention: $RetentionDays day(s)" -ForegroundColor Gray
-Write-Host ""
-
 # ── MinIO — Velero's backup target on RKE2/Kind, dispatched directly the
 # same way 51-rancher dispatches to 51-rancher-agent ──
 & "$BaseDir\92-minio\Install.ps1" -Platform $Platform
 if ($LASTEXITCODE -ne 0) { Write-Error "MinIO setup failed — aborting Velero install"; exit 1 }
+
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "  Installing: 93 - Velero (Backup)" -ForegroundColor Cyan
+Write-Host "========================================`n" -ForegroundColor Cyan
+
+Write-Host "  Chart:      $ChartName v$ChartVersion" -ForegroundColor Gray
+Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
+Write-Host "  Schedule:   $Schedule  |  Retention: $RetentionDays day(s)" -ForegroundColor Gray
+Write-Host ""
 
 $minioCred = Get-ClusterSecret -Path "minio/velero-credential" -Keys @("accessKey", "secretKey") -BaseDir $BaseDir -Platform $Platform
 if (-not $minioCred -or -not $minioCred["accessKey"]) { Write-Error "Could not read Velero's MinIO credential from Vault"; exit 1 }

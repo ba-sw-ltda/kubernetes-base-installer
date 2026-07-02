@@ -188,6 +188,10 @@ $($protect.TlsBlock)
         Write-Error "Failed to create Longhorn UI Ingress"; exit 1
     }
     Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green
+    $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
+    Register-PortalEntry -Name "Longhorn" -Url "${scheme}://$Hostname" `
+        -Category "Storage" -Subtitle "Distributed Block Storage" -Order 21 `
+        -LogoUrl "https://longhorn.io/img/logos/longhorn-icon-color.png"
 }
 
 if ($verbose) {

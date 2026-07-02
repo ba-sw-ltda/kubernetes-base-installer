@@ -98,7 +98,66 @@ if ($CreateNamespace) {
     Write-Host "  ✓ Namespace ready" -ForegroundColor Green
 }
 
+# Pre-flight: if the MinIO pod is not Running, clean up stale Longhorn attachment
+# state that blocks a Longhorn volume from leaving creating/attaching/faulted state.
+# Also deletes the PVC when the volume has never held data so a fresh (correctly
+# sized) PVC is provisioned by Helm on the next install.
+$minioPodPhaseRaw = & kubectl get pods -n $Namespace -l "app=minio" -o jsonpath='{.items[0].status.phase}' 2>$null
+$minioPodPhase = if ($minioPodPhaseRaw) { $minioPodPhaseRaw.Trim() } else { "" }
+if ($minioPodPhase -ne 'Running') {
+    $minioPvc = try { & kubectl get pvc minio -n $Namespace -o json 2>$null | ConvertFrom-Json } catch { $null }
+    if ($minioPvc) {
+        $pvName = $minioPvc.spec.volumeName
+        if ($pvName) {
+            $lhSnapshots = try {
+                (& kubectl get snapshot.longhorn.io -n longhorn-system -o json 2>$null | ConvertFrom-Json).items |
+                    Where-Object { $_.spec.volume -eq $pvName -and $_.status.readyToUse -eq $false }
+            } catch { @() }
+            foreach ($snap in @($lhSnapshots)) {
+                Write-Host "  ⚠ Removing stuck Longhorn Snapshot '$($snap.metadata.name)'..." -ForegroundColor Yellow
+                & kubectl delete snapshot.longhorn.io $snap.metadata.name -n longhorn-system 2>$null | Out-Null
+            }
+
+            & kubectl get volumeattachment.longhorn.io $pvName -n longhorn-system 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  ⚠ Removing stuck Longhorn VolumeAttachment for '$pvName'..." -ForegroundColor Yellow
+                & kubectl delete volumeattachment.longhorn.io $pvName -n longhorn-system 2>$null | Out-Null
+            }
+
+            $allVas = try { (& kubectl get volumeattachment -o json 2>$null | ConvertFrom-Json).items } catch { @() }
+            foreach ($va in @($allVas | Where-Object { $_.spec.source.persistentVolumeName -eq $pvName })) {
+                Write-Host "  ⚠ Removing stuck K8s VolumeAttachment for '$pvName'..." -ForegroundColor Yellow
+                & kubectl delete volumeattachment $va.metadata.name 2>$null | Out-Null
+            }
+
+            $lhVol = try { & kubectl get volume.longhorn.io $pvName -n longhorn-system -o json 2>$null | ConvertFrom-Json } catch { $null }
+            if ($lhVol) {
+                $actualSize     = [long]($lhVol.status.actualSize -replace '[^0-9]', '')
+                $lastDegradedAt = $lhVol.status.lastDegradedAt
+                $volState       = $lhVol.status.state
+                if ($actualSize -eq 0 -and (-not $lastDegradedAt -or $lastDegradedAt -eq '') -and
+                    $volState -in @('creating', 'attaching', 'detached', 'faulted')) {
+                    Write-Host "  ⚠ Longhorn volume '$pvName' has never held data (state=$volState) — deleting PVC for fresh provisioning..." -ForegroundColor Yellow
+                    & kubectl delete pvc minio -n $Namespace 2>$null | Out-Null
+                    Start-Sleep -Seconds 5
+                }
+            }
+        }
+    }
+}
+
 Reset-StuckHelmRelease -ReleaseName "minio" -Namespace $Namespace
+
+# Override chart defaults: clear users/buckets/policies so no post-install hook job
+# is created. The chart ships with a default console user that triggers the hook even
+# when no explicit provisioning args are passed. We do our own provisioning via mc below.
+$tempMinioValues = Join-Path $env:TEMP "minio-override-values.yaml"
+Set-Content -Path $tempMinioValues -Encoding UTF8 -Value @"
+users: []
+buckets: []
+policies: []
+svcaccts: []
+"@
 
 $HelmArgs = @(
     "upgrade", "--install", "minio", "minio/$ChartName",
@@ -113,10 +172,9 @@ $HelmArgs = @(
     "--set", "resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
     "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
-    "--set", "buckets[0].name=$BucketName",
-    "--set", "buckets[0].policy=none",
     "--set", "service.type=ClusterIP",
-    "--set", "consoleService.type=ClusterIP"
+    "--set", "consoleService.type=ClusterIP",
+    "--values", $tempMinioValues
 )
 if ($UserConfig.StorageClass) {
     $HelmArgs += "--set", "persistence.storageClass=$($UserConfig.StorageClass)"
@@ -124,6 +182,7 @@ if ($UserConfig.StorageClass) {
 
 $exitCode = Invoke-WithSpinner -Message "Deploying MinIO..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
+Remove-Item $tempMinioValues -Force -ErrorAction SilentlyContinue
 if ($exitCode -ne 0) { Write-Error "Failed to deploy MinIO (exit code $exitCode)"; exit 1 }
 Write-Host "  ✓ Deployed" -ForegroundColor Green
 
@@ -137,6 +196,7 @@ Write-Host "  ✓ Rollout complete" -ForegroundColor Green
 # the tool's own CLI, same idiom as Get-HtpasswdHash/Get-AutheliaSecretHash ──
 $policyJson = "{`"Version`":`"2012-10-17`",`"Statement`":[{`"Effect`":`"Allow`",`"Action`":[`"s3:*`"],`"Resource`":[`"arn:aws:s3:::$BucketName`",`"arn:aws:s3:::$BucketName/*`"]}]}"
 $mcScript = "mc alias set target http://minio.$Namespace.svc.cluster.local:9000 $rootUser $rootPassword >/dev/null && " +
+    "mc mb --ignore-existing target/$BucketName && " +
     "echo '$policyJson' > /tmp/velero-policy.json && " +
     "mc admin policy create target velero-policy /tmp/velero-policy.json && " +
     "mc admin user add target $veleroAccessKey $veleroSecretKey && " +

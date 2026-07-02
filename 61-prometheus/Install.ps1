@@ -151,6 +151,10 @@ $($protect.TlsBlock)
 "@
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
+    $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
+    Register-PortalEntry -Name "Prometheus" -Url "${scheme}://$Hostname" `
+        -Category "Observability" -Subtitle "Metrics & Alerting" -Order 61 `
+        -LogoUrl "https://prometheus.io/assets/prometheus_logo-cb55bb5c346.png"
 }
 
 # Service alias so apps can use prometheus.monitoring instead of the full name

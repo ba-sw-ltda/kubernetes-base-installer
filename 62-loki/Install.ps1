@@ -42,6 +42,65 @@ Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 
 Reset-StuckHelmRelease -ReleaseName "loki" -Namespace $Namespace
 
+# Pre-flight: if the Loki pod is not Running, clean up stale attachment state that
+# blocks Longhorn from advancing a volume out of creating/attaching state.
+# Layers cleaned up (in order):
+#   1. Longhorn Snapshot CRs with readyToUse=false  (block engine lifecycle transitions)
+#   2. Longhorn VolumeAttachment CRD in longhorn-system  (blocks volume state machine)
+#   3. K8s cluster-scoped VolumeAttachment (blocks CSI attacher)
+# If the Longhorn volume has actualSize=0 and lastDegradedAt="" the volume has never
+# held data, so we also delete the PVC so the StatefulSet can provision a fresh volume.
+$lokiPhase = (& kubectl get pod loki-0 -n $Namespace -o jsonpath='{.status.phase}' 2>$null).Trim()
+if ($lokiPhase -ne 'Running') {
+    $lokiPvcs = try { (& kubectl get pvc -n $Namespace -o json 2>$null | ConvertFrom-Json).items } catch { @() }
+    foreach ($pvc in @($lokiPvcs | Where-Object { $_.metadata.name -match '^storage-loki-' })) {
+        $pvName = $pvc.spec.volumeName
+        if (-not $pvName) { continue }
+        $pvcName = $pvc.metadata.name
+
+        # 1. Longhorn Snapshot CRs with readyToUse=false
+        $lhSnapshots = try {
+            (& kubectl get snapshot.longhorn.io -n longhorn-system -o json 2>$null | ConvertFrom-Json).items |
+                Where-Object { $_.spec.volume -eq $pvName -and $_.status.readyToUse -eq $false }
+        } catch { @() }
+        foreach ($snap in @($lhSnapshots)) {
+            Write-Host "  ⚠ Removing stuck Longhorn Snapshot '$($snap.metadata.name)' for PV '$pvName'..." -ForegroundColor Yellow
+            & kubectl delete snapshot.longhorn.io $snap.metadata.name -n longhorn-system 2>$null | Out-Null
+        }
+
+        # 2. Longhorn VolumeAttachment CRD in longhorn-system
+        & kubectl get volumeattachment.longhorn.io $pvName -n longhorn-system 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ⚠ Removing stuck Longhorn VolumeAttachment for PV '$pvName'..." -ForegroundColor Yellow
+            & kubectl delete volumeattachment.longhorn.io $pvName -n longhorn-system 2>$null | Out-Null
+        }
+
+        # 3. K8s cluster-scoped VolumeAttachments
+        $allVas = try { (& kubectl get volumeattachment -o json 2>$null | ConvertFrom-Json).items } catch { @() }
+        foreach ($va in @($allVas | Where-Object { $_.spec.source.persistentVolumeName -eq $pvName })) {
+            Write-Host "  ⚠ Removing stuck K8s VolumeAttachment for PV '$pvName' (was on $($va.spec.nodeName))..." -ForegroundColor Yellow
+            & kubectl delete volumeattachment $va.metadata.name 2>$null | Out-Null
+        }
+
+        # 4. If the Longhorn volume has never held data, delete the PVC so the
+        #    StatefulSet controller provisions a clean replacement volume.
+        $lhVol = try { & kubectl get volume.longhorn.io $pvName -n longhorn-system -o json 2>$null | ConvertFrom-Json } catch { $null }
+        if ($lhVol) {
+            $actualSize    = [long]($lhVol.status.actualSize -replace '[^0-9]', '')
+            $lastDegradedAt = $lhVol.status.lastDegradedAt
+            $volState       = $lhVol.status.state
+            if ($actualSize -eq 0 -and (-not $lastDegradedAt -or $lastDegradedAt -eq '') -and
+                $volState -in @('creating', 'attaching', 'detached')) {
+                Write-Host "  ⚠ Longhorn volume '$pvName' has never held data (actualSize=0, state=$volState)." -ForegroundColor Yellow
+                Write-Host "    Deleting PVC '$pvcName' so the StatefulSet can provision a fresh volume..." -ForegroundColor Yellow
+                & kubectl delete pvc $pvcName -n $Namespace 2>$null | Out-Null
+                # Give K8s a moment to recreate the PVC before Helm install proceeds
+                Start-Sleep -Seconds 5
+            }
+        }
+    }
+}
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "grafana", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }

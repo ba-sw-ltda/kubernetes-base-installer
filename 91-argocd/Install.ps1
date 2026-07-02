@@ -78,6 +78,10 @@ type: Opaque
     }
 }
 
+$issuerName    = Get-ClusterIssuerName -Platform $Platform
+$tlsSecretName = if ($Hostname) { "argocd-$($Hostname -replace '\.', '-')-tls" } else { "" }
+$sslRedirect   = if ($issuerName) { "true" } else { "false" }
+
 $HelmArgs = @(
     "upgrade", "--install", "--force", "argocd", "argo/$ChartName",
     "--namespace", $Namespace, "--version", $ChartVersion,
@@ -114,7 +118,49 @@ foreach ($dep in $deployments) {
     Write-Host "  ✓ $dep ready" -ForegroundColor Green
 }
 
+# ── OIDC: register ArgoCD as Authelia client, patch argocd-cm / argocd-secret ─
+$oidcConfig = $null
+if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
+    $autheliaDeployed = (& kubectl get deployment authelia -n authelia --ignore-not-found -o name 2>$null).Trim()
+    if ($autheliaDeployed) {
+        $oidcConfig = Register-AutheliaOidcClient `
+            -ClientId "argocd" -ClientName "ArgoCD" `
+            -RedirectUris @("https://$Hostname/auth/callback") `
+            -BaseDir $BaseDir -Platform $Platform
+        if ($oidcConfig) {
+            $secretB64   = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($oidcConfig.ClientSecret))
+            $secretPatch = "{`"data`":{`"oidc.clientSecret`":`"$secretB64`"}}"
+            & kubectl patch secret argocd-secret -n $Namespace --type merge -p $secretPatch 2>&1 | Out-Null
+
+            # $oidc.clientSecret is ArgoCD's own template reference to argocd-secret, not a PS variable
+            $oidcYaml = "name: Authelia`nissuer: $($oidcConfig.Issuer)`nclientID: argocd`nclientSecret: `$oidc.clientSecret`nrequestedScopes:`n  - openid`n  - profile`n  - email`n  - groups`nrequestedIDTokenClaims:`n  groups:`n    essential: true"
+            $cmPatch   = @{ data = @{ "oidc.config" = $oidcYaml } } | ConvertTo-Json -Compress -Depth 5
+            & kubectl patch configmap argocd-cm -n $Namespace --type merge -p $cmPatch 2>&1 | Out-Null
+
+            $rbacPatch = @{ data = @{
+                "policy.default" = "role:readonly"
+                "policy.csv"     = "g, admins, role:admin"
+                "scopes"         = "[groups, email]"
+            }} | ConvertTo-Json -Compress -Depth 5
+            & kubectl patch configmap argocd-rbac-cm -n $Namespace --type merge -p $rbacPatch 2>&1 | Out-Null
+            Write-Host "  ✓ Authelia OIDC registered" -ForegroundColor Green
+
+            $exitCode = Invoke-WithSpinner -Message "Restarting argocd-server for OIDC..." -Executable "kubectl" `
+                -Arguments @("rollout", "restart", "deployment/argocd-server", "-n", $Namespace) -ShowOutput:$verbose
+            $exitCode = Invoke-WithSpinner -Message "Waiting for argocd-server restart..." -Executable "kubectl" `
+                -Arguments @("rollout", "status", "deployment/argocd-server", "-n", $Namespace, "--timeout=3m") -ShowOutput:$verbose
+            if ($exitCode -ne 0) { Write-Warning "  ⚠ argocd-server restart timed out — OIDC may not be active yet" }
+            else { Write-Host "  ✓ argocd-server restarted" -ForegroundColor Green }
+        }
+    }
+}
+
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
+    $issuerAnnotation = if ($issuerName) { "`n    cert-manager.io/cluster-issuer: $issuerName" } else { "" }
+    $tlsBlock = if ($issuerName -and $tlsSecretName) {
+        "  tls:`n  - hosts:`n    - $Hostname`n    secretName: $tlsSecretName`n"
+    } else { "" }
+
     $ingressYaml = @"
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -122,11 +168,11 @@ metadata:
   name: argocd-server
   namespace: $Namespace
   annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/ssl-redirect: "$sslRedirect"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"$issuerAnnotation
 spec:
   ingressClassName: $(Get-IngressClass)
-  rules:
+${tlsBlock}  rules:
   - host: $Hostname
     http:
       paths:
@@ -151,15 +197,14 @@ if ($verbose) {
     & kubectl get pods -n $Namespace
 }
 
-$password = & kubectl -n $Namespace get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>&1
-if ($LASTEXITCODE -eq 0) {
-    $decodedPassword = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($password))
-    Write-Host "`n  Initial admin password: $decodedPassword" -ForegroundColor Yellow
-    Write-Host "  (Only valid for first login)" -ForegroundColor Gray
-}
-
 if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+}
+
+$scheme = if ($issuerName -and $Hostname) { "https" } else { "http" }
+if ($Hostname) {
+    Register-PortalEntry -Name "ArgoCD" -Url "${scheme}://$Hostname" -Category "Utilities" `
+        -Subtitle "GitOps Continuous Delivery" -Order 91
 }
 
 Write-Host ""
@@ -167,10 +212,10 @@ Write-Host "  ──────────────────────
 Write-Host "  Quick Reference" -ForegroundColor White
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
-    Write-Host "  Access:  http://$Hostname" -ForegroundColor Yellow
-} elseif ($serviceType -eq "LoadBalancer") {
-    $ip = & kubectl get svc argocd-server -n $Namespace -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>&1
-    Write-Host "  Access:  https://${ip}:443" -ForegroundColor Yellow
+    Write-Host "  Access:  ${scheme}://$Hostname" -ForegroundColor Yellow
+    if ($oidcConfig) {
+        Write-Host "  Login:   via Authelia SSO (OIDC)" -ForegroundColor Green
+    }
 } else {
     Write-Host "  Service type: $serviceType — configure access per platform." -ForegroundColor Gray
 }

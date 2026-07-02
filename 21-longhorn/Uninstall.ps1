@@ -40,6 +40,8 @@ if (-not $Force) {
     }
 }
 
+Unregister-PortalEntry -Name "Longhorn"
+
 # ── 1. Remove Helm release ──────────────────────────────────────
 Write-Host "`n--- 1. Helm Release ---" -ForegroundColor Magenta
 $existing = & helm list -n $Namespace --filter "^longhorn$" --short 2>&1

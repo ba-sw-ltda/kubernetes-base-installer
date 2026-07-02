@@ -14,7 +14,7 @@
 
     UserConfig = @{
         BucketName   = "velero-backups"
-        StorageSize  = "20Gi"
+        StorageSize  = "15Gi"
         StorageClass = ""   # empty = cluster default StorageClass (Longhorn)
 
         Resources = @{

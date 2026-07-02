@@ -139,6 +139,10 @@ $($protect.TlsBlock)
 "@
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
+    $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
+    Register-PortalEntry -Name "Jaeger" -Url "${scheme}://$Hostname" `
+        -Category "Observability" -Subtitle "Distributed Tracing" -Order 64 `
+        -LogoUrl "https://raw.githubusercontent.com/jaegertracing/jaeger/main/artwork/Icon/jaeger-icon-reverse-color.svg"
 }
 
 if ($FullConfig.RancherProject) {

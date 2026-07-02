@@ -189,7 +189,7 @@ notifier:
 # wiped on every pod restart — confirmed live: a user lost both their session
 # and OIDC consent across a routine restart before this was added.
 $HelmArgs = @(
-    "upgrade", "--install", "--force", "authelia", "authelia/$ChartName",
+    "upgrade", "--install", "authelia", "authelia/$ChartName",
     "--namespace", $Namespace,
     "--version", $ChartVersion,
     "--set", "configMap.disabled=true",
@@ -237,12 +237,42 @@ if ($mount.Installed) {
     $HelmArgs += "--set", "pod.extraVolumeMounts[0].readOnly=true"
 }
 
+# Annotate an existing PVC before upgrade so Helm skips it — PVC spec is
+# immutable after binding and --force would otherwise try to delete/recreate it.
+& kubectl annotate pvc authelia -n $Namespace "helm.sh/resource-policy=keep" --overwrite 2>$null | Out-Null
+
+# If a node went unreachable, Authelia's pod enters Unknown state and keeps the
+# PVC's kubernetes.io/pvc-protection finalizer set — the PVC stays Terminating
+# and Helm can't create a new one with the same name. Force-deleting Unknown pods
+# is safe: the node is already gone so there is no risk of concurrent writes.
+$authPodsJson = & kubectl get pods -n $Namespace -l "app.kubernetes.io/name=authelia" -o json 2>$null
+if ($authPodsJson) {
+    $authPods = try { ($authPodsJson | ConvertFrom-Json).items } catch { @() }
+    @($authPods | Where-Object { $_.status.phase -eq "Unknown" } | ForEach-Object { $_.metadata.name }) |
+        Where-Object { $_ } | ForEach-Object {
+            Write-Host "  ⚠ Force-deleting Unknown pod '$_' (node unreachable) to free PVC..." -ForegroundColor Yellow
+            & kubectl delete pod $_ -n $Namespace --grace-period=0 --force 2>$null | Out-Null
+        }
+}
+$pvcDts = & kubectl get pvc authelia -n $Namespace -o "jsonpath={.metadata.deletionTimestamp}" 2>$null
+if ($pvcDts) {
+    Write-Host "  · Waiting for Terminating PVC to clear (up to 60s)..." -ForegroundColor DarkGray
+    & kubectl wait --for=delete pvc/authelia -n $Namespace --timeout=60s 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        # The PVC's protection finalizer is still set despite no pods holding it —
+        # patch it out so the deletion can complete.
+        Write-Host "  ⚠ PVC still Terminating — removing protection finalizer..." -ForegroundColor Yellow
+        & kubectl patch pvc authelia -n $Namespace --type json `
+            -p '[{"op":"remove","path":"/metadata/finalizers"}]' 2>$null | Out-Null
+        & kubectl wait --for=delete pvc/authelia -n $Namespace --timeout=15s 2>$null | Out-Null
+    }
+}
+
 Reset-StuckHelmRelease -ReleaseName "authelia" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying Authelia..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Authelia (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for authelia (up to 5m)..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/authelia", "-n", $Namespace, "--timeout=5m") `
@@ -251,6 +281,15 @@ if ($exitCode -ne 0) {
     Write-Host ""
     Write-Host "  ── Pod status ──────────────────────────────" -ForegroundColor DarkGray
     & kubectl get pods -n $Namespace -l "app.kubernetes.io/name=authelia" 2>&1 | ForEach-Object { Write-Host "  $_" }
+    $pendingPod = & kubectl get pods -n $Namespace -l "app.kubernetes.io/name=authelia" `
+        --field-selector "status.phase=Pending" -o "jsonpath={.items[0].metadata.name}" 2>$null
+    if ($pendingPod -and $pendingPod.Trim()) {
+        Write-Host ""
+        Write-Host "  ── Events for $($pendingPod.Trim()) ──────────────" -ForegroundColor DarkGray
+        & kubectl get events -n $Namespace `
+            --field-selector "involvedObject.name=$($pendingPod.Trim())" `
+            --sort-by ".lastTimestamp" 2>&1 | ForEach-Object { Write-Host "  $_" }
+    }
     Write-Error "Rollout of Authelia did not complete"
     exit 1
 }

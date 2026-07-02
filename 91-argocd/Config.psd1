@@ -11,7 +11,7 @@
     # User-configurable settings
     UserConfig = @{
         # Service type for ArgoCD server: LoadBalancer, NodePort, or ClusterIP
-        ServerServiceType = "LoadBalancer"
+        ServerServiceType = "ClusterIP"
         ServerInsecure    = $true
         
         # Resource limits and requests

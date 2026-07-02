@@ -10,13 +10,10 @@
 .PARAMETER ConfigPath
     Path to custom configuration file (optional)
 #>
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', 'AdminPassword',
-    Justification = 'Helm --set requires plain text; password is not logged or stored')]
 [CmdletBinding()]
 param(
     [string]$Platform,
     [string]$Hostname,
-    [string]$AdminPassword,
     [string]$ConfigPath
 )
 
@@ -27,7 +24,7 @@ Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
 # Standalone: if prompt parameters are missing, call Prompt.ps1 automatically
-if ([string]::IsNullOrWhiteSpace($AdminPassword) -or [string]::IsNullOrWhiteSpace($Hostname)) {
+if ([string]::IsNullOrWhiteSpace($Hostname)) {
     $aksState = if (Test-Path (Join-Path $BaseDir ".aks-state.json")) {
         Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json
     } else { $null }
@@ -37,9 +34,11 @@ if ([string]::IsNullOrWhiteSpace($AdminPassword) -or [string]::IsNullOrWhiteSpac
     } else { "kubernetes.local" }
     $inputs = & "$ScriptRoot\Prompt.ps1" -Platform $Platform -Domain $domain
     if (-not $inputs) { Write-Host "  Aborted." -ForegroundColor Red; exit 0 }
-    if ([string]::IsNullOrWhiteSpace($Hostname))       { $Hostname       = $inputs.Hostname }
-    if ([string]::IsNullOrWhiteSpace($AdminPassword))  { $AdminPassword  = $inputs.AdminPassword }
+    if ([string]::IsNullOrWhiteSpace($Hostname)) { $Hostname = $inputs.Hostname }
 }
+
+# Admin password is auto-generated — SSO (Authelia) handles login; this is only for emergency fallback
+$AdminPassword = [System.Guid]::NewGuid().ToString("N")
 
 $verbose = $VerbosePreference -eq 'Continue'
 
@@ -115,17 +114,52 @@ if ($LASTEXITCODE -eq 0) {
 "@
 }
 
-$tempValues = Join-Path $env:TEMP "grafana-values.yaml"
+# ── TLS issuer + OIDC (Authelia) ─────────────────────────────────────────────
+$issuerName    = Get-ClusterIssuerName -Platform $Platform
+$tlsSecretName = if ($Hostname) { "$($Hostname -replace '\.', '-')-tls" } else { "" }
+$sslRedirect   = if ($issuerName) { "true" } else { "false" }
+$tlsBlock      = if ($issuerName -and $Hostname) {
+@"
+  tls:
+  - hosts:
+    - $Hostname
+    secretName: $tlsSecretName
+"@
+} else { "" }
+$issuerAnnotationLine = if ($issuerName) { "    cert-manager.io/cluster-issuer: $issuerName" } else { "" }
+
+$oidcConfig = $null
+if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
+    $autheliaDeployed = (& kubectl get deployment authelia -n authelia --ignore-not-found -o name 2>$null).Trim()
+    if ($autheliaDeployed) {
+        Write-Host "  Registering Grafana as OIDC client in Authelia..." -ForegroundColor Gray -NoNewline
+        $oidcConfig = Register-AutheliaOidcClient `
+            -ClientId "grafana" -ClientName "Grafana" `
+            -RedirectUris @("https://$Hostname/login/generic_oauth") `
+            -BaseDir $BaseDir -Platform $Platform
+        if ($oidcConfig) {
+            Write-Host " ✓" -ForegroundColor Green
+        } else {
+            Write-Host " ⚠ (could not sync Authelia config — OIDC skipped)" -ForegroundColor Yellow
+        }
+    }
+}
+
+$tempValues     = Join-Path $env:TEMP "grafana-values.yaml"
+$tempOidcValues = Join-Path $env:TEMP "grafana-oidc-values.yaml"
+
+$mountKeys = @("adminPassword")
+if ($oidcConfig) { $mountKeys += "oidcClientSecret" }
 
 $mount = New-CsiSecretMount `
-    -AppName "grafana" -VaultPath "grafana" -Keys @("adminPassword") `
+    -AppName "grafana" -VaultPath "grafana" -Keys $mountKeys `
     -Namespace $Namespace -ServiceAccount "grafana" `
     -BaseDir $BaseDir -Platform $Platform
 
 if ($mount.Installed) {
-    $writeOk = Write-ClusterSecret -Path "grafana" -BaseDir $BaseDir -Platform $Platform -Data @{
-        adminPassword = $AdminPassword
-    }
+    $secretData = @{ adminPassword = $AdminPassword }
+    if ($oidcConfig) { $secretData['oidcClientSecret'] = $oidcConfig.ClientSecret }
+    $writeOk = Write-ClusterSecret -Path "grafana" -BaseDir $BaseDir -Platform $Platform -Data $secretData
     if ($writeOk) {
         $mount.SpcYaml | & kubectl apply -f - 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "SecretProviderClass could not be applied — check CSI driver installation"; exit 1 }
@@ -136,7 +170,41 @@ if ($mount.Installed) {
     }
 }
 
-$cmdWrapper = "export GF_SECURITY_ADMIN_PASSWORD=`$(cat $($mount.MountPath)/adminPassword) && exec /run.sh"
+$oidcSecretExport = if ($oidcConfig -and $mount.Installed) {
+    " && export GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET=`$(cat $($mount.MountPath)/oidcClientSecret)"
+} else { "" }
+$cmdWrapper = "export GF_SECURITY_ADMIN_PASSWORD=`$(cat $($mount.MountPath)/adminPassword)$oidcSecretExport && exec /run.sh"
+
+# OIDC ini block — built after mount so we know whether to use env-var expansion or literal.
+# The Grafana chart rejects client_secret as a literal value when assertNoLeakedSecrets=true
+# (default). When Vault/CSI is available we inject it via env var exported from the mounted
+# file; the ini references ${GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET} which Grafana expands at
+# startup. When Vault is unavailable we fall back to the literal and disable the guard.
+$oidcIniBlock = ""
+if ($oidcConfig) {
+    $oidcIssuer = $oidcConfig.Issuer
+    $clientSecretInIni = if ($mount.Installed) { '${GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET}' } else { $oidcConfig.ClientSecret }
+    $oidcIniBlock = @"
+grafana.ini:
+  auth.generic_oauth:
+    enabled: "true"
+    name: "Authelia"
+    allow_sign_up: "true"
+    client_id: "grafana"
+    client_secret: "$clientSecretInIni"
+    scopes: "openid profile email groups"
+    auth_url: "$oidcIssuer/api/oidc/authorization"
+    token_url: "$oidcIssuer/api/oidc/token"
+    api_url: "$oidcIssuer/api/oidc/userinfo"
+    login_attribute_path: "preferred_username"
+    name_attribute_path: "name"
+    email_attribute_path: "email"
+    groups_attribute_path: "groups"
+    role_attribute_path: "contains(groups[*], 'admins') && 'Admin' || 'Viewer'"
+    use_pkce: "true"
+    use_refresh_token: "true"
+"@
+}
 
 $valuesYaml = if ($mount.Installed) { @"
 datasources:
@@ -176,6 +244,9 @@ datasources:
 $tracingDatasource
 "@ }
 Set-Content -Path $tempValues -Value $valuesYaml -Encoding UTF8
+if ($oidcConfig) {
+    Set-Content -Path $tempOidcValues -Value $oidcIniBlock -Encoding UTF8
+}
 
 $HelmArgs = @(
     "upgrade", "--install", "--force", "grafana", "grafana/$ChartName",
@@ -187,6 +258,12 @@ $HelmArgs = @(
     "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
     "--values", $tempValues
 )
+if ($oidcConfig) {
+    $HelmArgs += "--values", $tempOidcValues
+}
+if ($oidcConfig -and -not $mount.Installed) {
+    $HelmArgs += "--set", "assertNoLeakedSecrets=false"
+}
 
 if ($mount.Installed) {
     $HelmArgs += $mount.HelmArgs
@@ -201,7 +278,8 @@ Reset-StuckHelmRelease -ReleaseName "grafana" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying Grafana..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
-Remove-Item $tempValues -Force -ErrorAction SilentlyContinue
+Remove-Item $tempValues     -Force -ErrorAction SilentlyContinue
+Remove-Item $tempOidcValues -Force -ErrorAction SilentlyContinue
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Grafana (exit code $exitCode)"; exit 1 }
 Write-Host "  ✓ Deployed" -ForegroundColor Green
 
@@ -229,7 +307,8 @@ metadata:
   name: grafana
   namespace: $Namespace
   annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "$sslRedirect"
+$issuerAnnotationLine
 spec:
   ingressClassName: $(Get-IngressClass)
   rules:
@@ -243,9 +322,14 @@ spec:
             name: grafana
             port:
               number: 80
+$tlsBlock
 "@
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
+    $scheme = if ($issuerName) { "https" } else { "http" }
+    Register-PortalEntry -Name "Grafana" -Url "${scheme}://$Hostname" `
+        -Category "Observability" -Subtitle "Dashboards & Alerts" -Order 66 `
+        -LogoUrl "https://grafana.com/static/assets/img/grafana_icon.svg"
 }
 
 if ($FullConfig.RancherProject) {
@@ -257,9 +341,14 @@ Write-Host "  ──────────────────────
 Write-Host "  Quick Reference" -ForegroundColor White
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 if ($Hostname) {
-    Write-Host "  Access:  http://$Hostname" -ForegroundColor Yellow
+    $scheme = if ($issuerName) { "https" } else { "http" }
+    Write-Host "  Access:  ${scheme}://$Hostname" -ForegroundColor Yellow
 }
-Write-Host "  Login:   $($UserConfig.AdminUser) / <password you set>" -ForegroundColor Yellow
+if ($oidcConfig) {
+    Write-Host "  Login:   Single Sign-On via Authelia" -ForegroundColor Yellow
+} else {
+    Write-Host "  Login:   $($UserConfig.AdminUser) / (auto-generated — check secret '$Namespace/grafana' or Vault)" -ForegroundColor Yellow
+}
 Write-Host ""
 Write-Host "  Datasources configured:" -ForegroundColor Gray
 Write-Host "    Prometheus, Loki$(if ($tracingDatasource -match 'Tempo') { ', Tempo' } elseif ($tracingDatasource -match 'Jaeger') { ', Jaeger' })" -ForegroundColor Yellow

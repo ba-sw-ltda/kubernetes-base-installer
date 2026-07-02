@@ -3,10 +3,10 @@
     Install cert-manager
 .DESCRIPTION
     Installs cert-manager via Helm only — no ClusterIssuer here. For RKE2/Kind,
-    33-openbao/Install.ps1 creates the 'openbao-pki' ClusterIssuer once OpenBao's
-    PKI engine is ready (cert-manager always installs first in the fixed order,
-    so its CRDs/ServiceAccount already exist by then). Other platforms have no
-    issuer yet — see Get-ClusterIssuerName.
+    33-openbao/Install.ps1 creates one ClusterIssuer per PKI (named
+    "openbao-pki-<name>") once OpenBao's PKI engines are ready (cert-manager
+    always installs first in the fixed order, so its CRDs/ServiceAccount already
+    exist by then). Other platforms have no issuer yet — see Get-ClusterIssuerName.
 .PARAMETER ConfigPath
     Path to custom configuration file (optional)
 .PARAMETER Platform
@@ -102,7 +102,7 @@ Write-Host "  ──────────────────────
 Write-Host "  Quick Reference" -ForegroundColor White
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 Write-Host "  No issuer yet — created later by 33-openbao/Install.ps1" -ForegroundColor Gray
-Write-Host "  (RKE2/Kind only; see Get-ClusterIssuerName for other platforms)." -ForegroundColor Gray
+Write-Host "  (RKE2/Kind: one ClusterIssuer per PKI, named 'openbao-pki-<name>')." -ForegroundColor Gray
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 
 Write-Host "`n========================================" -ForegroundColor Cyan

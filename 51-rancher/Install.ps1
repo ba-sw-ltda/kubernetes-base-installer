@@ -139,10 +139,17 @@ if ($issuerName) {
     # Rancher's backend validates certs against its own trust store, which does
     # not include our custom root CA by default — needed for the OIDC discovery
     # call to Authelia to succeed. `additionalTrustedCAs` mounts this secret.
+    # Read the CA cert from the default PKI's mount (multi-PKI aware); fall back
+    # to the legacy "pki" mount if the state file has no PKIs array yet.
     $baoStateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
     if (Test-Path $baoStateFile) {
-        $baoRootToken = (Get-Content $baoStateFile | ConvertFrom-Json).RootToken
-        $caCert = & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$baoRootToken bao read -field=certificate pki/cert/ca" 2>$null
+        $baoRootToken  = (Get-Content $baoStateFile | ConvertFrom-Json).RootToken
+        $defaultPkis   = Get-OpenBaoPkis -BaseDir $BaseDir -Platform $Platform
+        $defaultPki    = $defaultPkis | Where-Object { $_['IsDefault'] } | Select-Object -First 1
+        if (-not $defaultPki) { $defaultPki = $defaultPkis | Select-Object -First 1 }
+        $caMount       = if ($defaultPki) { $defaultPki['MountPath'] } else { "pki" }
+
+        $caCert = & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$baoRootToken bao read -field=certificate $caMount/cert/ca" 2>$null
         if ($caCert) {
             $caCertFile = New-TemporaryFile
             Set-Content -Path $caCertFile.FullName -Value $caCert -Encoding UTF8 -NoNewline
@@ -151,7 +158,7 @@ if ($issuerName) {
                 --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
             Remove-Item $caCertFile.FullName -Force -ErrorAction SilentlyContinue
             $HelmArgs += "--set", "additionalTrustedCAs=true"
-            Write-Host "  ✓ OpenBao root CA trusted by Rancher (tls-ca-additional)" -ForegroundColor Green
+            Write-Host "  ✓ OpenBao root CA trusted by Rancher ($caMount, tls-ca-additional)" -ForegroundColor Green
         }
     }
 } else {
@@ -262,6 +269,10 @@ groupPrincipalName: "oidc_group://admins"
 foreach ($systemNs in @("cattle-capi-system", "cattle-turtles-system", "cattle-ui-plugin-system", "local")) {
     Set-RancherProjectAssignment -Namespace $systemNs -ProjectName "System"
 }
+
+Register-PortalEntry -Name "Rancher" -Url "https://$Hostname" `
+    -Category "Management" -Subtitle "Cluster Management" -Order 51 `
+    -LogoUrl "https://ranchermanager.docs.rancher.com/img/rancher-logo-horiz-color.png"
 
 if ($verbose) {
     Write-Host ""

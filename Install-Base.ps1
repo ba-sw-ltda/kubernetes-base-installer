@@ -774,6 +774,7 @@ function Start-Installation {
     }
     $componentOptions += @(
         @{ Label = "60 - Observability Stack"; Value = "Observability Stack" }
+        @{ Label = "70 - Portal (Homer)"; Value = "Portal" }
         @{ Label = "90 - Utilities (DevOps)"; Value = "Utilities" }
     )
 
@@ -885,6 +886,9 @@ function Start-Installation {
                 @{ Number="65"; Name="opentelemetry-collector"; DisplayName="OpenTelemetry Collector" }
                 @{ Number="66"; Name="grafana";                 DisplayName="Grafana" }
             )
+            "Portal" = @(
+                @{ Number="70"; Name="portal"; DisplayName="Homer Portal" }
+            )
             "Utilities" = @(
                 @{ Number="91"; Name="argocd"; SelKey="argocd"; DisplayName="ArgoCD" }
                 @{ Number="93"; Name="velero"; SelKey="velero"; DisplayName="Velero (Backup)" }
@@ -900,7 +904,7 @@ function Start-Installation {
 
         function Get-PromptExtraArgs($component) {
             $extra = @{}
-            if ($component.Name -in @("argocd", "grafana", "tracing", "prometheus", "longhorn", "openbao", "rancher", "authelia", "metallb")) {
+            if ($component.Name -in @("argocd", "grafana", "tracing", "prometheus", "longhorn", "openbao", "rancher", "authelia", "metallb", "portal")) {
                 if (-not [string]::IsNullOrWhiteSpace($domain)) { $extra.Domain = $domain }
             }
             if ($component.Name -eq "metallb" -and $componentInputs.ContainsKey("ingress")) {
@@ -1006,6 +1010,7 @@ function Start-Installation {
             # and nothing currently checks for it here.
             @("prometheus", "loki", "promtail", "tracing", "grafana") | ForEach-Object { $willInstall.Add($_) | Out-Null }
         }
+        if ("Portal" -in $selectedComponentGroups) { $willInstall.Add("portal") | Out-Null }
         # Utilities has a real Screen-2 — argocd/velero come from the generic
         # compSel loop above, no hardcoded add needed.
 
@@ -1025,6 +1030,7 @@ function Start-Installation {
             @{ C="grafana";  Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
             @{ C="vault";    Needs="ingress"; Reason="UI will not be reachable without an Ingress Controller" }
             @{ C="authelia"; Needs="ingress"; Reason="login portal will not be reachable without an Ingress Controller" }
+            @{ C="portal";   Needs="ingress"; Reason="dashboard will not be reachable without an Ingress Controller" }
         )
 
         $deselected = [System.Collections.Generic.List[hashtable]]::new()
@@ -1112,6 +1118,7 @@ function Start-Installation {
             "Configuration Management"
             "Management"
             "Observability Stack"
+            "Portal"
             "Utilities"
         )
 

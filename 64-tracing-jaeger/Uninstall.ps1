@@ -5,6 +5,11 @@
 [CmdletBinding()]
 param([string]$Platform)
 
+$ScriptRoot = $PSScriptRoot
+$BaseDir    = Split-Path $ScriptRoot -Parent
+Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
+Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
+
 $existing = & helm list -n monitoring --filter "^jaeger$" --short 2>&1
 if (-not $existing) { exit 0 }
 
@@ -19,5 +24,7 @@ foreach ($pvc in $pvcs) {
     & kubectl delete $pvc -n monitoring --ignore-not-found 2>$null | Out-Null
     Write-Host "  ✓ PVC removed: $($pvc -replace 'persistentvolumeclaims/','')" -ForegroundColor Green
 }
+
+Unregister-PortalEntry -Name "Jaeger"
 
 exit 0

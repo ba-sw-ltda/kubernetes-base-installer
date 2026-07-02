@@ -20,7 +20,7 @@ $defaultHostname = "argocd.$Domain"
 $hostname = Read-Plain `
     -Prompt "ArgoCD hostname" `
     -Default $defaultHostname `
-    -ContextTitle "90 - Utilities - ArgoCD — $Platform" `
+    -ContextTitle "91 - Utilities - ArgoCD" `
     -ContextHint "DNS name under which ArgoCD will be reachable" `
     -ContextCurrent ([ordered]@{ Domain = $Domain })
 

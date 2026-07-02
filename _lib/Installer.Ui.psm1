@@ -219,7 +219,7 @@ function Write-ClusterSecret {
     }
 
     $frames = @('|','/','-','\'); $fi = 0
-    [Console]::Write("`r  $($frames[$fi++ % 4]) Schreibe Secret '$Path' in Vault...")
+    [Console]::Write("`r  $($frames[$fi++ % 4]) Writing secret '$Path' to Vault...")
 
     $result = switch ($Platform) {
         { $_ -in @("RKE2 (On-Premise)", "Kind (Local)") } {
@@ -238,7 +238,7 @@ function Write-ClusterSecret {
     }
 
     if ($result) {
-        Write-Host ("`r  ✓ Secret '$Path' in Vault gespeichert" + (" " * 10)) -ForegroundColor Green
+        Write-Host ("`r  ✓ Secret '$Path' stored in Vault" + (" " * 10)) -ForegroundColor Green
     } else {
         [Console]::Write("`r" + (" " * 60) + "`r")
     }
@@ -306,30 +306,100 @@ function Get-OpenBaoStateFile {
         [string]$Platform
     )
     $slug = switch ($Platform) {
-        "RKE2 (On-Premise)" { "rke2" }
-        "Kind (Local)"      { "kind" }
+        "RKE2 (On-Premise)" { "rke2"  }
+        "Kind (Local)"      { "kind"  }
+        "Azure AKS"         { "aks"   }
+        "AWS EKS"           { "eks"   }
+        "Google GKE"        { "gke"   }
         default             { "unknown" }
     }
     return Join-Path $BaseDir ".openbao-state-$slug.json"
 }
 
 # -------------------------
+# PKI state helpers — read/write the PKIs array inside the per-platform
+# OpenBao state file. Each PKI entry is a hashtable with at minimum:
+#   Name, MountPath, Type (Root|Intermediate), Roles[], IsDefault, Status
+# These are the only two places that touch the PKIs key; everything else
+# (UnsealKey, RootToken) is written by 33-openbao/Install.ps1 directly.
+# -------------------------
+function Get-OpenBaoPkis {
+    param(
+        [string]$BaseDir  = $script:InstallerBaseDir,
+        [string]$Platform = ""
+    )
+    if ([string]::IsNullOrWhiteSpace($Platform)) { $Platform = $script:InstallerPlatform }
+    $stateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+    if (-not (Test-Path $stateFile)) { return @() }
+    $state = Get-Content $stateFile | ConvertFrom-Json -AsHashtable
+    if (-not $state.ContainsKey('PKIs') -or -not $state['PKIs']) { return @() }
+    return @($state['PKIs'])
+}
+
+function Save-OpenBaoPkis {
+    param(
+        [array]$PKIs,
+        [string]$BaseDir  = $script:InstallerBaseDir,
+        [string]$Platform = ""
+    )
+    if ([string]::IsNullOrWhiteSpace($Platform)) { $Platform = $script:InstallerPlatform }
+    $stateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+    if (Test-Path $stateFile) {
+        $state = Get-Content $stateFile | ConvertFrom-Json -AsHashtable
+    } else {
+        $state = @{}
+    }
+    $state['PKIs'] = $PKIs
+    $state | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile -Encoding UTF8
+}
+
+# -------------------------
 # Per-platform cert-manager ClusterIssuer name — components that render their
 # own Ingress (Authelia, Rancher, ...) call this to decide whether to add a
-# tls: block + cert-manager.io/cluster-issuer annotation. RKE2 and Kind both
-# run their own OpenBao with a PKI root CA (see 33-openbao/Install.ps1), so
-# both use the same issuer name — it's a different CA/ClusterIssuer instance
-# per cluster, just the same mechanism. Empty string means "no issuer
-# configured for this platform yet" — caller skips TLS (cloud platforms are
-# not wired up yet).
+# tls: block + cert-manager.io/cluster-issuer annotation.
+#
+# With multi-PKI support, the name is derived from the state file:
+#   "openbao-pki-<name>" for the PKI named by -PKIName (or the default PKI).
+# Backward compat: if the state file has no PKIs array (old format), returns
+# "openbao-pki" so existing clusters keep working until OpenBao is re-run.
+# Cloud platforms return "" — no ClusterIssuer wired up yet.
 # -------------------------
 function Get-ClusterIssuerName {
-    param([string]$Platform)
-    switch ($Platform) {
-        "RKE2 (On-Premise)" { return "openbao-pki" }
-        "Kind (Local)"      { return "openbao-pki" }
-        default             { return "" }
+    param(
+        [string]$Platform,
+        [string]$PKIName  = "",
+        [string]$BaseDir  = $script:InstallerBaseDir
+    )
+    # No early-return on cloud — OpenBao will run on all platforms for PKI.
+    # The state file's existence is the authoritative signal: if OpenBao is
+    # not installed (yet), the file won't exist and we return "" correctly.
+
+    $stateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+    if (-not (Test-Path $stateFile)) { return "" }
+
+    $state = Get-Content $stateFile | ConvertFrom-Json -AsHashtable
+
+    # Backward compat: old state file without PKIs array (pre-multi-PKI)
+    if (-not $state.ContainsKey('PKIs') -or -not $state['PKIs']) { return "openbao-pki" }
+
+    $pkis = @($state['PKIs'])
+
+    $pki = if ($PKIName) {
+        $pkis | Where-Object { $_['Name'] -eq $PKIName } | Select-Object -First 1
+    } else {
+        $found = $pkis | Where-Object { $_['IsDefault'] -eq $true } | Select-Object -First 1
+        if (-not $found) { $found = $pkis | Select-Object -First 1 }
+        $found
     }
+
+    if (-not $pki) { return "" }
+    if (@($pki['Roles']) -notcontains 'HTTP') { return "" }
+    if ($pki['Status'] -ne 'Active') { return "" }
+
+    # Prefer the stored ClusterIssuerName (set by Install.ps1) — it handles the
+    # backward-compat case where the "pki" mount keeps the name "openbao-pki".
+    if ($pki['ClusterIssuerName']) { return $pki['ClusterIssuerName'] }
+    return "openbao-pki-$($pki['Name'])"
 }
 
 # -------------------------
@@ -577,16 +647,37 @@ path "secret/metadata/$VaultPath" {
             $policyTmpFile = New-TemporaryFile
             Set-Content -Path $policyTmpFile.FullName -Value $policyHcl -Encoding UTF8 -NoNewline
             $remotePolicyFile = "/tmp/$AppName-readonly-policy.hcl"
+            Write-Host "  · Uploading Vault policy for $AppName..." -ForegroundColor DarkGray
             Push-Location (Split-Path $policyTmpFile.FullName)
             & kubectl cp "./$(Split-Path $policyTmpFile.FullName -Leaf)" "openbao/openbao-0:$remotePolicyFile" 2>$null | Out-Null
+            $cpExit = $LASTEXITCODE
             Pop-Location
             Remove-Item $policyTmpFile.FullName -Force -ErrorAction SilentlyContinue
-            & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$rootToken bao policy write $policyName $remotePolicyFile" 2>$null | Out-Null
+            if ($cpExit -ne 0) {
+                Write-Error "New-CsiSecretMount: Failed to copy policy file to OpenBao pod — is OpenBao running?"
+                return $notInstalled
+            }
+            Write-Host "  ✓ Vault policy uploaded" -ForegroundColor Green
+
+            $policyExit = Invoke-WithSpinner -Message "Writing Vault policy '$policyName'..." -Executable "kubectl" `
+                -Arguments @("exec", "openbao-0", "-n", "openbao", "--", "sh", "-c",
+                             "BAO_TOKEN=$rootToken bao policy write $policyName $remotePolicyFile 2>/dev/null")
             & kubectl exec openbao-0 -n openbao -- rm -f $remotePolicyFile 2>$null | Out-Null
+            if ($policyExit -ne 0) {
+                Write-Error "New-CsiSecretMount: Failed to write Vault policy '$policyName' — check OpenBao root token in state file"
+                return $notInstalled
+            }
+            Write-Host "  ✓ Vault policy '$policyName' written" -ForegroundColor Green
 
             # Vault Kubernetes auth role — single line to avoid shell backtick/continuation issues
-            $baoCmd = "BAO_TOKEN=$rootToken bao write auth/kubernetes/role/$AppName bound_service_account_names='$ServiceAccount' bound_service_account_namespaces='$Namespace' policies='$policyName' ttl='1h'"
-            & kubectl exec openbao-0 -n openbao -- sh -c $baoCmd 2>$null | Out-Null
+            $baoCmd = "BAO_TOKEN=$rootToken bao write auth/kubernetes/role/$AppName bound_service_account_names='$ServiceAccount' bound_service_account_namespaces='$Namespace' policies='$policyName' ttl='1h' 2>/dev/null"
+            $roleExit = Invoke-WithSpinner -Message "Registering Kubernetes auth role '$AppName'..." -Executable "kubectl" `
+                -Arguments @("exec", "openbao-0", "-n", "openbao", "--", "sh", "-c", $baoCmd)
+            if ($roleExit -ne 0) {
+                Write-Error "New-CsiSecretMount: Failed to register Kubernetes auth role '$AppName' — check Kubernetes auth method is enabled in OpenBao"
+                return $notInstalled
+            }
+            Write-Host "  ✓ Kubernetes auth role '$AppName' registered" -ForegroundColor Green
 
             $objects = ($Keys | ForEach-Object { @"
       - objectName: "$_"
@@ -962,6 +1053,7 @@ function Sync-AutheliaConfiguration {
     }
 
     # ── Admin user + hostname (written by 35-authelia/Install.ps1) ──
+    Write-Host "  · Reading admin credential from Vault..." -ForegroundColor DarkGray
     $admin = Get-ClusterSecret -Path "authelia/admin-credential" -Keys @("username", "password", "hostname") -BaseDir $BaseDir -Platform $Platform
     if (-not $admin -or -not $admin["hostname"]) {
         Write-Error "Sync-AutheliaConfiguration: no admin credential found in vault — run 35-authelia/Install.ps1 first."
@@ -969,6 +1061,7 @@ function Sync-AutheliaConfiguration {
     }
     $hostname      = $admin["hostname"]
     $clusterDomain = $hostname -replace '^[^.]+\.', ''
+    Write-Host "  · Computing password hash (starting helper pod, may take 10-30s)..." -ForegroundColor DarkGray
     $adminHash     = Get-HtpasswdHash -Username "admin" -Password $admin["password"]
     if (-not $adminHash) { Write-Error "Sync-AutheliaConfiguration: could not hash the admin password"; return $false }
     $adminHashOnly = ($adminHash -split ":", 2)[1]
@@ -999,6 +1092,7 @@ function Sync-AutheliaConfiguration {
     $clientYamlBlocks = foreach ($id in $clientIds) {
         $client = Get-ClusterSecret -Path "authelia/oidc-clients/$id" -Keys @("secret", "name", "redirect_uris", "scopes") -BaseDir $BaseDir -Platform $Platform
         if (-not $client -or -not $client["secret"]) { continue }
+        Write-Host "  · Hashing OIDC client secret for '$id'..." -ForegroundColor DarkGray
         $hashedSecret = Get-AutheliaSecretHash -Secret $client["secret"]
         if (-not $hashedSecret) { Write-Warning "  Sync-AutheliaConfiguration: could not hash secret for OIDC client '$id' — skipping it this round"; continue }
         $redirectUris = @($client["redirect_uris"] -split ',' | Where-Object { $_ })
@@ -1034,6 +1128,10 @@ $scopesYaml
         # already used for the web-portal access_control rule. Revisit once
         # real 2FA enrollment is actually built.
         authorization_policy: "one_factor"
+        # implicit: never show consent screen for these internal trusted clients.
+        # Default (explicit) asks on every new auth flow even if already consented —
+        # confirmed as the cause of "must click Accept every login" on Rancher.
+        consent_mode: "implicit"
         # Since Authelia 4.39's claims-policy overhaul, granting a scope no
         # longer puts its claims in the ID token by default — they only show
         # up via the userinfo endpoint unless a claims_policy explicitly lists
@@ -1048,7 +1146,7 @@ $scopesYaml
     }
     $clientsYaml = $clientYamlBlocks -join "`n"
 
-    $oidcBlock = if ($clientIds.Count -gt 0) {
+    $oidcBlock = if ($clientsYaml) {
 @"
 
 identity_providers:
@@ -1212,6 +1310,108 @@ function Register-AutheliaOidcClient {
 }
 
 # -------------------------
+# Portal entry registration — accumulates ConfigMaps in the portal namespace so
+# the Homer dashboard sidecar can build its config.yml.  Registration always
+# runs, even if the portal component is not yet installed: the namespace is
+# created idempotently and the ConfigMaps wait until the pod arrives.
+# -------------------------
+function Register-PortalEntry {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Url,
+        [Parameter(Mandatory)][string]$Category,
+        [string]$Subtitle = "",
+        [int]   $Order    = 100,
+        [string]$LogoUrl  = ""
+    )
+    & kubectl create namespace portal --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
+    $logoB64 = ""; $logoExt = "png"; $targetUrl = $LogoUrl
+    if ([string]::IsNullOrWhiteSpace($targetUrl)) {
+        try {
+            $page = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 8 -SkipCertificateCheck -ErrorAction SilentlyContinue
+            if ($page) {
+                # Prefer high-quality PNG icons: apple-touch-icon or og:image before falling back to favicon.ico
+                $pngIcon = [regex]::Match($page.Content, '<link[^>]+rel="apple-touch-icon[^"]*"[^>]+href="([^"]+\.png[^"]*)"', 'IgnoreCase').Groups[1].Value
+                if (-not $pngIcon) {
+                    $pngIcon = [regex]::Match($page.Content, '<link[^>]+href="([^"]+\.png[^"]*)"[^>]+rel="apple-touch-icon[^"]*"', 'IgnoreCase').Groups[1].Value
+                }
+                if (-not $pngIcon) {
+                    $pngIcon = [regex]::Match($page.Content, '<meta[^>]+property="og:image"[^>]+content="([^"]+)"', 'IgnoreCase').Groups[1].Value
+                }
+                if ($pngIcon) {
+                    # Resolve relative URLs
+                    $u = [uri]$Url
+                    $targetUrl = if ($pngIcon -match '^https?://') { $pngIcon } else { "$($u.Scheme)://$($u.Host)$pngIcon" }
+                }
+            }
+        } catch {}
+        if ([string]::IsNullOrWhiteSpace($targetUrl)) {
+            try {
+                $u = [uri]$Url
+                $targetUrl = "$($u.Scheme)://$($u.Host)/favicon.ico"
+            } catch {}
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($targetUrl)) {
+        try {
+            $resp = Invoke-WebRequest -Uri $targetUrl -UseBasicParsing -TimeoutSec 10 -SkipCertificateCheck -ErrorAction SilentlyContinue
+            if ($resp -and $resp.Content) {
+                $bytes = if ($resp.Content -is [byte[]]) { $resp.Content } else { [System.Text.Encoding]::UTF8.GetBytes($resp.Content) }
+                $logoB64 = [Convert]::ToBase64String($bytes)
+                $logoExt = if ($targetUrl -match '\.svg') { "svg" } elseif ($targetUrl -match '\.png') { "png" } elseif ($targetUrl -match '\.ico') { "ico" } else { "png" }
+            }
+        } catch {}
+    }
+    $slug = ($Name.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+    $cmYaml = @"
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: portal-entry-$slug
+  namespace: portal
+  labels:
+    portal/entry: "true"
+data:
+  name: "$Name"
+  subtitle: "$Subtitle"
+  url: "$Url"
+  category: "$Category"
+  order: "$Order"
+  logo.ext: "$logoExt"
+"@
+    $tmp = New-TemporaryFile
+    try {
+        Set-Content -Path $tmp.FullName -Value $cmYaml -Encoding UTF8
+        & kubectl apply -f $tmp.FullName 2>&1 | Out-Null
+    } finally {
+        Remove-Item $tmp.FullName -Force -ErrorAction SilentlyContinue
+    }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ⚠ Portal: could not register entry for '$Name'" -ForegroundColor Yellow
+        return
+    }
+    if ($logoB64) {
+        $patchFile = New-TemporaryFile
+        try {
+            Set-Content -Path $patchFile.FullName -Value "{`"data`":{`"logo.b64`":`"$logoB64`"}}" -Encoding UTF8 -NoNewline
+            & kubectl patch configmap "portal-entry-$slug" -n portal --type=merge --patch-file $patchFile.FullName 2>&1 | Out-Null
+        } finally {
+            Remove-Item $patchFile.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Write-Host "  ✓ Portal entry registered: $Name" -ForegroundColor Green
+}
+
+function Unregister-PortalEntry {
+    param([Parameter(Mandatory)][string]$Name)
+    $slug = ($Name.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+    & kubectl delete configmap "portal-entry-$slug" -n portal --ignore-not-found 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✓ Portal entry removed: $Name" -ForegroundColor Green
+    }
+}
+
+# -------------------------
 # kubectl discovery cache — clears the local cache so newly installed CRDs
 # (e.g. ESO, cert-manager) are visible to kubectl apply without a 10-min wait.
 # Suppresses Write-Progress to avoid console noise from Remove-Item -Recurse.
@@ -1308,6 +1508,8 @@ $__exportFunctions = @(
   'Remove-ClusterSecret'
   'Remove-OpenBaoSecret'
   'Get-OpenBaoStateFile'
+  'Get-OpenBaoPkis'
+  'Save-OpenBaoPkis'
   'Get-ClusterIssuerName'
   'Write-AzureKeyVaultSecret'
   'Write-AwsSecretsManagerSecret'
@@ -1324,6 +1526,8 @@ $__exportFunctions = @(
   'Register-AutheliaOidcClient'
   'Test-AutheliaInstalled'
   'Get-BasicAuthIngresses'
+  'Register-PortalEntry'
+  'Unregister-PortalEntry'
   'Read-ComponentSelectionScreen'
 )
 
