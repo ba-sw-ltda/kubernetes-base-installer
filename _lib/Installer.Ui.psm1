@@ -3,13 +3,14 @@ $ErrorActionPreference = "Stop"
 
 # Generic console UI primitives (Read-SelectValue, Read-MultiSelectValues, Read-Plain, Read-Secret*,
 # Invoke-WithSpinner, Write-Context/-Section, ConvertTo-UiOptions, ToSafeName) live in their own repo —
-# https://github.com/ba-sw-ltda/powershell-menu-ui — vendored here as a git submodule so they can be
-# reused outside this installer. Re-exported below so existing callers see no difference.
-Import-Module "$PSScriptRoot\powershell-menu-ui\PowerShellMenuUI.psd1" -Force -Verbose:$false
+# https://github.com/ba-sw-ltda/powershell-menu-ui — checked out as a sibling directory (not a git
+# submodule) so multiple installer repos share one working copy. Re-exported below so existing
+# callers see no difference.
+Import-Module "$PSScriptRoot\..\..\powershell-menu-ui\PowerShellMenuUI.psd1" -Force -Verbose:$false
 
 # Cluster bootstrap (Set-ClusterContext, cloud-native secret writers, Get-IngressClass, ...) lives
-# in https://github.com/ba-sw-ltda/powershell-cluster-bootstrap — same vendoring approach.
-Import-Module "$PSScriptRoot\powershell-cluster-bootstrap\PowerShellClusterBootstrap.psd1" -Force -Verbose:$false
+# in https://github.com/ba-sw-ltda/powershell-cluster-bootstrap — same sibling-checkout approach.
+Import-Module "$PSScriptRoot\..\..\powershell-cluster-bootstrap\PowerShellClusterBootstrap.psd1" -Force -Verbose:$false
 
 # Module-level base directory — one level up from _lib/.
 # Write-ClusterSecret / New-CsiSecretMount default their -BaseDir to this.
@@ -1320,17 +1321,29 @@ function Register-PortalEntry {
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$Url,
         [Parameter(Mandatory)][string]$Category,
-        [string]$Subtitle = "",
-        [int]   $Order    = 100,
-        [string]$LogoUrl  = ""
+        [string]$Subtitle     = "",
+        [int]   $Order        = 100,
+        [string]$LogoUrl      = "",
+        [string]$InternalUrl  = ""
     )
     & kubectl create namespace portal --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
-    $logoB64 = ""; $logoExt = "png"; $targetUrl = $LogoUrl
-    if ([string]::IsNullOrWhiteSpace($targetUrl)) {
+    $logoB64 = ""; $logoExt = "png"
+    if (-not [string]::IsNullOrWhiteSpace($LogoUrl)) {
+        # Explicit external logo URL: download at install time
+        try {
+            $resp = Invoke-WebRequest -Uri $LogoUrl -UseBasicParsing -TimeoutSec 10 -SkipCertificateCheck -ErrorAction SilentlyContinue
+            if ($resp -and $resp.Content) {
+                $bytes = if ($resp.Content -is [byte[]]) { $resp.Content } else { [System.Text.Encoding]::UTF8.GetBytes($resp.Content) }
+                $logoB64 = [Convert]::ToBase64String($bytes)
+                $logoExt = if ($LogoUrl -match '\.svg') { "svg" } elseif ($LogoUrl -match '\.png') { "png" } elseif ($LogoUrl -match '\.ico') { "ico" } else { "png" }
+            }
+        } catch {}
+    } elseif ([string]::IsNullOrWhiteSpace($InternalUrl)) {
+        # No InternalUrl: fall back to page scraping the external URL
+        $targetUrl = ""
         try {
             $page = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 8 -SkipCertificateCheck -ErrorAction SilentlyContinue
             if ($page) {
-                # Prefer high-quality PNG icons: apple-touch-icon or og:image before falling back to favicon.ico
                 $pngIcon = [regex]::Match($page.Content, '<link[^>]+rel="apple-touch-icon[^"]*"[^>]+href="([^"]+\.png[^"]*)"', 'IgnoreCase').Groups[1].Value
                 if (-not $pngIcon) {
                     $pngIcon = [regex]::Match($page.Content, '<link[^>]+href="([^"]+\.png[^"]*)"[^>]+rel="apple-touch-icon[^"]*"', 'IgnoreCase').Groups[1].Value
@@ -1339,30 +1352,28 @@ function Register-PortalEntry {
                     $pngIcon = [regex]::Match($page.Content, '<meta[^>]+property="og:image"[^>]+content="([^"]+)"', 'IgnoreCase').Groups[1].Value
                 }
                 if ($pngIcon) {
-                    # Resolve relative URLs
                     $u = [uri]$Url
                     $targetUrl = if ($pngIcon -match '^https?://') { $pngIcon } else { "$($u.Scheme)://$($u.Host)$pngIcon" }
                 }
             }
         } catch {}
         if ([string]::IsNullOrWhiteSpace($targetUrl)) {
+            try { $u = [uri]$Url; $targetUrl = "$($u.Scheme)://$($u.Host)/favicon.ico" } catch {}
+        }
+        if (-not [string]::IsNullOrWhiteSpace($targetUrl)) {
             try {
-                $u = [uri]$Url
-                $targetUrl = "$($u.Scheme)://$($u.Host)/favicon.ico"
+                $resp = Invoke-WebRequest -Uri $targetUrl -UseBasicParsing -TimeoutSec 10 -SkipCertificateCheck -ErrorAction SilentlyContinue
+                if ($resp -and $resp.Content) {
+                    $bytes = if ($resp.Content -is [byte[]]) { $resp.Content } else { [System.Text.Encoding]::UTF8.GetBytes($resp.Content) }
+                    $logoB64 = [Convert]::ToBase64String($bytes)
+                    $logoExt = if ($targetUrl -match '\.svg') { "svg" } elseif ($targetUrl -match '\.png') { "png" } elseif ($targetUrl -match '\.ico') { "ico" } else { "png" }
+                }
             } catch {}
         }
     }
-    if (-not [string]::IsNullOrWhiteSpace($targetUrl)) {
-        try {
-            $resp = Invoke-WebRequest -Uri $targetUrl -UseBasicParsing -TimeoutSec 10 -SkipCertificateCheck -ErrorAction SilentlyContinue
-            if ($resp -and $resp.Content) {
-                $bytes = if ($resp.Content -is [byte[]]) { $resp.Content } else { [System.Text.Encoding]::UTF8.GetBytes($resp.Content) }
-                $logoB64 = [Convert]::ToBase64String($bytes)
-                $logoExt = if ($targetUrl -match '\.svg') { "svg" } elseif ($targetUrl -match '\.png') { "png" } elseif ($targetUrl -match '\.ico') { "ico" } else { "png" }
-            }
-        } catch {}
-    }
+    # InternalUrl is provided: logo will be fetched by the portal sidecar from inside the cluster
     $slug = ($Name.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+    $internalUrlLine = if ($InternalUrl) { "`n  url.internal: `"$InternalUrl`"" } else { "" }
     $cmYaml = @"
 apiVersion: v1
 kind: ConfigMap
@@ -1377,7 +1388,7 @@ data:
   url: "$Url"
   category: "$Category"
   order: "$Order"
-  logo.ext: "$logoExt"
+  logo.ext: "$logoExt"$internalUrlLine
 "@
     $tmp = New-TemporaryFile
     try {

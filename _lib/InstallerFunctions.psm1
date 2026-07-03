@@ -6,12 +6,12 @@
 # Cluster bootstrap (tool installation, cluster create/connect) and generic
 # installer utilities (Helm release recovery, ingress/LB IP discovery,
 # IngressClass discovery) live in their own repo —
-# https://github.com/ba-sw-ltda/powershell-cluster-bootstrap — vendored
-# here as a git submodule so they can be reused outside this installer.
-# Re-exported below so existing callers see no difference. Tools directory
-# stays at this repo's existing ".tools" (one level up from _lib/) rather
-# than the submodule's own generic default.
-Import-Module "$PSScriptRoot\powershell-cluster-bootstrap\PowerShellClusterBootstrap.psd1" -Force -Verbose:$false
+# https://github.com/ba-sw-ltda/powershell-cluster-bootstrap — checked out
+# as a sibling directory (not a git submodule) so multiple installer repos
+# share one working copy. Re-exported below so existing callers see no
+# difference. Tools directory stays at this repo's existing ".tools" (one
+# level up from _lib/) rather than the submodule's own generic default.
+Import-Module "$PSScriptRoot\..\..\powershell-cluster-bootstrap\PowerShellClusterBootstrap.psd1" -Force -Verbose:$false
 Set-ClusterBootstrapToolsDir -Path (Join-Path (Split-Path $PSScriptRoot -Parent) ".tools")
 
 # -------------------------
