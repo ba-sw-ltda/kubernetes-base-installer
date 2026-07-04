@@ -420,6 +420,10 @@ Write-Host "  Covers every *.$clusterDomain Ingress automatically — no" -Foreg
 Write-Host "  per-app Authelia config needed for components installed later." -ForegroundColor Gray
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 
+# Remove stale portal entry if the portal namespace exists (Authelia is not listed in the portal)
+$portalNsExists = & kubectl get namespace portal --ignore-not-found -o name 2>$null
+if ($portalNsExists) { Unregister-PortalEntry -Name "Authelia" }
+
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "  Installation Complete" -ForegroundColor Cyan
 Write-Host "========================================`n" -ForegroundColor Cyan

@@ -272,7 +272,7 @@ foreach ($systemNs in @("cattle-capi-system", "cattle-turtles-system", "cattle-u
 
 Register-PortalEntry -Name "Rancher" -Url "https://$Hostname" `
     -Category "Management" -Subtitle "Cluster Management" -Order 51 `
-    -LogoUrl "https://ranchermanager.docs.rancher.com/img/rancher-logo-horiz-color.png"
+    -InternalUrl "http://rancher.cattle-system.svc.cluster.local"
 
 if ($verbose) {
     Write-Host ""

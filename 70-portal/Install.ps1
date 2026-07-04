@@ -18,9 +18,8 @@
 param(
     [string]$Platform,
     [string]$Hostname,
-    [string]$Title          = "Kubernetes Portal",
-    [string]$Subtitle       = "",
-    [string]$ThemeSourceUrl = "",
+    [string]$Title      = "Kubernetes Portal",
+    [string]$Subtitle   = "",
     [string]$ConfigPath
 )
 
@@ -41,53 +40,12 @@ if ([string]::IsNullOrWhiteSpace($Hostname)) {
     } else { "kubernetes.local" }
     $inputs = & "$ScriptRoot\Prompt.ps1" -Platform $Platform -Domain $domain
     if (-not $inputs) { Write-Host "  Aborted." -ForegroundColor Red; exit 0 }
-    $Hostname       = $inputs.Hostname
-    $Title          = $inputs.Title
-    $Subtitle       = $inputs.Subtitle
-    $ThemeSourceUrl = $inputs.ThemeSourceUrl
+    $Hostname = $inputs.Hostname
+    $Title    = $inputs.Title
+    $Subtitle = $inputs.Subtitle
 }
 
 $verbose = $VerbosePreference -eq 'Continue'
-
-# Extract theme data from reference website: accent color (theme-color meta) + company logo
-$accentColor   = ""
-$portalLogoB64 = ""
-$portalLogoExt = "png"
-if (-not [string]::IsNullOrWhiteSpace($ThemeSourceUrl)) {
-    Write-Host "  Fetching theme data from $ThemeSourceUrl ..." -ForegroundColor Gray -NoNewline
-    try {
-        $page = Invoke-WebRequest -Uri $ThemeSourceUrl -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
-
-        # Accent color
-        $colorFound = $page.Content -match '(?i)<meta\s[^>]*name=[''"]theme-color[''"]\s[^>]*content=[''"]([^''"]+)' -or
-                      $page.Content -match '(?i)<meta\s[^>]*content=[''"]([^''"]+)[''"]\s[^>]*name=[''"]theme-color'
-        if ($colorFound) { $accentColor = $Matches[1].Trim() }
-
-        # Company logo: og:image → apple-touch-icon → favicon.ico
-        $logoSrc = [regex]::Match($page.Content, '<meta[^>]+property="og:image"[^>]+content="([^"]+)"', 'IgnoreCase').Groups[1].Value
-        if (-not $logoSrc) {
-            $logoSrc = [regex]::Match($page.Content, '<link[^>]+rel="apple-touch-icon[^"]*"[^>]+href="([^"]+)"', 'IgnoreCase').Groups[1].Value
-        }
-        if (-not $logoSrc) {
-            $u = [uri]$ThemeSourceUrl
-            $logoSrc = "$($u.Scheme)://$($u.Host)/favicon.ico"
-        }
-        $imgResp = Invoke-WebRequest -Uri $logoSrc -UseBasicParsing -TimeoutSec 10 -ErrorAction SilentlyContinue
-        if ($imgResp -and $imgResp.Content) {
-            $bytes = if ($imgResp.Content -is [byte[]]) { $imgResp.Content } else { [System.Text.Encoding]::UTF8.GetBytes($imgResp.Content) }
-            $portalLogoB64 = [Convert]::ToBase64String($bytes)
-            $portalLogoExt = if ($logoSrc -match '\.svg') { "svg" } elseif ($logoSrc -match '\.ico') { "ico" } elseif ($logoSrc -match '\.png') { "png" } else { "png" }
-        }
-
-        $statusParts = @()
-        if ($accentColor)   { $statusParts += "color: $accentColor" }
-        if ($portalLogoB64) { $statusParts += "logo: $([math]::Round($portalLogoB64.Length * 3 / 4 / 1024))KB $portalLogoExt" }
-        if ($statusParts) { Write-Host " ✓ $($statusParts -join ', ')" -ForegroundColor Green }
-        else              { Write-Host " ⚠ no theme-color or logo found, using defaults" -ForegroundColor Yellow }
-    } catch {
-        Write-Host " ⚠ fetch failed ($($_.Exception.Message)) — using default theme" -ForegroundColor Yellow
-    }
-}
 
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "  Installing: 70 - Portal - Homer" -ForegroundColor Cyan
@@ -150,36 +108,59 @@ $syncScript = @'
 INTERVAL="${SYNC_INTERVAL:-30}"
 CONFIG_FILE="/www/assets/config.yml"
 
+# Fetch a logo from an internal service URL.
+# Tries apple-touch-icon, favicon.png, favicon.ico in order.
+# Outputs "base64data|ext" on success, returns 1 on failure.
+fetch_logo() {
+  base="${1%/}"
+  [ -z "$base" ] && return 1
+  tmp=$(mktemp)
+  for path_ext in "/apple-touch-icon.png:png" "/apple-touch-icon-precomposed.png:png" "/favicon.png:png" "/favicon.ico:ico"; do
+    path=$(printf '%s' "$path_ext" | cut -d: -f1)
+    ext=$(printf '%s' "$path_ext" | cut -d: -f2)
+    if wget -qO "$tmp" --timeout=5 --no-check-certificate "${base}${path}" 2>/dev/null; then
+      size=$(wc -c < "$tmp" | tr -d '[:space:]')
+      if [ "${size:-0}" -gt 200 ]; then
+        printf '%s|%s' "$(base64 -w 0 < "$tmp")" "$ext"
+        rm -f "$tmp"
+        return 0
+      fi
+    fi
+  done
+  rm -f "$tmp"
+  return 1
+}
+
 generate() {
   DATA=$(kubectl get configmap -n portal -l "portal/entry=true" -o json 2>/dev/null) || return
   COUNT=$(printf '%s' "$DATA" | jq '.items | length' 2>/dev/null)
   [ "${COUNT:-0}" -eq 0 ] && return
 
-  ACCENT="${PORTAL_ACCENT_COLOR:-}"
-  LOGO_B64="${PORTAL_LOGO_B64:-}"
-  LOGO_EXT="${PORTAL_LOGO_EXT:-png}"
+  # Build logo overrides: entries with url.internal but no embedded logo.b64
+  OVERRIDES="{}"
+  printf '%s' "$DATA" | jq -r '
+    .items[] |
+    select((.data["logo.b64"] // "") == "" and (.data["url.internal"] // "") != "") |
+    "\(.metadata.name)|\(.data["url.internal"])"
+  ' > /tmp/portal_needs_logos.txt
+  while IFS='|' read -r cm_name int_url; do
+    [ -z "$cm_name" ] && continue
+    result=$(fetch_logo "$int_url") || continue
+    b64=$(printf '%s' "$result" | cut -d'|' -f1)
+    ext=$(printf '%s' "$result" | cut -d'|' -f2)
+    OVERRIDES=$(printf '%s' "$OVERRIDES" | jq \
+      --arg n "$cm_name" --arg b "$b64" --arg e "$ext" \
+      '. + {($n): {"b64": $b, "ext": $e}}')
+  done < /tmp/portal_needs_logos.txt
+  rm -f /tmp/portal_needs_logos.txt
 
   {
     printf '---\ntitle: "%s"\nsubtitle: "%s"\nheader: true\nfooter: false\ncolumns: 3\nconnectivityCheck: false\n\n' \
       "${PORTAL_TITLE:-Kubernetes Portal}" "${PORTAL_SUBTITLE:-}"
 
-    if [ -n "$LOGO_B64" ]; then
-      case "$LOGO_EXT" in
-        svg) LOGO_MIME="image/svg+xml" ;;
-        ico) LOGO_MIME="image/x-icon" ;;
-        *)   LOGO_MIME="image/${LOGO_EXT}" ;;
-      esac
-      printf 'logo: "data:%s;base64,%s"\n\n' "$LOGO_MIME" "$LOGO_B64"
-    fi
-
-    if [ -n "$ACCENT" ]; then
-      printf 'colors:\n  light:\n    highlight-primary: "%s"\n    highlight-secondary: "#f0f0f0"\n    highlight-hover: "#e0e0e0"\n    link: "%s"\n    link-hover: "#555555"\n  dark:\n    highlight-primary: "%s"\n    highlight-secondary: "#2b2b2b"\n    highlight-hover: "#3a3a3a"\n    link: "%s"\n    link-hover: "#aaaaaa"\n\n' \
-        "$ACCENT" "$ACCENT" "$ACCENT" "$ACCENT"
-    fi
-
     printf 'services:\n'
 
-    printf '%s' "$DATA" | jq -r '
+    printf '%s' "$DATA" | jq -r --argjson overrides "$OVERRIDES" '
       def mime(ext):
         if ext == "svg" then "image/svg+xml"
         elif ext == "ico" then "image/x-icon"
@@ -192,13 +173,19 @@ generate() {
       ("- name: \"" + (.[0].data.category // "Other") + "\""),
       "  items:",
       (.[] |
+        (($overrides[.metadata.name].b64 // "") as $ob64 |
+        ($overrides[.metadata.name].ext // "png") as $oext |
+        (.data["logo.b64"] // "") as $sb64 |
+        (.data["logo.ext"] // "png") as $sext |
+        (if $sb64 != "" then $sb64 else $ob64 end) as $logo_b64 |
+        (if $sb64 != "" then $sext else $oext end) as $logo_ext |
         ("  - name: \"" + (.data.name // "Unknown") + "\""),
         ("    subtitle: \"" + (.data.subtitle // "") + "\""),
         ("    url: \"" + (.data.url // "#") + "\""),
         "    target: \"_blank\"",
-        (if (.data["logo.b64"] // "") != "" then
-          "    logo: \"data:" + mime(.data["logo.ext"] // "png") + ";base64," + .data["logo.b64"] + "\""
-        else empty end)
+        (if $logo_b64 != "" then
+          "    logo: \"data:" + mime($logo_ext) + ";base64," + $logo_b64 + "\""
+        else empty end))
       )
     '
   } > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
@@ -263,12 +250,6 @@ spec:
           value: "$Title"
         - name: PORTAL_SUBTITLE
           value: "$Subtitle"
-        - name: PORTAL_ACCENT_COLOR
-          value: "$accentColor"
-        - name: PORTAL_LOGO_B64
-          value: "$portalLogoB64"
-        - name: PORTAL_LOGO_EXT
-          value: "$portalLogoExt"
         - name: SYNC_INTERVAL
           value: "30"
         resources:

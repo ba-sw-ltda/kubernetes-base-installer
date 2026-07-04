@@ -99,7 +99,7 @@ $HelmArgs = @(
     "--set", "controller.resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "controller.resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
     "--set", "controller.resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
-    "--set", "server.insecure=$($UserConfig.ServerInsecure.ToString().ToLower())"
+    "--set", "configs.params.server\.insecure=$($UserConfig.ServerInsecure.ToString().ToLower())"
 )
 
 Reset-StuckHelmRelease -ReleaseName "argocd" -Namespace $Namespace
@@ -204,7 +204,8 @@ if ($FullConfig.RancherProject) {
 $scheme = if ($issuerName -and $Hostname) { "https" } else { "http" }
 if ($Hostname) {
     Register-PortalEntry -Name "ArgoCD" -Url "${scheme}://$Hostname" -Category "Utilities" `
-        -Subtitle "GitOps Continuous Delivery" -Order 91
+        -Subtitle "GitOps Continuous Delivery" -Order 91 `
+        -InternalUrl "http://argocd-server.argocd.svc.cluster.local"
 }
 
 Write-Host ""

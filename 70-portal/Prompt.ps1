@@ -38,16 +38,8 @@ $subtitle = Read-Plain `
     -ContextHint "Optional sub-heading beneath the title — press Enter to leave blank" `
     -ContextCurrent ([ordered]@{ Platform = $Platform; Hostname = $hostname; Title = $title })
 
-$themeUrl = Read-Plain `
-    -Prompt "Website URL to copy accent color from (leave empty to skip)" `
-    -Default "" `
-    -ContextTitle "70 - Portal - Homer" `
-    -ContextHint "Homer will extract the theme-color meta tag from this URL as its accent color" `
-    -ContextCurrent ([ordered]@{ Platform = $Platform; Hostname = $hostname; Title = $title; Subtitle = $subtitle })
-
 return @{
-    Hostname       = $hostname.Trim()
-    Title          = if ($title.Trim()) { $title.Trim() } else { "Kubernetes Portal" }
-    Subtitle       = $subtitle.Trim()
-    ThemeSourceUrl = $themeUrl.Trim()
+    Hostname = $hostname.Trim()
+    Title    = if ($title.Trim()) { $title.Trim() } else { "Kubernetes Portal" }
+    Subtitle = $subtitle.Trim()
 }
