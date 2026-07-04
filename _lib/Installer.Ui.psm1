@@ -922,7 +922,7 @@ function Get-HtpasswdHash {
     param([string]$Username, [string]$Password)
 
     $podName = "htpasswd-gen-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
-    $output  = & kubectl run $podName --rm -i --restart=Never --quiet `
+    $output  = & kubectl run $podName -n authelia --rm -i --restart=Never --quiet `
         --image=httpd:alpine --command -- htpasswd -nbB $Username $Password 2>$null
 
     $escapedUser = [regex]::Escape($Username)
@@ -946,7 +946,7 @@ function Get-AutheliaSecretHash {
     param([string]$Secret)
 
     $podName = "authelia-hash-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
-    $output  = & kubectl run $podName --rm -i --restart=Never --quiet `
+    $output  = & kubectl run $podName -n authelia --rm -i --restart=Never --quiet `
         --image=authelia/authelia:latest --command -- `
         authelia crypto hash generate pbkdf2 --variant sha512 --password $Secret --no-confirm 2>$null
 
@@ -1328,7 +1328,17 @@ function Register-PortalEntry {
     )
     & kubectl create namespace portal --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
     $logoB64 = ""; $logoExt = "png"
-    if (-not [string]::IsNullOrWhiteSpace($LogoUrl)) {
+    if ($LogoUrl -match '^data:([^,;]+)(;base64)?,(.*)$') {
+        # Embedded data URI: decode directly, no network fetch needed
+        $mime    = $Matches[1]
+        $logoExt = if ($mime -match 'svg') { "svg" } elseif ($mime -match 'png') { "png" } elseif ($mime -match 'ico') { "ico" } else { "png" }
+        if ($Matches[2]) {
+            $logoB64 = $Matches[3]
+        } else {
+            $bytes   = [System.Text.Encoding]::UTF8.GetBytes([System.Uri]::UnescapeDataString($Matches[3]))
+            $logoB64 = [Convert]::ToBase64String($bytes)
+        }
+    } elseif (-not [string]::IsNullOrWhiteSpace($LogoUrl)) {
         # Explicit external logo URL: download at install time
         try {
             $resp = Invoke-WebRequest -Uri $LogoUrl -UseBasicParsing -TimeoutSec 10 -SkipCertificateCheck -ErrorAction SilentlyContinue
@@ -1411,6 +1421,31 @@ data:
         }
     }
     Write-Host "  ✓ Portal entry registered: $Name" -ForegroundColor Green
+}
+
+function Get-PortalIconDataUri {
+    param(
+        [Parameter(Mandatory)][string]$ScriptRoot,
+        [string]$IconFile = ""
+    )
+    if ([string]::IsNullOrWhiteSpace($IconFile)) { return "" }
+
+    $path = Join-Path $ScriptRoot $IconFile
+    if (-not (Test-Path $path)) {
+        Write-Host "  ⚠ Portal icon file not found: $path" -ForegroundColor Yellow
+        return ""
+    }
+
+    $mime = switch ([System.IO.Path]::GetExtension($path).TrimStart('.').ToLower()) {
+        'svg'  { 'image/svg+xml' }
+        'png'  { 'image/png' }
+        'ico'  { 'image/x-icon' }
+        'jpg'  { 'image/jpeg' }
+        'jpeg' { 'image/jpeg' }
+        default { 'application/octet-stream' }
+    }
+    $b64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path))
+    return "data:$mime;base64,$b64"
 }
 
 function Unregister-PortalEntry {
@@ -1538,6 +1573,7 @@ $__exportFunctions = @(
   'Test-AutheliaInstalled'
   'Get-BasicAuthIngresses'
   'Register-PortalEntry'
+  'Get-PortalIconDataUri'
   'Unregister-PortalEntry'
   'Read-ComponentSelectionScreen'
 )

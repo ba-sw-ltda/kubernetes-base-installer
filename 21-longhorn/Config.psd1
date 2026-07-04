@@ -8,6 +8,10 @@
     RancherProject  = "Storage"
     CreateNamespace = $true
 
+    PortalTitle     = "Longhorn by SuSe"
+    PortalSubtitle  = "Distributed Block Storage"
+    PortalIcon      = "logo.png"
+
     # User-configurable settings
     UserConfig = @{
         # Number of replicas per volume — should match node count (max 3)

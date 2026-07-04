@@ -144,9 +144,11 @@ $($protect.TlsBlock)
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
-    Register-PortalEntry -Name "Jaeger" -Url "${scheme}://$Hostname" `
-        -Category "Observability" -Subtitle "Distributed Tracing" -Order 64 `
-        -InternalUrl "http://jaeger-query.jaeger.svc.cluster.local:16686"
+    $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
+    Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
+        -Category "Observability" -Subtitle $FullConfig.PortalSubtitle -Order 64 `
+        -InternalUrl "http://jaeger-query.jaeger.svc.cluster.local:16686" `
+        -LogoUrl $portalIcon
 }
 
 if ($FullConfig.RancherProject) {

@@ -152,9 +152,11 @@ $($protect.TlsBlock)
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
-    Register-PortalEntry -Name "Prometheus" -Url "${scheme}://$Hostname" `
-        -Category "Observability" -Subtitle "Metrics & Alerting" -Order 61 `
-        -InternalUrl "http://prometheus-kube-prometheus-prometheus.prometheus.svc.cluster.local:9090"
+    $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
+    Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
+        -Category "Observability" -Subtitle $FullConfig.PortalSubtitle -Order 61 `
+        -InternalUrl "http://prometheus-kube-prometheus-prometheus.prometheus.svc.cluster.local:9090" `
+        -LogoUrl $portalIcon
 }
 
 # Service alias so apps can use prometheus.$Namespace instead of the full release name

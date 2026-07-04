@@ -203,9 +203,11 @@ if ($FullConfig.RancherProject) {
 
 $scheme = if ($issuerName -and $Hostname) { "https" } else { "http" }
 if ($Hostname) {
-    Register-PortalEntry -Name "ArgoCD" -Url "${scheme}://$Hostname" -Category "Utilities" `
-        -Subtitle "GitOps Continuous Delivery" -Order 91 `
-        -InternalUrl "http://argocd-server.argocd.svc.cluster.local"
+    $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
+    Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" -Category "Utilities" `
+        -Subtitle $FullConfig.PortalSubtitle -Order 91 `
+        -InternalUrl "http://argocd-server.argocd.svc.cluster.local" `
+        -LogoUrl $portalIcon
 }
 
 Write-Host ""

@@ -270,9 +270,11 @@ foreach ($systemNs in @("cattle-capi-system", "cattle-turtles-system", "cattle-u
     Set-RancherProjectAssignment -Namespace $systemNs -ProjectName "System"
 }
 
-Register-PortalEntry -Name "Rancher" -Url "https://$Hostname" `
-    -Category "Management" -Subtitle "Cluster Management" -Order 51 `
-    -InternalUrl "http://rancher.cattle-system.svc.cluster.local"
+$portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
+Register-PortalEntry -Name $FullConfig.PortalTitle -Url "https://$Hostname" `
+    -Category "Management" -Subtitle $FullConfig.PortalSubtitle -Order 51 `
+    -InternalUrl "http://rancher.cattle-system.svc.cluster.local" `
+    -LogoUrl $portalIcon
 
 if ($verbose) {
     Write-Host ""

@@ -7,6 +7,10 @@
     RancherProject  = "Observability"
     CreateNamespace = $false
 
+    PortalTitle     = "Grafana"
+    PortalSubtitle  = "Dashboards & Alerts"
+    PortalIcon      = "logo.svg"
+
     UserConfig = @{
         AdminUser     = "admin"
 

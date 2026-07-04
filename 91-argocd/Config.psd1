@@ -7,7 +7,11 @@
     Namespace = "argocd"
     RancherProject = "Utilities"
     CreateNamespace = $true
-    
+
+    PortalTitle    = "ArgoCD"
+    PortalSubtitle = "GitOps Continuous Delivery"
+    PortalIcon     = "logo.svg"
+
     # User-configurable settings
     UserConfig = @{
         # Service type for ArgoCD server: LoadBalancer, NodePort, or ClusterIP

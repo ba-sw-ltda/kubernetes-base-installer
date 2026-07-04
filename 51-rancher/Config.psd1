@@ -7,6 +7,10 @@
     Namespace       = "cattle-system"
     CreateNamespace = $true
 
+    PortalTitle     = "Rancher by SuSe"
+    PortalSubtitle  = "Cluster Management"
+    PortalIcon      = "logo.svg"
+
     # User-configurable settings
     UserConfig = @{
         Replicas          = 1
@@ -14,8 +18,8 @@
         TlsExternal       = $true     # TLS always terminated at nginx ingress
         IngressClassName  = "nginx"
         Resources = @{
-            Limits   = @{ Cpu = "1000m"; Memory = "1Gi"   }
-            Requests = @{ Cpu = "250m";  Memory = "256Mi" }
+            Limits   = @{ Cpu = "2000m"; Memory = "2Gi"   }
+            Requests = @{ Cpu = "500m";  Memory = "512Mi" }
         }
     }
 }

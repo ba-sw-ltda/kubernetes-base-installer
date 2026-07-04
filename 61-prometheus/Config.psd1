@@ -7,6 +7,10 @@
     RancherProject   = "Observability"
     CreateNamespace  = $true
 
+    PortalTitle      = "Prometheus"
+    PortalSubtitle   = "Metrics & Alerting"
+    PortalIcon       = "logo.svg"
+
     UserConfig = @{
         # Primary: stop writing when size is reached (~85% of PVC to leave WAL headroom)
         # Secondary: hard time cap so stale data doesn't linger even if PVC stays under limit

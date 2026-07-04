@@ -586,9 +586,11 @@ spec:
 "@
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
-    Register-PortalEntry -Name "OpenBao" -Url "https://$Hostname" `
-        -Category "Security" -Subtitle "Secrets Manager & PKI" -Order 33 `
-        -InternalUrl "http://openbao.openbao.svc.cluster.local:8200"
+    $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
+    Register-PortalEntry -Name $FullConfig.PortalTitle -Url "https://$Hostname" `
+        -Category "Security" -Subtitle $FullConfig.PortalSubtitle -Order 33 `
+        -InternalUrl "http://openbao.openbao.svc.cluster.local:8200" `
+        -LogoUrl $portalIcon
 }
 
 if ($FullConfig.RancherProject) {

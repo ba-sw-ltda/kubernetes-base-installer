@@ -331,9 +331,11 @@ $tlsBlock
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
     $scheme = if ($issuerName) { "https" } else { "http" }
-    Register-PortalEntry -Name "Grafana" -Url "${scheme}://$Hostname" `
-        -Category "Observability" -Subtitle "Dashboards & Alerts" -Order 66 `
-        -InternalUrl "http://grafana.grafana.svc.cluster.local"
+    $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
+    Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
+        -Category "Observability" -Subtitle $FullConfig.PortalSubtitle -Order 66 `
+        -InternalUrl "http://grafana.grafana.svc.cluster.local" `
+        -LogoUrl $portalIcon
 }
 
 if ($FullConfig.RancherProject) {

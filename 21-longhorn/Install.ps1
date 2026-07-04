@@ -189,9 +189,11 @@ $($protect.TlsBlock)
     }
     Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
-    Register-PortalEntry -Name "Longhorn" -Url "${scheme}://$Hostname" `
-        -Category "Storage" -Subtitle "Distributed Block Storage" -Order 21 `
-        -InternalUrl "http://longhorn-frontend.longhorn-system.svc.cluster.local"
+    $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
+    Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
+        -Category "Storage" -Subtitle $FullConfig.PortalSubtitle -Order 21 `
+        -InternalUrl "http://longhorn-frontend.longhorn-system.svc.cluster.local" `
+        -LogoUrl $portalIcon
 }
 
 if ($verbose) {

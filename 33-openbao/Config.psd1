@@ -7,6 +7,10 @@
     RancherProject  = "Security"
     CreateNamespace = $true
 
+    PortalTitle     = "OpenBao"
+    PortalSubtitle  = "Secrets Manager & PKI"
+    PortalIcon      = "logo.svg"
+
     UserConfig = @{
         StorageSize      = "5Gi"
         StorageClass     = ""         # always use cluster default StorageClass

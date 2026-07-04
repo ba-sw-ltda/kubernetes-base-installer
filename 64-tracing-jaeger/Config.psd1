@@ -7,6 +7,10 @@
     RancherProject  = "Observability"
     CreateNamespace = $false
 
+    PortalTitle     = "Jaeger"
+    PortalSubtitle  = "Distributed Tracing"
+    PortalIcon      = "logo.svg"
+
     UserConfig = @{
         # allInOne: simple single-pod deployment (local/dev)
         # production: separate collector + query + storage
