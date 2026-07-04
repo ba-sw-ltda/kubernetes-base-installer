@@ -3,7 +3,7 @@
     Version          = "83.7.0"
     Repository       = "https://prometheus-community.github.io/helm-charts"
     ChartName        = "kube-prometheus-stack"
-    Namespace        = "monitoring"
+    Namespace        = "prometheus"
     RancherProject   = "Observability"
     CreateNamespace  = $true
 

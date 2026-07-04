@@ -56,7 +56,7 @@ if ($releases) {
 # ── Namespaces ───────────────────────────────────────────────────
 Write-Section "Namespaces"
 $expectedGone = @(
-    "argocd", "monitoring", "cattle-system", "rancher-operator-system",
+    "argocd", "cattle-system", "rancher-operator-system",
     "proxy-config", "longhorn-system", "openbao",
     "cert-manager", "metallb-system", "ingress-nginx", "traefik"
 )

@@ -172,7 +172,12 @@ delete`).
 | `registry` / `proxy-config` | Private Registry credentials, Proxy Configuration | – | ❌ internal |
 | `longhorn-system` | Longhorn | 80 (UI) | optional via Ingress, forward-auth via Authelia |
 | `cattle-system` | Rancher | 80/443 | ✅ via Ingress, SSO via Authelia OIDC |
-| `monitoring` | Prometheus, Loki, Promtail, Tempo/Jaeger, OTel, Grafana | 9090, 3100, 4317/4318, 3200/16686, 3000 | Grafana optional via Ingress (own login); Prometheus/Jaeger optional via Ingress (forward-auth); rest internal |
+| `prometheus` | Prometheus | 9090 | optional via Ingress (forward-auth) |
+| `loki` | Loki | 3100 | ❌ internal |
+| `promtail` | Promtail | – | ❌ internal |
+| `tempo` / `jaeger` | Tempo / Jaeger | 3200 / 16686 | Jaeger optional via Ingress (forward-auth); rest internal |
+| `opentelemetry` | OTel Collector | 4317/4318 | ❌ internal |
+| `grafana` | Grafana | 3000 | ✅ via Ingress (own login) |
 | `argocd` | ArgoCD | 8080 | ✅ via Ingress (optional) |
 | `minio` | MinIO (Velero's backup target) | 9000 | ❌ internal only (RKE2/Kind only) |
 | `velero` | Velero | – | ❌ internal (operated via `velero` CLI / `kubectl`) |

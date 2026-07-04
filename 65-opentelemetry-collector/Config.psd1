@@ -3,7 +3,7 @@
     Version         = "0.152.0"
     Repository      = "https://open-telemetry.github.io/opentelemetry-helm-charts"
     ChartName       = "opentelemetry-collector"
-    Namespace       = "monitoring"
+    Namespace       = "opentelemetry"
     RancherProject  = "Observability"
     CreateNamespace = $false
 
@@ -12,8 +12,8 @@
         ImageRepository = "otel/opentelemetry-collector-contrib"
         Mode            = "deployment"
 
-        PrometheusRemoteWriteUrl = "http://prometheus.monitoring:9090/api/v1/write"
-        LokiOtlpUrl              = "http://loki.monitoring:3100/otlp"
+        PrometheusRemoteWriteUrl = "http://prometheus.prometheus:9090/api/v1/write"
+        LokiOtlpUrl              = "http://loki.loki:3100/otlp"
 
         Resources = @{
             Limits   = @{ Cpu = "500m"; Memory = "512Mi" }

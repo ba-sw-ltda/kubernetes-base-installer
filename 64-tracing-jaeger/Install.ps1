@@ -41,6 +41,10 @@ Write-Host "  Mode:       $($UserConfig.DeploymentMode)" -ForegroundColor Gray
 if ($Hostname) { Write-Host "  Hostname:   $Hostname" -ForegroundColor Gray }
 Write-Host ""
 
+& kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
+Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "jaegertracing", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
@@ -142,7 +146,7 @@ $($protect.TlsBlock)
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
     Register-PortalEntry -Name "Jaeger" -Url "${scheme}://$Hostname" `
         -Category "Observability" -Subtitle "Distributed Tracing" -Order 64 `
-        -LogoUrl "https://raw.githubusercontent.com/jaegertracing/jaeger/main/artwork/Icon/jaeger-icon-reverse-color.svg"
+        -InternalUrl "http://jaeger-query.jaeger.svc.cluster.local:16686"
 }
 
 if ($FullConfig.RancherProject) {

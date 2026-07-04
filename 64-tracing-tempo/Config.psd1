@@ -3,7 +3,7 @@
     Version         = "1.61.3"
     Repository      = "https://grafana.github.io/helm-charts"
     ChartName       = "tempo-distributed"
-    Namespace       = "monitoring"
+    Namespace       = "tempo"
     RancherProject  = "Observability"
     CreateNamespace = $false
 

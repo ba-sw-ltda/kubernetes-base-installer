@@ -154,10 +154,10 @@ $($protect.TlsBlock)
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
     Register-PortalEntry -Name "Prometheus" -Url "${scheme}://$Hostname" `
         -Category "Observability" -Subtitle "Metrics & Alerting" -Order 61 `
-        -LogoUrl "https://prometheus.io/assets/prometheus_logo-cb55bb5c346.png"
+        -InternalUrl "http://prometheus-kube-prometheus-prometheus.prometheus.svc.cluster.local:9090"
 }
 
-# Service alias so apps can use prometheus.monitoring instead of the full name
+# Service alias so apps can use prometheus.$Namespace instead of the full release name
 $aliasYaml = @"
 apiVersion: v1
 kind: Service

@@ -10,18 +10,18 @@ $BaseDir    = Split-Path $ScriptRoot -Parent
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
-$existing = & helm list -n monitoring --filter "^jaeger$" --short 2>&1
+$existing = & helm list -n jaeger --filter "^jaeger$" --short 2>&1
 if (-not $existing) { exit 0 }
 
 Write-Host "  Removing Jaeger (switching tracing backend)..." -ForegroundColor Cyan
-& helm uninstall jaeger -n monitoring 2>&1 | Out-Null
+& helm uninstall jaeger -n jaeger 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Warning "Could not uninstall Jaeger — continuing" }
 else { Write-Host "  ✓ Jaeger removed" -ForegroundColor Green }
 
-$pvcs = & kubectl get pvc -n monitoring -l "app.kubernetes.io/instance=jaeger" -o name 2>$null
+$pvcs = & kubectl get pvc -n jaeger -l "app.kubernetes.io/instance=jaeger" -o name 2>$null
 foreach ($pvc in $pvcs) {
-    & kubectl patch $pvc -n monitoring -p '{"metadata":{"finalizers":[]}}' --type=merge 2>$null | Out-Null
-    & kubectl delete $pvc -n monitoring --ignore-not-found 2>$null | Out-Null
+    & kubectl patch $pvc -n jaeger -p '{"metadata":{"finalizers":[]}}' --type=merge 2>$null | Out-Null
+    & kubectl delete $pvc -n jaeger --ignore-not-found 2>$null | Out-Null
     Write-Host "  ✓ PVC removed: $($pvc -replace 'persistentvolumeclaims/','')" -ForegroundColor Green
 }
 

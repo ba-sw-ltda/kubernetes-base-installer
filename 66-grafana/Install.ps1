@@ -69,6 +69,10 @@ $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executa
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
 Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
+& kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
+Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+
 # Pull proxy Secret via Reflector if proxy-config exists
 & kubectl get secret proxy-config -n proxy-config 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) {
@@ -90,9 +94,9 @@ type: Opaque
 
 # Auto-detect tracing backend (tempo-distributed uses tempo-query-frontend; legacy uses tempo)
 $tracingDatasource = ""
-& kubectl get svc tempo-query-frontend -n $Namespace 2>&1 | Out-Null
+& kubectl get svc tempo-query-frontend -n tempo 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
-    & kubectl get svc tempo -n $Namespace 2>&1 | Out-Null
+    & kubectl get svc tempo -n tempo 2>&1 | Out-Null
 }
 if ($LASTEXITCODE -eq 0) {
     $tracingDatasource = @"
@@ -103,7 +107,7 @@ if ($LASTEXITCODE -eq 0) {
       isDefault: false
 "@
 }
-& kubectl get svc jaeger -n $Namespace 2>&1 | Out-Null
+& kubectl get svc jaeger -n jaeger 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) {
     $tracingDatasource = @"
     - name: Jaeger
@@ -130,7 +134,7 @@ $issuerAnnotationLine = if ($issuerName) { "    cert-manager.io/cluster-issuer: 
 
 $oidcConfig = $null
 if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
-    $autheliaDeployed = (& kubectl get deployment authelia -n authelia --ignore-not-found -o name 2>$null).Trim()
+    $autheliaDeployed = (@(& kubectl get deployment authelia -n authelia --ignore-not-found -o name 2>$null) -join "").Trim()
     if ($autheliaDeployed) {
         Write-Host "  Registering Grafana as OIDC client in Authelia..." -ForegroundColor Gray -NoNewline
         $oidcConfig = Register-AutheliaOidcClient `
@@ -329,7 +333,7 @@ $tlsBlock
     $scheme = if ($issuerName) { "https" } else { "http" }
     Register-PortalEntry -Name "Grafana" -Url "${scheme}://$Hostname" `
         -Category "Observability" -Subtitle "Dashboards & Alerts" -Order 66 `
-        -LogoUrl "https://grafana.com/static/assets/img/grafana_icon.svg"
+        -InternalUrl "http://grafana.grafana.svc.cluster.local"
 }
 
 if ($FullConfig.RancherProject) {

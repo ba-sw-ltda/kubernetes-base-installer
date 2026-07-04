@@ -40,15 +40,15 @@ $UserConfig   = $FullConfig.UserConfig
 
 # Auto-detect tracing backend: jaeger > tempo-distributed > tempo (legacy)
 $tracingExporter = "otlp/tempo"
-$tracingEndpoint = "tempo.${Namespace}:4317"
-& kubectl get svc jaeger-collector -n $Namespace 2>&1 | Out-Null
+$tracingEndpoint = "tempo.tempo:4317"
+& kubectl get svc jaeger-collector -n jaeger 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) {
     $tracingExporter = "otlp/jaeger"
-    $tracingEndpoint = "jaeger-collector.${Namespace}:4317"
+    $tracingEndpoint = "jaeger-collector.jaeger:4317"
 } else {
-    & kubectl get svc tempo-distributor -n $Namespace 2>&1 | Out-Null
+    & kubectl get svc tempo-distributor -n tempo 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        $tracingEndpoint = "tempo-distributor.${Namespace}:4317"
+        $tracingEndpoint = "tempo-distributor.tempo:4317"
     }
 }
 
@@ -58,9 +58,13 @@ $lokiUrl       = $UserConfig.LokiOtlpUrl
 Write-Host "  Chart:      $ChartName v$ChartVersion" -ForegroundColor Gray
 Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
 Write-Host "  Traces  →   $tracingEndpoint" -ForegroundColor Gray
-Write-Host "  Metrics →   prometheus.${Namespace}:9090" -ForegroundColor Gray
-Write-Host "  Logs    →   loki.${Namespace}:3100" -ForegroundColor Gray
+Write-Host "  Metrics →   prometheus.prometheus:9090" -ForegroundColor Gray
+Write-Host "  Logs    →   loki.loki:3100" -ForegroundColor Gray
 Write-Host ""
+
+& kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
+Write-Host "  ✓ Namespace ready" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "open-telemetry", $Repository, "--force-update") -ShowOutput:$verbose
@@ -172,8 +176,8 @@ Write-Host "    http://opentelemetry-collector.${Namespace}:4318" -ForegroundCol
 Write-Host ""
 Write-Host "  Forwarding:" -ForegroundColor Gray
 Write-Host "    Traces  → $tracingEndpoint" -ForegroundColor Yellow
-Write-Host "    Metrics → prometheus.${Namespace}:9090 (remote write)" -ForegroundColor Yellow
-Write-Host "    Logs    → loki.${Namespace}:3100" -ForegroundColor Yellow
+Write-Host "    Metrics → prometheus.prometheus:9090 (remote write)" -ForegroundColor Yellow
+Write-Host "    Logs    → loki.loki:3100" -ForegroundColor Yellow
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 
 Write-Host "`n========================================" -ForegroundColor Cyan

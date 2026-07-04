@@ -3,7 +3,7 @@
     Version         = "6.55.0"
     Repository      = "https://grafana.github.io/helm-charts"
     ChartName       = "loki"
-    Namespace       = "monitoring"
+    Namespace       = "loki"
     RancherProject  = "Observability"
     CreateNamespace = $false
 

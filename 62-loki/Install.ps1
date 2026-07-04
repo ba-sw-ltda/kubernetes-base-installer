@@ -38,6 +38,10 @@ Write-Host "  Retention:  $($UserConfig.Retention)" -ForegroundColor Gray
 Write-Host "  Storage:    $($UserConfig.StorageSize)" -ForegroundColor Gray
 Write-Host ""
 
+& kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
+Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+
 Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 
 Reset-StuckHelmRelease -ReleaseName "loki" -Namespace $Namespace
@@ -50,7 +54,7 @@ Reset-StuckHelmRelease -ReleaseName "loki" -Namespace $Namespace
 #   3. K8s cluster-scoped VolumeAttachment (blocks CSI attacher)
 # If the Longhorn volume has actualSize=0 and lastDegradedAt="" the volume has never
 # held data, so we also delete the PVC so the StatefulSet can provision a fresh volume.
-$lokiPhase = (& kubectl get pod loki-0 -n $Namespace -o jsonpath='{.status.phase}' 2>$null).Trim()
+$lokiPhase = (@(& kubectl get pod loki-0 -n $Namespace -o jsonpath='{.status.phase}' 2>$null) -join "").Trim()
 if ($lokiPhase -ne 'Running') {
     $lokiPvcs = try { (& kubectl get pvc -n $Namespace -o json 2>$null | ConvertFrom-Json).items } catch { @() }
     foreach ($pvc in @($lokiPvcs | Where-Object { $_.metadata.name -match '^storage-loki-' })) {

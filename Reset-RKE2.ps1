@@ -158,29 +158,35 @@ Remove-Namespace   -Namespace "argocd"
 
 # ── 2. Grafana (66) ─────────────────────────────────────────────
 Write-Host "`n--- 2. Grafana ---" -ForegroundColor Magenta
-Remove-HelmRelease -Release "grafana" -Namespace "monitoring"
+Remove-HelmRelease -Release "grafana" -Namespace "grafana"
+Remove-Namespace   -Namespace "grafana"
 
 # ── 3. OpenTelemetry Collector (65) ─────────────────────────────
 Write-Host "`n--- 3. OpenTelemetry Collector ---" -ForegroundColor Magenta
-Remove-HelmRelease -Release "opentelemetry-collector" -Namespace "monitoring"
+Remove-HelmRelease -Release "opentelemetry-collector" -Namespace "opentelemetry"
+Remove-Namespace   -Namespace "opentelemetry"
 
 # ── 4. Tracing: Tempo / Jaeger (64) ─────────────────────────────
 Write-Host "`n--- 4. Tracing ---" -ForegroundColor Magenta
-Remove-HelmRelease -Release "tempo"  -Namespace "monitoring" -PvcSelector "app.kubernetes.io/instance=tempo"
-Remove-HelmRelease -Release "jaeger" -Namespace "monitoring" -PvcSelector "app.kubernetes.io/instance=jaeger"
+Remove-HelmRelease -Release "tempo"  -Namespace "tempo"  -PvcSelector "app.kubernetes.io/instance=tempo"
+Remove-HelmRelease -Release "jaeger" -Namespace "jaeger" -PvcSelector "app.kubernetes.io/instance=jaeger"
+Remove-Namespace   -Namespace "tempo"
+Remove-Namespace   -Namespace "jaeger"
 
 # ── 5. Promtail (63) ────────────────────────────────────────────
 Write-Host "`n--- 5. Promtail ---" -ForegroundColor Magenta
-Remove-HelmRelease -Release "promtail" -Namespace "monitoring"
+Remove-HelmRelease -Release "promtail" -Namespace "promtail"
+Remove-Namespace   -Namespace "promtail"
 
 # ── 6. Loki (62) ────────────────────────────────────────────────
 Write-Host "`n--- 6. Loki ---" -ForegroundColor Magenta
-Remove-HelmRelease -Release "loki" -Namespace "monitoring" -PvcSelector "app.kubernetes.io/instance=loki"
+Remove-HelmRelease -Release "loki" -Namespace "loki" -PvcSelector "app.kubernetes.io/instance=loki"
+Remove-Namespace   -Namespace "loki"
 
 # ── 7. Prometheus (61) ──────────────────────────────────────────
 Write-Host "`n--- 7. Prometheus ---" -ForegroundColor Magenta
-Remove-HelmRelease -Release "prometheus" -Namespace "monitoring" -PvcSelector "app.kubernetes.io/name=prometheus"
-Remove-Namespace   -Namespace "monitoring"
+Remove-HelmRelease -Release "prometheus" -Namespace "prometheus" -PvcSelector "app.kubernetes.io/name=prometheus"
+Remove-Namespace   -Namespace "prometheus"
 
 # ── 8. Rancher + Agent (51) ─────────────────────────────────────
 Write-Host "`n--- 8. Rancher ---" -ForegroundColor Magenta
@@ -197,10 +203,10 @@ $mwhcs = & kubectl get mutatingwebhookconfigurations -o name 2>$null |
 $vwhcs = & kubectl get validatingwebhookconfigurations -o name 2>$null |
     Where-Object { $_ -match "cattle|rancher|fleet" }
 if ($mwhcs -or $vwhcs) {
-    Write-Host "  Removing Removing Rancher webhook configurations...
+    Write-Host "  Removing Rancher webhook configurations..." -ForegroundColor Yellow
     foreach ($w in $mwhcs) { & kubectl delete $w --ignore-not-found 2>&1 | Out-Null }
     foreach ($w in $vwhcs) { & kubectl delete $w --ignore-not-found 2>&1 | Out-Null }
-    Write-Host "  ✓ Removing Rancher webhook configurations...
+    Write-Host "  ✓ Rancher webhook configurations removed" -ForegroundColor Green
 }
 
 # cattle-fleet-* and fleet-* namespaces are RKE2 built-ins — they will be
