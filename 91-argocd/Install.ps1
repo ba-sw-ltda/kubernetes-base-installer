@@ -81,6 +81,7 @@ type: Opaque
 $issuerName    = Get-ClusterIssuerName -Platform $Platform
 $tlsSecretName = if ($Hostname) { "argocd-$($Hostname -replace '\.', '-')-tls" } else { "" }
 $sslRedirect   = if ($issuerName) { "true" } else { "false" }
+$argoScheme    = if ($issuerName) { "https" } else { "http" }
 
 $HelmArgs = @(
     "upgrade", "--install", "--force", "argocd", "argo/$ChartName",
@@ -101,6 +102,12 @@ $HelmArgs = @(
     "--set", "controller.resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
     "--set", "configs.params.server\.insecure=$($UserConfig.ServerInsecure.ToString().ToLower())"
 )
+if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
+    # ArgoCD derives its OIDC redirect_uri (<url>/auth/callback) from this —
+    # without it, the redirect_uri ArgoCD sends never matches what's registered
+    # with Authelia, and login errors out right after the Authelia redirect back.
+    $HelmArgs += @("--set", "configs.cm.url=${argoScheme}://$Hostname")
+}
 
 Reset-StuckHelmRelease -ReleaseName "argocd" -Namespace $Namespace
 

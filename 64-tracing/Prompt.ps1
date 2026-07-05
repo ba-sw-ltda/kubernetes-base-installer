@@ -23,9 +23,9 @@ $backend = Read-SelectValue `
         @{ Label = "Jaeger (CNCF, includes dedicated Jaeger UI)"; Value = "Jaeger" }
     ) `
     -Default 0 `
-    -ContextTitle "Tracing Backend" `
+    -ContextTitle "Observability/Tracing — $Platform" `
     -ContextHint "Tempo integrates natively with Grafana. Jaeger adds a standalone UI." `
-    -ContextCurrent ([ordered]@{ Platform = $Platform })
+    -ContextCurrent ([ordered]@{})
 
 if (-not $backend) { return $null }
 
@@ -34,11 +34,11 @@ $result = @{ TracingBackend = $backend }
 if ($backend -eq "Jaeger") {
     $defaultHostname = "jaeger.$Domain"
     $hostname = Read-Plain `
-        -Prompt "Jaeger UI hostname" `
+        -Prompt "Jaeger hostname" `
         -Default $defaultHostname `
-        -ContextTitle "Jaeger" `
-        -ContextHint "DNS name under which the Jaeger UI will be reachable" `
-        -ContextCurrent ([ordered]@{ Platform = $Platform; Domain = $Domain })
+        -ContextTitle "Observability/Jaeger — $Platform" `
+        -ContextHint "DNS name under which Jaeger will be reachable" `
+        -ContextCurrent ([ordered]@{ Domain = $Domain })
     $result.Hostname = $hostname.Trim()
 }
 

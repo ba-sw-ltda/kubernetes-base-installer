@@ -449,9 +449,28 @@ function Write-OpenBaoSecret {
     # (e.g. Authelia's rendered multi-line YAML config), and harmless for the
     # simple single-line passwords/tokens every other caller writes.
     $remoteDir = "/tmp/installer-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
-    & kubectl exec openbao-0 -n openbao -- mkdir -p $remoteDir 2>$null | Out-Null
+
+    # 'kubectl exec'/'kubectl cp' occasionally hiccup transiently (apiserver/
+    # exec-stream contention right after other components' kubectl calls
+    # against this same pod) — confirmed live where the mkdir or cp step
+    # silently failed while the *next* caller in the same run succeeded.
+    # Neither step's exit code used to be checked, so a failure here surfaced
+    # only later as a confusing "bao kv put: no such file" error. Retry a
+    # few times and, if it's still failing, bail out with a clear message
+    # instead of proceeding to a doomed 'bao kv put'.
+    $mkdirOk = $false
+    for ($i = 0; $i -lt 3; $i++) {
+        & kubectl exec openbao-0 -n openbao -- mkdir -p $remoteDir 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { $mkdirOk = $true; break }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $mkdirOk) {
+        Write-Warning "Write-OpenBaoSecret('$Path'): failed to create remote temp dir '$remoteDir' on openbao-0"
+        return $false
+    }
 
     $kvArgs = [System.Collections.Generic.List[string]]::new()
+    $copyFailedKey = $null
     foreach ($entry in $Data.GetEnumerator()) {
         $tmpFile = New-TemporaryFile
         Set-Content -Path $tmpFile.FullName -Value $entry.Value -Encoding UTF8 -NoNewline
@@ -460,10 +479,22 @@ function Write-OpenBaoSecret {
         # remote namespace:path spec (the drive letter looks like a colon
         # prefix) — cd into the temp file's folder and pass a relative name.
         Push-Location (Split-Path $tmpFile.FullName)
-        & kubectl cp "./$(Split-Path $tmpFile.FullName -Leaf)" "openbao/openbao-0:$remoteFile" 2>$null | Out-Null
+        $cpOk = $false
+        for ($i = 0; $i -lt 3; $i++) {
+            & kubectl cp "./$(Split-Path $tmpFile.FullName -Leaf)" "openbao/openbao-0:$remoteFile" 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { $cpOk = $true; break }
+            Start-Sleep -Seconds 1
+        }
         Pop-Location
         Remove-Item $tmpFile.FullName -Force -ErrorAction SilentlyContinue
+        if (-not $cpOk) { $copyFailedKey = $entry.Key; break }
         $kvArgs.Add("$($entry.Key)=@$remoteFile") | Out-Null
+    }
+
+    if ($copyFailedKey) {
+        Write-Warning "Write-OpenBaoSecret('$Path'): 'kubectl cp' failed writing key '$copyFailedKey' to openbao-0"
+        & kubectl exec openbao-0 -n openbao -- rm -rf $remoteDir 2>$null | Out-Null
+        return $false
     }
 
     $putOut = & kubectl exec openbao-0 -n openbao -- `
@@ -1330,12 +1361,16 @@ function Register-PortalEntry {
     $logoB64 = ""; $logoExt = "png"
     if ($LogoUrl -match '^data:([^,;]+)(;base64)?,(.*)$') {
         # Embedded data URI: decode directly, no network fetch needed
-        $mime    = $Matches[1]
+        $mime      = $Matches[1]
+        $isBase64  = [bool]$Matches[2]
+        $payload   = $Matches[3]
+        # Note: the -match calls below reassign $Matches, so the data-URI
+        # groups must be captured (above) before computing $logoExt.
         $logoExt = if ($mime -match 'svg') { "svg" } elseif ($mime -match 'png') { "png" } elseif ($mime -match 'ico') { "ico" } else { "png" }
-        if ($Matches[2]) {
-            $logoB64 = $Matches[3]
+        if ($isBase64) {
+            $logoB64 = $payload
         } else {
-            $bytes   = [System.Text.Encoding]::UTF8.GetBytes([System.Uri]::UnescapeDataString($Matches[3]))
+            $bytes   = [System.Text.Encoding]::UTF8.GetBytes([System.Uri]::UnescapeDataString($payload))
             $logoB64 = [Convert]::ToBase64String($bytes)
         }
     } elseif (-not [string]::IsNullOrWhiteSpace($LogoUrl)) {
@@ -1415,9 +1450,12 @@ data:
         $patchFile = New-TemporaryFile
         try {
             Set-Content -Path $patchFile.FullName -Value "{`"data`":{`"logo.b64`":`"$logoB64`"}}" -Encoding UTF8 -NoNewline
-            & kubectl patch configmap "portal-entry-$slug" -n portal --type=merge --patch-file $patchFile.FullName 2>&1 | Out-Null
+            $patchOutput = & kubectl patch configmap "portal-entry-$slug" -n portal --type=merge --patch-file $patchFile.FullName 2>&1
         } finally {
             Remove-Item $patchFile.FullName -Force -ErrorAction SilentlyContinue
+        }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ⚠ Portal: could not attach logo for '$Name': $patchOutput" -ForegroundColor Yellow
         }
     }
     Write-Host "  ✓ Portal entry registered: $Name" -ForegroundColor Green

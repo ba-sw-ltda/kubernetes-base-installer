@@ -20,9 +20,9 @@ $defaultHostname = "grafana.$Domain"
 $hostname = Read-Plain `
     -Prompt "Grafana hostname" `
     -Default $defaultHostname `
-    -ContextTitle "66 - Observability - Grafana" `
+    -ContextTitle "Observability/Grafana — $Platform" `
     -ContextHint "DNS name under which Grafana will be reachable" `
-    -ContextCurrent ([ordered]@{ Platform = $Platform; Domain = $Domain })
+    -ContextCurrent ([ordered]@{ Domain = $Domain })
 
 return @{
     Hostname = $hostname.Trim()

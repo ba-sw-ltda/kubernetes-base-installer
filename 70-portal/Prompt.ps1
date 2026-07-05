@@ -18,25 +18,25 @@ Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
 $defaultHostname = "portal.$Domain"
 
 $hostname = Read-Plain `
-    -Prompt "Homer portal hostname" `
+    -Prompt "Homer hostname" `
     -Default $defaultHostname `
-    -ContextTitle "70 - Portal - Homer" `
-    -ContextHint "DNS name under which the portal dashboard will be reachable" `
-    -ContextCurrent ([ordered]@{ Platform = $Platform; Domain = $Domain })
+    -ContextTitle "Portal/Homer — $Platform" `
+    -ContextHint "DNS name under which Homer will be reachable" `
+    -ContextCurrent ([ordered]@{ Domain = $Domain })
 
 $title = Read-Plain `
     -Prompt "Dashboard title" `
     -Default "Kubernetes Portal" `
-    -ContextTitle "70 - Portal - Homer" `
+    -ContextTitle "Portal/Homer — $Platform" `
     -ContextHint "Heading shown at the top of the Homer dashboard" `
-    -ContextCurrent ([ordered]@{ Platform = $Platform; Hostname = $hostname })
+    -ContextCurrent ([ordered]@{ Hostname = $hostname })
 
 $subtitle = Read-Plain `
     -Prompt "Dashboard subtitle (leave empty to skip)" `
     -Default "" `
-    -ContextTitle "70 - Portal - Homer" `
+    -ContextTitle "Portal/Homer — $Platform" `
     -ContextHint "Optional sub-heading beneath the title — press Enter to leave blank" `
-    -ContextCurrent ([ordered]@{ Platform = $Platform; Hostname = $hostname; Title = $title })
+    -ContextCurrent ([ordered]@{ Hostname = $hostname; Title = $title })
 
 return @{
     Hostname = $hostname.Trim()

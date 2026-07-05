@@ -243,14 +243,20 @@ if ($mount.Installed) {
 
 # If a node went unreachable, Authelia's pod enters Unknown state and keeps the
 # PVC's kubernetes.io/pvc-protection finalizer set — the PVC stays Terminating
-# and Helm can't create a new one with the same name. Force-deleting Unknown pods
-# is safe: the node is already gone so there is no risk of concurrent writes.
+# and Helm can't create a new one with the same name. A pod already marked for
+# deletion (deletionTimestamp set) can also get stuck this way even after its
+# phase moves past Unknown (e.g. to Failed) if the kubelet/CSI never finishes
+# the volume unmount — confirmed live, where it kept the RWO PVC attached and
+# caused the next pod's scheduling to fail with repeated FailedAttachVolume
+# ("Multi-Attach") errors until Longhorn's controller force-detached on its own,
+# well past this script's rollout timeout. Force-deleting either case is safe:
+# the cluster has already decided the pod should go, this just finishes it.
 $authPodsJson = & kubectl get pods -n $Namespace -l "app.kubernetes.io/name=authelia" -o json 2>$null
 if ($authPodsJson) {
     $authPods = try { ($authPodsJson | ConvertFrom-Json).items } catch { @() }
-    @($authPods | Where-Object { $_.status.phase -eq "Unknown" } | ForEach-Object { $_.metadata.name }) |
+    @($authPods | Where-Object { $_.status.phase -eq "Unknown" -or $_.metadata.deletionTimestamp } | ForEach-Object { $_.metadata.name }) |
         Where-Object { $_ } | ForEach-Object {
-            Write-Host "  ⚠ Force-deleting Unknown pod '$_' (node unreachable) to free PVC..." -ForegroundColor Yellow
+            Write-Host "  ⚠ Force-deleting stuck pod '$_' (Unknown/Terminating) to free PVC..." -ForegroundColor Yellow
             & kubectl delete pod $_ -n $Namespace --grace-period=0 --force 2>$null | Out-Null
         }
 }

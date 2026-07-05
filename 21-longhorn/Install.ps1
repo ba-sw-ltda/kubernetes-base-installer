@@ -15,7 +15,6 @@
 param(
     [string]$Platform,
     [string]$ConfigPath,
-    [bool]$ExposeUi   = $true,
     [string]$Hostname = ""
 )
 

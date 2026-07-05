@@ -25,19 +25,33 @@ function Start-Installation {
     Clear-Host
     Write-Host ""
     Write-Host "  ╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "  ║          Kubernetes Base Installer                       ║" -ForegroundColor Cyan
-    Write-Host "  ║          AKS · EKS · GKE · RKE2 · Kind                   ║" -ForegroundColor Cyan
+    Write-Host "  ║" -NoNewline -ForegroundColor Cyan
+    Write-Host "          Kubernetes Base Installer                       " -NoNewline -ForegroundColor Cyan
+    Write-Host "║" -ForegroundColor Cyan
+    Write-Host "  ║" -NoNewline -ForegroundColor Cyan
+    Write-Host "          AKS · EKS · GKE · RKE2 · Kind                   " -NoNewline -ForegroundColor Cyan
+    Write-Host "║" -ForegroundColor Cyan
     Write-Host "  ╠══════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-    Write-Host "  ║  Installs a production-ready K8s stack including:        ║" -ForegroundColor DarkCyan
-    Write-Host "  ║  Ingress · Cert-Manager · Vault · Storage · Observ.      ║" -ForegroundColor DarkCyan
-    Write-Host "  ║  External Secrets · Reflector · ArgoCD · Rancher         ║" -ForegroundColor DarkCyan
+    Write-Host "  ║" -NoNewline -ForegroundColor Cyan
+    Write-Host "  Installs a production-ready K8s stack including:        " -NoNewline -ForegroundColor DarkCyan
+    Write-Host "║" -ForegroundColor Cyan
+    Write-Host "  ║" -NoNewline -ForegroundColor Cyan
+    Write-Host "  Ingress · Cert-Manager · Vault · Storage · Observ.      " -NoNewline -ForegroundColor DarkCyan
+    Write-Host "║" -ForegroundColor Cyan
+    Write-Host "  ║" -NoNewline -ForegroundColor Cyan
+    Write-Host "  External Secrets · Reflector · ArgoCD · Rancher         " -NoNewline -ForegroundColor DarkCyan
+    Write-Host "║" -ForegroundColor Cyan
     Write-Host "  ╠══════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-    Write-Host "  ║  Copyright (c) 2026 BA Software LTDA                     ║" -ForegroundColor DarkGray
-    Write-Host "  ║  MIT License — provided as-is, without warranty          ║" -ForegroundColor DarkGray
-    Write-Host "  ║  github.com/ba-sw-ltda/kubernetes-base-installer         ║" -ForegroundColor DarkGray
+    Write-Host "  ║" -NoNewline -ForegroundColor Cyan
+    Write-Host "  Copyright (c) 2026 BA Software LTDA                     " -NoNewline -ForegroundColor DarkGray
+    Write-Host "║" -ForegroundColor Cyan
+    Write-Host "  ║" -NoNewline -ForegroundColor Cyan
+    Write-Host "  MIT License — provided as-is, without warranty          " -NoNewline -ForegroundColor DarkGray
+    Write-Host "║" -ForegroundColor Cyan
+    Write-Host "  ║" -NoNewline -ForegroundColor Cyan
+    Write-Host "  github.com/ba-sw-ltda/kubernetes-base-installer         " -NoNewline -ForegroundColor DarkGray
+    Write-Host "║" -ForegroundColor Cyan
     Write-Host "  ╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "  All inputs are collected upfront. No prompts during installation." -ForegroundColor Gray
     Write-Host ""
     Write-Host "Press any key to continue..." -ForegroundColor DarkGray
     [Console]::ReadKey($true) | Out-Null
@@ -45,8 +59,8 @@ function Start-Installation {
 
     # Platform Selection
     $platform = Read-SelectValue `
-        -Title "Select Target Platform" `
-        -Message "Choose the Kubernetes platform for your deployment" `
+        -ContextTitle "Select Target Platform" `
+        -Title "Choose the Kubernetes platform for your deployment" `
         -Options @(
             @{ Label = "Azure AKS"; Value = "Azure AKS" }
             @{ Label = "AWS EKS"; Value = "AWS EKS" }
@@ -705,32 +719,48 @@ function Start-Installation {
         -Rke2SshServer $rke2SshServerArg -Rke2SshUser $rke2SshUser `
         -Rke2SshKeyPath $rke2SshKeyPath -Rke2SshPassword $rke2SshPassword
 
-    # Kubernetes version check — components like OpenBao require >= 1.30
-    $k8sVersion = & kubectl version --output json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+    # Kubernetes version check — components like OpenBao require >= 1.30.
+    # Retried up to 3x — a kubeconfig that was just written/re-pointed a few
+    # lines above can hit a momentary connection blip on the very first call
+    # against it, same transient-lag rationale used in Kubernetes.Infra.
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $versionOutput = Invoke-ScriptBlockWithSpinner -Message "Checking Kubernetes version..." -ScriptBlock {
+            param($path, $kubeconfig)
+            $env:PATH = $path
+            if ($kubeconfig) { $env:KUBECONFIG = $kubeconfig }
+            & kubectl version --output json 2>$null
+            [PSCustomObject]@{ ExitCode = $LASTEXITCODE }
+        } -ArgumentList @($env:PATH, $env:KUBECONFIG)
+        $versionJson = $versionOutput | Select-Object -SkipLast 1
+        $k8sVersion = try { ($versionJson -join "`n") | ConvertFrom-Json -ErrorAction SilentlyContinue } catch { $null }
+        if ($k8sVersion -and $k8sVersion.serverVersion) { break }
+        if ($attempt -lt 3) { Start-Sleep -Seconds 2 }
+    }
     $serverVersion = if ($k8sVersion -and $k8sVersion.serverVersion) {
         "$($k8sVersion.serverVersion.major).$($k8sVersion.serverVersion.minor -replace '[^0-9]','')"
     } else { "0.0" }
     $k8sMajor = [int]($serverVersion -split '\.')[0]
     $k8sMinor = [int]($serverVersion -split '\.')[1]
     if ($k8sMajor -lt 1 -or ($k8sMajor -eq 1 -and $k8sMinor -lt 30)) {
+        Write-Host "  ✗ Kubernetes $serverVersion detected — OpenBao (mandatory) requires >= 1.30." -ForegroundColor Red
+        Write-Host "  Bitte den Cluster auf 1.30+ upgraden." -ForegroundColor Red
         Write-Host ""
-        Write-Host "  ⚠ Kubernetes $serverVersion detected — some components (e.g. OpenBao) require >= 1.30." -ForegroundColor Yellow
-        Write-Host "  Bitte den Cluster auf 1.30+ upgraden." -ForegroundColor Yellow
-        Write-Host ""
+        Write-Host "Press any key to abort..." -ForegroundColor DarkGray
+        [Console]::ReadKey($true) | Out-Null
+        exit 1
     }
+    Write-Host "  ✓ Kubernetes $serverVersion detected" -ForegroundColor Green
 
     # Detect mandatory groups that are already fully installed on the
     # connected cluster — lets the selection screen in Step 3 unlock and
     # pre-uncheck them, so re-running the installer to test a later group
     # (e.g. Observability Stack) doesn't force reinstalling everything before
-    # it. Runs as one more connectivity check alongside the ones above, so
-    # "Base installation complete" below stays the section's closing line.
+    # it. Get-PreinstalledGroups prints its own ✓/- line per group as each
+    # check completes (see InstallerFunctions.psm1), so nothing more to print
+    # here.
     $preinstalledGroups = Get-PreinstalledGroups -Platform $platform
-    if ($preinstalledGroups.Count -gt 0) {
-        Write-Host "  ✓ Already installed, will be unlocked in the next step: $($preinstalledGroups -join ', ')" -ForegroundColor Green
-    }
 
-    Write-Host "`nBase installation complete for $platform." -ForegroundColor Green
+    Write-Host "`nCluster environment ready for $platform." -ForegroundColor Green
     Start-Sleep -Seconds 1
     Write-Host "Press any key to continue..." -ForegroundColor DarkGray
     [Console]::ReadKey($true) | Out-Null
@@ -830,7 +860,6 @@ function Start-Installation {
         # Define component installation order
         # SelKey links each component to its Screen 2 value for filtering.
         # Components with no SelKey are always installed when their group is selected.
-        # Ingress and tracing have no PromptPhase=1 — type is pre-filled from Screen 2 radio.
         $vaultName = switch ($platform) {
             "Azure AKS"  { "azure-keyvault"    }
             "AWS EKS"    { "aws-secretsmanager" }
@@ -858,7 +887,7 @@ function Start-Installation {
                 @{ Number="35"; Name="authelia";           DisplayName="Authelia (Single Sign-On)" }
             )
             "Storage (Longhorn)" = @(
-                @{ Number="21"; Name="longhorn"; SelKey="longhorn"; PromptPhase=1; PromptOrder="65"; DisplayName="Longhorn Storage" }
+                @{ Number="21"; Name="longhorn"; SelKey="longhorn"; PromptOrder="65"; DisplayName="Longhorn Storage" }
             )
             # No SelKey on any of these — mandatory baseline, no checkbox. Each
             # still gets its own internal yes/no gate (Proxy Configuration and
@@ -935,7 +964,8 @@ function Start-Installation {
             # Show per-group component selection (only if group has choices)
             if ($section) {
                 $groupSel = Read-ComponentSelectionScreen `
-                    -Title $group `
+                    -Title "Which components should be installed?" `
+                    -ContextTitle "$group — $platform" `
                     -Sections @($section)
                 if ($null -eq $groupSel) { Write-Host "Installation cancelled." -ForegroundColor Red; exit }
                 $groupSel.Keys | ForEach-Object { $compSel[$_] = $groupSel[$_] }

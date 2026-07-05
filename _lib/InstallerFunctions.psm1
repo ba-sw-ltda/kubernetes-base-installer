@@ -25,63 +25,93 @@ Set-ClusterBootstrapToolsDir -Path (Join-Path (Split-Path $PSScriptRoot -Parent)
 # Vault has no single Helm release) just leaves the group out of the result,
 # which keeps it locked/mandatory exactly like before this function existed.
 #
-# Runs ~11 helm/kubectl calls, ~25-30s total — done inside a single
-# Invoke-ScriptBlockWithSpinner (from powershell-menu-ui, already loaded by
-# the time Install-Base.ps1 calls this) so the console shows a spinner
-# instead of sitting frozen. That function expects the caller to forward
-# PATH/KUBECONFIG explicitly — Start-Job runs in a separate process that
-# doesn't inherit either.
+# One Invoke-ScriptBlockWithSpinner per group (not one job for all ~11
+# helm/kubectl calls) so the result prints group-by-group as each check
+# completes, instead of the console sitting on one spinner for ~25-30s and
+# dumping every result at once at the end — mirrors Kubernetes.Infra's
+# Get-PreinstalledDependencies loop. Each scriptblock defines its own
+# Test-ReleasePresent/Test-NamespacePresent copies since Start-Job runs in a
+# separate process per call and can't share functions across that boundary;
+# PATH/KUBECONFIG must be forwarded explicitly for the same reason.
 function Get-PreinstalledGroups {
     param([Parameter(Mandatory)][string]$Platform)
 
     $onPremOrKind = $Platform -in @("RKE2 (On-Premise)", "Kind (Local)")
 
-    $joined = Invoke-ScriptBlockWithSpinner -Message "Checking for already-installed components..." -ScriptBlock {
-        param($path, $kubeconfig, $platform, $onPremOrKind)
-        $env:PATH = $path
-        if ($kubeconfig) { $env:KUBECONFIG = $kubeconfig }
-
-        function Test-ReleasePresent($Name, $Namespace) {
-            & helm status $Name --namespace $Namespace 2>&1 | Out-Null
-            return $LASTEXITCODE -eq 0
+    $groupChecks = [ordered]@{
+        "Ingress & Load Balancing" = {
+            param($path, $kubeconfig, $onPremOrKind)
+            $env:PATH = $path
+            if ($kubeconfig) { $env:KUBECONFIG = $kubeconfig }
+            function Test-ReleasePresent($Name, $Namespace) {
+                & helm status $Name --namespace $Namespace 2>&1 | Out-Null
+                return $LASTEXITCODE -eq 0
+            }
+            $ingressOk = (Test-ReleasePresent "ingress-nginx" "ingress-nginx") -or (Test-ReleasePresent "traefik" "traefik")
+            $metallbOk = -not $onPremOrKind -or (Test-ReleasePresent "metallb" "metallb-system")
+            [PSCustomObject]@{ Found = ($ingressOk -and $metallbOk) }
         }
-        function Test-NamespacePresent($Name) {
-            & kubectl get namespace $Name 2>&1 | Out-Null
-            return $LASTEXITCODE -eq 0
+        "Storage (Longhorn)" = {
+            param($path, $kubeconfig, $onPremOrKind)
+            $env:PATH = $path
+            if ($kubeconfig) { $env:KUBECONFIG = $kubeconfig }
+            & helm status longhorn --namespace longhorn-system 2>&1 | Out-Null
+            [PSCustomObject]@{ Found = ($LASTEXITCODE -eq 0) }
         }
-
-        $installed = @()
-
-        $ingressOk = (Test-ReleasePresent "ingress-nginx" "ingress-nginx") -or (Test-ReleasePresent "traefik" "traefik")
-        $metallbOk = -not $onPremOrKind -or (Test-ReleasePresent "metallb" "metallb-system")
-        if ($ingressOk -and $metallbOk) { $installed += "Ingress & Load Balancing" }
-
-        if ($platform -eq "RKE2 (On-Premise)" -and (Test-ReleasePresent "longhorn" "longhorn-system")) {
-            $installed += "Storage (Longhorn)"
-        }
-
         # Cloud-native Vault (Azure Key Vault / AWS Secrets Manager / GCP
         # Secret Manager) isn't a Helm release — no reliable single check, so
         # Security & Certificates only ever unlocks on RKE2/Kind (OpenBao).
-        $vaultOk = $onPremOrKind -and (Test-ReleasePresent "openbao" "openbao")
-        if ($vaultOk -and (Test-ReleasePresent "cert-manager" "cert-manager") -and
-            (Test-ReleasePresent "secrets-store-csi-driver" "kube-system") -and
-            (Test-ReleasePresent "authelia" "authelia")) {
-            $installed += "Security & Certificates"
+        "Security & Certificates" = {
+            param($path, $kubeconfig, $onPremOrKind)
+            $env:PATH = $path
+            if ($kubeconfig) { $env:KUBECONFIG = $kubeconfig }
+            function Test-ReleasePresent($Name, $Namespace) {
+                & helm status $Name --namespace $Namespace 2>&1 | Out-Null
+                return $LASTEXITCODE -eq 0
+            }
+            $vaultOk = $onPremOrKind -and (Test-ReleasePresent "openbao" "openbao")
+            $found = $vaultOk -and (Test-ReleasePresent "cert-manager" "cert-manager") -and
+                (Test-ReleasePresent "secrets-store-csi-driver" "kube-system") -and
+                (Test-ReleasePresent "authelia" "authelia")
+            [PSCustomObject]@{ Found = $found }
         }
-
-        $proxyConfigOk = -not $onPremOrKind -or (Test-NamespacePresent "proxy-config")
-        if ((Test-ReleasePresent "reflector" "kube-system") -and (Test-NamespacePresent "registry") -and $proxyConfigOk) {
-            $installed += "Configuration Management"
+        "Configuration Management" = {
+            param($path, $kubeconfig, $onPremOrKind)
+            $env:PATH = $path
+            if ($kubeconfig) { $env:KUBECONFIG = $kubeconfig }
+            function Test-ReleasePresent($Name, $Namespace) {
+                & helm status $Name --namespace $Namespace 2>&1 | Out-Null
+                return $LASTEXITCODE -eq 0
+            }
+            function Test-NamespacePresent($Name) {
+                & kubectl get namespace $Name 2>&1 | Out-Null
+                return $LASTEXITCODE -eq 0
+            }
+            $proxyConfigOk = -not $onPremOrKind -or (Test-NamespacePresent "proxy-config")
+            $found = (Test-ReleasePresent "reflector" "kube-system") -and (Test-NamespacePresent "registry") -and $proxyConfigOk
+            [PSCustomObject]@{ Found = $found }
         }
+    }
 
-        # Joined into one string — the cleanest way for a value to survive
-        # Start-Job's serialization boundary without surprises.
-        return ($installed -join "|")
-    } -ArgumentList @($env:PATH, $env:KUBECONFIG, $Platform, $onPremOrKind)
+    $installed = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($groupName in $groupChecks.Keys) {
+        if ($groupName -eq "Storage (Longhorn)" -and $Platform -ne "RKE2 (On-Premise)") { continue }
 
-    $names = @($joined -split '\|' | Where-Object { $_ })
-    return [System.Collections.Generic.HashSet[string]]::new([string[]]$names)
+        $result = Invoke-ScriptBlockWithSpinner -Message "Checking $groupName..." `
+            -ScriptBlock $groupChecks[$groupName] -ArgumentList @($env:PATH, $env:KUBECONFIG, $onPremOrKind) |
+            Select-Object -Last 1
+        $found = $result.Found
+        if ($found) { [void]$installed.Add($groupName) }
+        $mark  = if ($found) { "✓" } else { "-" }
+        $color = if ($found) { "Green" } else { "DarkGray" }
+        $status = if ($found) { "already installed" } else { "not yet installed" }
+        Write-Host "  $mark $groupName — $status" -ForegroundColor $color
+    }
+
+    # Comma operator prevents PowerShell from enumerating the HashSet onto the
+    # pipeline — without it, an empty HashSet unrolls to zero objects and the
+    # caller's assignment becomes $null instead of an empty collection.
+    return ,$installed
 }
 
 Export-ModuleMember -Function Test-CommandExists, Install-Kubectl, Install-Helm, Install-RancherCli, Install-PlatformTools, Initialize-Rke2Cluster, Initialize-ClusterEnvironment, Update-HostsFile, Get-AksIngressIp, Get-EksIngressIp, Confirm-KubectlContext, Reset-StuckHelmRelease, Get-IngressClass, Set-RancherProjectAssignment, Get-PreinstalledGroups

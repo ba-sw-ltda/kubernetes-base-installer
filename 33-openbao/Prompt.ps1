@@ -79,7 +79,7 @@ while ($continueLoop) {
         -Message "Zertifizierungsstellen definieren — jede PKI wird als eigene secrets engine in OpenBao gemountet" `
         -Options $menuOptions `
         -Default 0 `
-        -ContextTitle "33 - Security - OpenBao — PKIs" `
+        -ContextTitle "Security/OpenBao — PKIs" `
         -ContextHint  "Root CA: selbst signiert. Intermediate CA: von einer Parent CA signiert (intern oder extern)." `
         -ContextCurrent (Get-PkiSummary -PKIs $pkis)
 
@@ -92,7 +92,7 @@ while ($continueLoop) {
         # Name
         $nameRaw = Read-Plain `
             -Prompt       "PKI Name (z.B. ingress, vehicles, corporate)" `
-            -ContextTitle "33 - Security - OpenBao — PKI hinzufügen" `
+            -ContextTitle "Security/OpenBao — PKI hinzufügen" `
             -ContextHint  "MountPath wird automatisch 'pki-<name>'; CommonName wird '<name>.$Domain'" `
             -ContextCurrent (Get-PkiSummary -PKIs $pkis)
         if ([string]::IsNullOrWhiteSpace($nameRaw)) { continue }
@@ -110,7 +110,7 @@ while ($continueLoop) {
                 @{ Label = "Intermediate CA — von einer Parent CA signiert";                    Value = "Intermediate" }
             ) `
             -Default 0 `
-            -ContextTitle   "33 - Security - OpenBao — PKI hinzufügen" `
+            -ContextTitle   "Security/OpenBao — PKI hinzufügen" `
             -ContextCurrent ([ordered]@{ Name = $name; MountPath = "pki-$name" })
         if ($null -eq $type) { continue }
 
@@ -129,7 +129,7 @@ while ($continueLoop) {
                 -Message "Welche CA soll dieses Intermediate signieren?" `
                 -Options $parentOptions `
                 -Default 0 `
-                -ContextTitle   "33 - Security - OpenBao — PKI hinzufügen" `
+                -ContextTitle   "Security/OpenBao — PKI hinzufügen" `
                 -ContextCurrent ([ordered]@{ Name = $name; Typ = $type })
             if ($null -eq $parentChoice) { continue }
 
@@ -155,7 +155,7 @@ while ($continueLoop) {
             -Message       "Welche Zertifikatstypen soll diese PKI ausstellen?" `
             -Options       $roleOptions `
             -DefaultValues $preSelected `
-            -ContextTitle  "33 - Security - OpenBao — PKI hinzufügen" `
+            -ContextTitle  "Security/OpenBao — PKI hinzufügen" `
             -ContextCurrent ([ordered]@{ Name = $name; Typ = $type })
         if ($null -eq $selectedRoles -or $selectedRoles.Count -eq 0) { $selectedRoles = @("HTTP") }
 
@@ -165,7 +165,7 @@ while ($continueLoop) {
             $ttlInput = Read-Plain `
                 -Prompt       "Client-Cert TTL in Stunden" `
                 -Default      "336" `
-                -ContextTitle "33 - Security - OpenBao — PKI hinzufügen" `
+                -ContextTitle "Security/OpenBao — PKI hinzufügen" `
                 -ContextHint  "336h = 14 Tage; Erneuerung startet bei 50% (Tag 7)" `
                 -ContextCurrent ([ordered]@{ Name = $name; Rollen = ($selectedRoles -join ", ") })
             $ttlVal = [int]($ttlInput -replace '\D', '0')
@@ -181,7 +181,7 @@ while ($continueLoop) {
             $isDefault = Read-YesNo `
                 -Title       "Als Standard-PKI für Ingress-Zertifikate setzen?" `
                 -DefaultYes  $false `
-                -ContextTitle "33 - Security - OpenBao — PKI hinzufügen" `
+                -ContextTitle "Security/OpenBao — PKI hinzufügen" `
                 -ContextCurrent ([ordered]@{ Name = $name; Typ = $type })
             if ($isDefault) {
                 foreach ($p in $pkis) { $p['IsDefault'] = $false }
@@ -223,7 +223,7 @@ while ($continueLoop) {
                 @{ Label = "Zurück";                         Value = "back"    }
             ) `
             -Default 0 `
-            -ContextTitle   "33 - Security - OpenBao — PKI bearbeiten" `
+            -ContextTitle   "Security/OpenBao — PKI bearbeiten" `
             -ContextCurrent ([ordered]@{
                 Name      = $pki.Name
                 Typ       = $pki.Type
@@ -244,7 +244,7 @@ while ($continueLoop) {
                     -Title         "Rollen für '$editName'" `
                     -Options       $roleOptions `
                     -DefaultValues @($pki.Roles) `
-                    -ContextTitle  "33 - Security - OpenBao — PKI bearbeiten" `
+                    -ContextTitle  "Security/OpenBao — PKI bearbeiten" `
                     -ContextCurrent ([ordered]@{ Name = $pki.Name })
                 if ($newRoles -and $newRoles.Count -gt 0) {
                     $pki['Roles'] = @($newRoles)
@@ -252,7 +252,7 @@ while ($continueLoop) {
                         $ttlInput = Read-Plain `
                             -Prompt       "Client-Cert TTL in Stunden" `
                             -Default      "336" `
-                            -ContextTitle "33 - Security - OpenBao — PKI bearbeiten" `
+                            -ContextTitle "Security/OpenBao — PKI bearbeiten" `
                             -ContextHint  "336h = 14 Tage"
                         $ttlVal = [int]($ttlInput -replace '\D', '0')
                         $pki['mTlsTtlHours'] = if ($ttlVal -gt 0) { $ttlVal } else { 336 }
@@ -268,7 +268,7 @@ while ($continueLoop) {
             "rename" {
                 $newNameRaw = Read-Plain `
                     -Prompt       "Neuer Name für '$editName'" `
-                    -ContextTitle "33 - Security - OpenBao — PKI umbenennen" `
+                    -ContextTitle "Security/OpenBao — PKI umbenennen" `
                     -ContextCurrent ([ordered]@{ Aktueller_Name = $editName })
                 if ([string]::IsNullOrWhiteSpace($newNameRaw)) { break }
                 $newName = $newNameRaw.Trim().ToLower() -replace '[^a-z0-9-]', '-'
@@ -289,7 +289,7 @@ while ($continueLoop) {
         $confirm = Read-YesNo `
             -Title      "PKI '$delName' aus der Liste entfernen?" `
             -DefaultYes $false `
-            -ContextTitle   "33 - Security - OpenBao — PKI löschen" `
+            -ContextTitle   "Security/OpenBao — PKI löschen" `
             -ContextHint    "Löscht die PKI aus dem Installer. Bestehende OpenBao-Mounts werden NICHT automatisch gelöscht." `
             -ContextCurrent ([ordered]@{ Name = $delName })
         if ($confirm) {
@@ -317,22 +317,22 @@ if ($pkis.Count -eq 0) {
         -DefaultYes $false `
         -YesLabel   "Ja — kein TLS, Authelia-Login deaktiviert (nur Dev/CI)" `
         -NoLabel    "Nein — zurück zur PKI-Verwaltung" `
-        -ContextTitle "33 - Security - OpenBao — PKI Warnung" `
+        -ContextTitle "Security/OpenBao — PKI Warnung" `
         -ContextCurrent ([ordered]@{ TLS = "deaktiviert"; Authelia = "Login nicht funktionsfähig" })
     if (-not $proceed) { $restartPkiLoop = $true }
 }
 } while ($restartPkiLoop)  # outer do-while: re-runs the management loop if user goes back
 
-# ── OpenBao UI hostname ───────────────────────────────────────────
+# ── OpenBao hostname ──────────────────────────────────────────────
 $defaultHostname = "vault.$Domain"
 $hostname = Read-Plain `
-    -Prompt       "OpenBao UI hostname" `
+    -Prompt       "OpenBao hostname" `
     -Default      $defaultHostname `
-    -ContextTitle "33 - Security - OpenBao — $Platform" `
+    -ContextTitle "Security/OpenBao — $Platform" `
     -ContextHint  "DNS-Name unter dem die OpenBao UI erreichbar ist" `
     -ContextCurrent ([ordered]@{
-        Domain = $Domain
         PKIs   = if ($pkis.Count -gt 0) { ($pkis | ForEach-Object { $_.Name }) -join ", " } else { "(keine)" }
+        Domain = $Domain
     })
 
 return @{

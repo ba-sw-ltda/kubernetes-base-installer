@@ -20,8 +20,8 @@ $defaultHostname = "prometheus.$Domain"
 $hostname = Read-Plain `
     -Prompt "Prometheus hostname" `
     -Default $defaultHostname `
-    -ContextTitle "Prometheus" `
+    -ContextTitle "Observability/Prometheus — $Platform" `
     -ContextHint "DNS name under which Prometheus will be reachable" `
-    -ContextCurrent ([ordered]@{ Platform = $Platform; Domain = $Domain })
+    -ContextCurrent ([ordered]@{ Domain = $Domain })
 
 return @{ Hostname = $hostname.Trim() }

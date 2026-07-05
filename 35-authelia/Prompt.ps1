@@ -30,7 +30,7 @@ $hostname = Read-Plain `
     -Prompt "Authelia hostname" `
     -Default $defaultHostname `
     -ContextTitle "Security/Authelia — $Platform" `
-    -ContextHint "DNS name for the single sign-on login portal" `
+    -ContextHint "DNS name under which Authelia will be reachable" `
     -ContextCurrent ([ordered]@{ Domain = $Domain })
 
 do {
