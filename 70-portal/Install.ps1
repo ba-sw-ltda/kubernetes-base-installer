@@ -131,10 +131,24 @@ fetch_logo() {
   return 1
 }
 
+# Fixed-color badge behind every logo so monochrome/white brand marks (OpenBao,
+# Jaeger, Longhorn, ...) stay visible regardless of Homer's light/dark theme.
+write_custom_css() {
+  cat > /www/assets/custom.css <<'CSS'
+.card .image {
+  background: #12151a;
+  border-radius: 10px;
+  padding: 6px;
+}
+CSS
+}
+
 generate() {
   DATA=$(kubectl get configmap -n portal -l "portal/entry=true" -o json 2>/dev/null) || return
   COUNT=$(printf '%s' "$DATA" | jq '.items | length' 2>/dev/null)
   [ "${COUNT:-0}" -eq 0 ] && return
+
+  write_custom_css
 
   # Build logo overrides: entries with url.internal but no embedded logo.b64
   OVERRIDES="{}"
@@ -155,7 +169,7 @@ generate() {
   rm -f /tmp/portal_needs_logos.txt
 
   {
-    printf '---\ntitle: "%s"\nsubtitle: "%s"\nheader: true\nfooter: false\ncolumns: 3\nconnectivityCheck: false\n\n' \
+    printf '---\ntitle: "%s"\nsubtitle: "%s"\nheader: true\nfooter: false\ncolumns: 3\nconnectivityCheck: false\nstylesheet:\n  - "assets/custom.css"\n\n' \
       "${PORTAL_TITLE:-Kubernetes Portal}" "${PORTAL_SUBTITLE:-}"
 
     printf 'services:\n'
@@ -209,6 +223,14 @@ try {
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create sidecar script ConfigMap"; exit 1 }
 Write-Host "  ✓ Sidecar script ConfigMap ready" -ForegroundColor Green
 
+# The config-sync container reads sync.sh once at process start; updating the
+# ConfigMap alone doesn't restart the pod, so a re-applied script would sit
+# unused until something else happened to recreate the pod. Stamping its hash
+# onto the pod template forces a rollout whenever the script actually changes.
+$syncScriptHash = [System.BitConverter]::ToString(
+    [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($syncScript))
+) -replace '-', ''
+
 # ── 4. Deployment ─────────────────────────────────────────────────────────────
 $deployYaml = @"
 apiVersion: apps/v1
@@ -225,6 +247,8 @@ spec:
     metadata:
       labels:
         app: homer
+      annotations:
+        checksum/sync-script: "$syncScriptHash"
     spec:
       serviceAccountName: portal
       containers:

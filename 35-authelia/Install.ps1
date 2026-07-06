@@ -167,6 +167,7 @@ session:
     - domain: $clusterDomain
       authelia_url: https://$Hostname
       default_redirection_url: https://$Hostname/
+      remember_me: 1d
 
 storage:
   local:
@@ -319,6 +320,7 @@ $issuerName = Get-ClusterIssuerName -Platform $Platform
 $tlsSecretName = "$($Hostname -replace '\.', '-')-tls"
 $issuerAnnotationLine = if ($issuerName) { "    cert-manager.io/cluster-issuer: $issuerName" } else { "" }
 $sslRedirect = if ($issuerName) { "true" } else { "false" }
+$scheme = if ($issuerName) { "https" } else { "http" }
 $tlsBlock = if ($issuerName) {
 @"
   tls:
@@ -394,7 +396,7 @@ if ($basicAuthIngresses.Count -eq 0) {
         # default for good reason (arbitrary nginx config injection).
         $annotateOut = & kubectl annotate ingress $ing.Name -n $ing.Namespace --overwrite `
             "nginx.ingress.kubernetes.io/auth-url=http://authelia.authelia.svc.cluster.local/api/verify" `
-            "nginx.ingress.kubernetes.io/auth-signin=http://${Hostname}/?rd=`$scheme://`$host`$request_uri" `
+            "nginx.ingress.kubernetes.io/auth-signin=${scheme}://${Hostname}/?rd=`$scheme://`$host`$request_uri" `
             "nginx.ingress.kubernetes.io/auth-response-headers=Remote-User,Remote-Groups,Remote-Name,Remote-Email" `
             "nginx.ingress.kubernetes.io/auth-type-" `
             "nginx.ingress.kubernetes.io/auth-secret-" `
@@ -419,7 +421,7 @@ Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 Write-Host "  Quick Reference" -ForegroundColor White
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
-Write-Host "  Portal:  http://$Hostname" -ForegroundColor Yellow
+Write-Host "  Portal:  ${scheme}://$Hostname" -ForegroundColor Yellow
 Write-Host "  Login:   admin / <the password you just set>" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "  Covers every *.$clusterDomain Ingress automatically — no" -ForegroundColor Gray

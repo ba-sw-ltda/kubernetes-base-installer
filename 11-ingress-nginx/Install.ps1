@@ -25,6 +25,13 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "  Installing: NGINX Ingress Controller" -ForegroundColor Cyan
 Write-Host "========================================`n" -ForegroundColor Cyan
 
+$extraArgs = if ($verbose) { @{ Verbose = $true } } else { @{} }
+$otherUninstall = Join-Path $BaseDir "11-ingress-traefik\Uninstall.ps1"
+if (Test-Path $otherUninstall) {
+    & $otherUninstall -Platform $Platform @extraArgs
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to remove Traefik ingress controller"; exit 1 }
+}
+
 $FullConfig = Get-ComponentConfig -ScriptRoot $ScriptRoot -Platform $Platform -ConfigPath $ConfigPath
 
 $ChartName       = $FullConfig.ChartName

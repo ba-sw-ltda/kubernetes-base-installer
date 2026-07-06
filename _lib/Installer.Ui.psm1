@@ -1416,14 +1416,32 @@ function Register-PortalEntry {
             } catch {}
         }
     }
-    # InternalUrl is provided: logo will be fetched by the portal sidecar from inside the cluster
-    $slug = ($Name.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+    # Keyed on $Order (the component's stable folder-number identity), not on $Name —
+    # $Name is the human-editable PortalTitle and can be renamed, which must update the
+    # existing entry in place rather than orphan it under a new slug.
+    $cmName = "portal-entry-$Order"
+
+    # Clean up any ConfigMap left over from before this entry was keyed on $Order (either
+    # the old Name-slug scheme, or a since-renamed PortalTitle) so renames don't leave
+    # duplicate portal entries behind.
+    $staleRaw = & kubectl get configmap -n portal -l "portal/entry=true" -o json 2>$null
+    if ($LASTEXITCODE -eq 0 -and $staleRaw) {
+        try {
+            $staleEntries = ($staleRaw | ConvertFrom-Json -ErrorAction Stop).items
+            foreach ($cm in $staleEntries) {
+                if ($cm.data.order -eq "$Order" -and $cm.metadata.name -ne $cmName) {
+                    & kubectl delete configmap $cm.metadata.name -n portal --ignore-not-found 2>&1 | Out-Null
+                }
+            }
+        } catch {}
+    }
+
     $internalUrlLine = if ($InternalUrl) { "`n  url.internal: `"$InternalUrl`"" } else { "" }
     $cmYaml = @"
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: portal-entry-$slug
+  name: $cmName
   namespace: portal
   labels:
     portal/entry: "true"
@@ -1450,7 +1468,7 @@ data:
         $patchFile = New-TemporaryFile
         try {
             Set-Content -Path $patchFile.FullName -Value "{`"data`":{`"logo.b64`":`"$logoB64`"}}" -Encoding UTF8 -NoNewline
-            $patchOutput = & kubectl patch configmap "portal-entry-$slug" -n portal --type=merge --patch-file $patchFile.FullName 2>&1
+            $patchOutput = & kubectl patch configmap $cmName -n portal --type=merge --patch-file $patchFile.FullName 2>&1
         } finally {
             Remove-Item $patchFile.FullName -Force -ErrorAction SilentlyContinue
         }
@@ -1461,37 +1479,35 @@ data:
     Write-Host "  ✓ Portal entry registered: $Name" -ForegroundColor Green
 }
 
-function Get-PortalIconDataUri {
-    param(
-        [Parameter(Mandatory)][string]$ScriptRoot,
-        [string]$IconFile = ""
-    )
-    if ([string]::IsNullOrWhiteSpace($IconFile)) { return "" }
-
-    $path = Join-Path $ScriptRoot $IconFile
-    if (-not (Test-Path $path)) {
-        Write-Host "  ⚠ Portal icon file not found: $path" -ForegroundColor Yellow
-        return ""
-    }
-
-    $mime = switch ([System.IO.Path]::GetExtension($path).TrimStart('.').ToLower()) {
-        'svg'  { 'image/svg+xml' }
-        'png'  { 'image/png' }
-        'ico'  { 'image/x-icon' }
-        'jpg'  { 'image/jpeg' }
-        'jpeg' { 'image/jpeg' }
-        default { 'application/octet-stream' }
-    }
-    $b64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path))
-    return "data:$mime;base64,$b64"
-}
-
 function Unregister-PortalEntry {
-    param([Parameter(Mandatory)][string]$Name)
-    $slug = ($Name.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
-    & kubectl delete configmap "portal-entry-$slug" -n portal --ignore-not-found 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✓ Portal entry removed: $Name" -ForegroundColor Green
+    param(
+        [string]$Name,
+        [int]   $Order = 0
+    )
+    # Entries created before the Order-based stable-key migration are still named after
+    # their old Name-slug (e.g. "portal-entry-jaeger" instead of "portal-entry-64") and
+    # Register-PortalEntry only renames them on its own next install run. Deleting the
+    # Order-derived name directly would silently miss those — `--ignore-not-found` makes
+    # kubectl exit 0 either way, so a wrong guess used to look like a successful removal
+    # even though nothing was deleted. Look the entry up by its data.order/data.name
+    # instead, same as Register-PortalEntry's stale-cleanup pass.
+    $removed  = @()
+    $staleRaw = & kubectl get configmap -n portal -l "portal/entry=true" -o json 2>$null
+    if ($LASTEXITCODE -eq 0 -and $staleRaw) {
+        try {
+            $entries = ($staleRaw | ConvertFrom-Json -ErrorAction Stop).items
+            foreach ($cm in $entries) {
+                $matchesOrder = $Order -gt 0 -and $cm.data.order -eq "$Order"
+                $matchesName  = $Name -and $cm.data.name -eq $Name
+                if ($matchesOrder -or $matchesName) {
+                    & kubectl delete configmap $cm.metadata.name -n portal --ignore-not-found 2>&1 | Out-Null
+                    if ($LASTEXITCODE -eq 0) { $removed += $cm.metadata.name }
+                }
+            }
+        } catch {}
+    }
+    if ($removed.Count -gt 0) {
+        Write-Host "  ✓ Portal entry removed: $(if ($Name) { $Name } else { $removed -join ', ' })" -ForegroundColor Green
     }
 }
 
@@ -1611,7 +1627,6 @@ $__exportFunctions = @(
   'Test-AutheliaInstalled'
   'Get-BasicAuthIngresses'
   'Register-PortalEntry'
-  'Get-PortalIconDataUri'
   'Unregister-PortalEntry'
   'Read-ComponentSelectionScreen'
 )

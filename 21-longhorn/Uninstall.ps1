@@ -40,7 +40,7 @@ if (-not $Force) {
     }
 }
 
-Unregister-PortalEntry -Name "Longhorn"
+Unregister-PortalEntry -Name "Longhorn" -Order 21
 
 # ── 1. Remove Helm release ──────────────────────────────────────
 Write-Host "`n--- 1. Helm Release ---" -ForegroundColor Magenta

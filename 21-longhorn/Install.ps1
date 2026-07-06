@@ -216,7 +216,7 @@ Write-Host "  Use Longhorn explicitly:" -ForegroundColor Gray
 Write-Host "    storageClassName: longhorn" -ForegroundColor Yellow
 Write-Host ""
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
-    Write-Host "  Longhorn UI:  http://$Hostname" -ForegroundColor Yellow
+    Write-Host "  Longhorn UI:  ${scheme}://$Hostname" -ForegroundColor Yellow
 } else {
     Write-Host "  Longhorn UI (port-forward):" -ForegroundColor Gray
     Write-Host "    kubectl port-forward -n longhorn-system svc/longhorn-frontend 8080:80" -ForegroundColor Yellow

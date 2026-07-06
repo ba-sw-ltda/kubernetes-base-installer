@@ -18,9 +18,7 @@ $release   = "traefik"
 $existing = & helm list -n $namespace --filter "^$release$" --short 2>&1
 if (-not $existing) { exit 0 }
 
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "  Removing: Traefik Ingress Controller" -ForegroundColor Cyan
-Write-Host "========================================`n" -ForegroundColor Cyan
+Write-Host "  Removing Traefik Ingress Controller (switching ingress controller)..." -ForegroundColor Cyan
 
 $exitCode = Invoke-WithSpinner -Message "Uninstalling Traefik..." -Executable "helm" `
     -Arguments @("uninstall", $release, "-n", $namespace) -ShowOutput:$verbose

@@ -17,18 +17,15 @@ $BaseDir    = Split-Path $PSScriptRoot -Parent
 $verbose    = $VerbosePreference -eq 'Continue'
 $extraArgs  = if ($verbose) { @{ Verbose = $true } } else { @{} }
 
+# Install chosen backend — its own Install.ps1 removes the other backend
+# first (right after printing its banner), so the removal output lands
+# inside that install block instead of floating in its own section.
 if ($TracingBackend -eq "Jaeger") {
-    $uninstall = Join-Path $BaseDir "64-tracing-tempo\Uninstall.ps1"
-    if (Test-Path $uninstall) { & $uninstall -Platform $Platform @extraArgs }
-
     $jaegerArgs = @{ Platform = $Platform }
     if ($Hostname) { $jaegerArgs.Hostname = $Hostname }
     & (Join-Path $BaseDir "64-tracing-jaeger\Install.ps1") @jaegerArgs @extraArgs
     if ($LASTEXITCODE -ne 0) { exit 1 }
 } else {
-    $uninstall = Join-Path $BaseDir "64-tracing-jaeger\Uninstall.ps1"
-    if (Test-Path $uninstall) { & $uninstall -Platform $Platform @extraArgs }
-
     & (Join-Path $BaseDir "64-tracing-tempo\Install.ps1") -Platform $Platform @extraArgs
     if ($LASTEXITCODE -ne 0) { exit 1 }
 }

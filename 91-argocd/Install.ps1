@@ -139,8 +139,30 @@ if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
             $secretPatch = "{`"data`":{`"oidc.clientSecret`":`"$secretB64`"}}"
             & kubectl patch secret argocd-secret -n $Namespace --type merge -p $secretPatch 2>&1 | Out-Null
 
+            # argocd-server's own OIDC-discovery call to Authelia validates against its
+            # trust store, which does not include our custom root CA by default — the
+            # OIDCConfig.RootCA field (embedded here as a YAML block scalar) is ArgoCD's
+            # dedicated mechanism for this, separate from the argocd-tls-certs-cm
+            # ConfigMap used for Git-repo TLS. Same OpenBao CA lookup as Rancher's.
+            $rootCaYaml   = ""
+            $baoStateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+            if (Test-Path $baoStateFile) {
+                $baoRootToken = (Get-Content $baoStateFile | ConvertFrom-Json).RootToken
+                $defaultPkis  = Get-OpenBaoPkis -BaseDir $BaseDir -Platform $Platform
+                $defaultPki   = $defaultPkis | Where-Object { $_['IsDefault'] } | Select-Object -First 1
+                if (-not $defaultPki) { $defaultPki = $defaultPkis | Select-Object -First 1 }
+                $caMount      = if ($defaultPki) { $defaultPki['MountPath'] } else { "pki" }
+
+                $caCert = & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$baoRootToken bao read -field=certificate $caMount/cert/ca" 2>$null
+                if ($caCert) {
+                    $indentedCert = ($caCert -split "`r?`n" | Where-Object { $_ } | ForEach-Object { "    $_" }) -join "`n"
+                    $rootCaYaml   = "`nrootCA: |`n$indentedCert"
+                    Write-Host "  ✓ OpenBao root CA trusted by ArgoCD OIDC ($caMount)" -ForegroundColor Green
+                }
+            }
+
             # $oidc.clientSecret is ArgoCD's own template reference to argocd-secret, not a PS variable
-            $oidcYaml = "name: Authelia`nissuer: $($oidcConfig.Issuer)`nclientID: argocd`nclientSecret: `$oidc.clientSecret`nrequestedScopes:`n  - openid`n  - profile`n  - email`n  - groups`nrequestedIDTokenClaims:`n  groups:`n    essential: true"
+            $oidcYaml = "name: Authelia`nissuer: $($oidcConfig.Issuer)`nclientID: argocd`nclientSecret: `$oidc.clientSecret`nrequestedScopes:`n  - openid`n  - profile`n  - email`n  - groups`nrequestedIDTokenClaims:`n  groups:`n    essential: true$rootCaYaml"
             $cmPatch   = @{ data = @{ "oidc.config" = $oidcYaml } } | ConvertTo-Json -Compress -Depth 5
             & kubectl patch configmap argocd-cm -n $Namespace --type merge -p $cmPatch 2>&1 | Out-Null
 

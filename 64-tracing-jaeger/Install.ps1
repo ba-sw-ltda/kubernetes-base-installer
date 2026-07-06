@@ -27,6 +27,8 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "  Installing: 64 - Jaeger" -ForegroundColor Cyan
 Write-Host "========================================`n" -ForegroundColor Cyan
 
+$extraArgs = if ($verbose) { @{ Verbose = $true } } else { @{} }
+
 $FullConfig = Get-ComponentConfig -ScriptRoot $ScriptRoot -Platform $Platform -ConfigPath $ConfigPath
 
 $ChartName    = $FullConfig.ChartName
@@ -44,6 +46,9 @@ Write-Host ""
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
 Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+
+$otherUninstall = Join-Path $BaseDir "64-tracing-tempo\Uninstall.ps1"
+if (Test-Path $otherUninstall) { & $otherUninstall -Platform $Platform @extraArgs }
 
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "jaegertracing", $Repository, "--force-update") -ShowOutput:$verbose
@@ -160,7 +165,7 @@ Write-Host "  ──────────────────────
 Write-Host "  Quick Reference" -ForegroundColor White
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 if ($Hostname) {
-    Write-Host "  Jaeger UI:  http://$Hostname" -ForegroundColor Yellow
+    Write-Host "  Jaeger UI:  ${scheme}://$Hostname" -ForegroundColor Yellow
 }
 Write-Host "  OTLP gRPC (cluster-internal):" -ForegroundColor Gray
 Write-Host "    jaeger-collector.${Namespace}:4317" -ForegroundColor Yellow

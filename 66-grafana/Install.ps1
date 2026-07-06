@@ -136,15 +136,15 @@ $oidcConfig = $null
 if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
     $autheliaDeployed = (@(& kubectl get deployment authelia -n authelia --ignore-not-found -o name 2>$null) -join "").Trim()
     if ($autheliaDeployed) {
-        Write-Host "  Registering Grafana as OIDC client in Authelia..." -ForegroundColor Gray -NoNewline
+        Write-Host "  · Registering Grafana as OIDC client in Authelia..." -ForegroundColor DarkGray
         $oidcConfig = Register-AutheliaOidcClient `
             -ClientId "grafana" -ClientName "Grafana" `
             -RedirectUris @("https://$Hostname/login/generic_oauth") `
             -BaseDir $BaseDir -Platform $Platform
         if ($oidcConfig) {
-            Write-Host " ✓" -ForegroundColor Green
+            Write-Host "  ✓ Registered as OIDC client" -ForegroundColor Green
         } else {
-            Write-Host " ⚠ (could not sync Authelia config — OIDC skipped)" -ForegroundColor Yellow
+            Write-Host "  ⚠ Could not sync Authelia config — OIDC skipped" -ForegroundColor Yellow
         }
     }
 }
@@ -190,6 +190,8 @@ if ($oidcConfig) {
     $clientSecretInIni = if ($mount.Installed) { '${GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET}' } else { $oidcConfig.ClientSecret }
     $oidcIniBlock = @"
 grafana.ini:
+  server:
+    root_url: "https://$Hostname/"
   auth.generic_oauth:
     enabled: "true"
     name: "Authelia"

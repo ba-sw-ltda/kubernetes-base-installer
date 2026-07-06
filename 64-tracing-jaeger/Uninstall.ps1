@@ -13,18 +13,29 @@ Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 $existing = & helm list -n jaeger --filter "^jaeger$" --short 2>&1
 if (-not $existing) { exit 0 }
 
-Write-Host "  Removing Jaeger (switching tracing backend)..." -ForegroundColor Cyan
-& helm uninstall jaeger -n jaeger 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { Write-Warning "Could not uninstall Jaeger — continuing" }
-else { Write-Host "  ✓ Jaeger removed" -ForegroundColor Green }
+$result = Invoke-ScriptBlockWithSpinner -Message "Uninstalling Jaeger..." -ScriptBlock {
+    param($path, $kubeconfig)
+    $env:PATH = $path
+    if ($kubeconfig) { $env:KUBECONFIG = $kubeconfig }
 
-$pvcs = & kubectl get pvc -n jaeger -l "app.kubernetes.io/instance=jaeger" -o name 2>$null
-foreach ($pvc in $pvcs) {
-    & kubectl patch $pvc -n jaeger -p '{"metadata":{"finalizers":[]}}' --type=merge 2>$null | Out-Null
-    & kubectl delete $pvc -n jaeger --ignore-not-found 2>$null | Out-Null
-    Write-Host "  ✓ PVC removed: $($pvc -replace 'persistentvolumeclaims/','')" -ForegroundColor Green
+    & helm uninstall jaeger -n jaeger 2>&1 | Out-Null
+    $helmExit = $LASTEXITCODE
+
+    $pvcs = & kubectl get pvc -n jaeger -l "app.kubernetes.io/instance=jaeger" -o name 2>$null
+    foreach ($pvc in $pvcs) {
+        & kubectl patch $pvc -n jaeger -p '{"metadata":{"finalizers":[]}}' --type=merge 2>$null | Out-Null
+        & kubectl delete $pvc -n jaeger --ignore-not-found 2>$null | Out-Null
+    }
+
+    [PSCustomObject]@{ ExitCode = $helmExit }
+} -ArgumentList @($env:PATH, $env:KUBECONFIG) | Select-Object -Last 1
+
+Unregister-PortalEntry -Name "Jaeger" -Order 64 *>$null
+
+if ($result.ExitCode -ne 0) {
+    Write-Warning "Could not uninstall Jaeger — continuing"
+} else {
+    Write-Host "  ✓ Jaeger removed" -ForegroundColor Green
 }
-
-Unregister-PortalEntry -Name "Jaeger"
 
 exit 0

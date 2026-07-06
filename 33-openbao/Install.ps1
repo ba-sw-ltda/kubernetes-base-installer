@@ -602,7 +602,7 @@ Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 Write-Host "  Quick Reference" -ForegroundColor White
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
-if ($Hostname) { Write-Host "  UI:         http://$Hostname" -ForegroundColor Yellow }
+if ($Hostname) { Write-Host "  UI:         https://$Hostname" -ForegroundColor Yellow }
 Write-Host "  Root token: $StateFile" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  PKI Übersicht:" -ForegroundColor Gray

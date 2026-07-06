@@ -187,7 +187,7 @@ Write-Host "  ──────────────────────
 Write-Host "  Quick Reference" -ForegroundColor White
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
-    Write-Host "  Access:  http://$Hostname" -ForegroundColor Yellow
+    Write-Host "  Access:  ${scheme}://$Hostname" -ForegroundColor Yellow
 }
 Write-Host "  Service (cluster-internal):" -ForegroundColor Gray
 Write-Host "    http://prometheus.${Namespace}:9090" -ForegroundColor Yellow

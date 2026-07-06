@@ -17,16 +17,9 @@ $BaseDir = Split-Path $PSScriptRoot -Parent
 $verbose = $VerbosePreference -eq 'Continue'
 $extraArgs = if ($verbose) { @{ Verbose = $true } } else { @{} }
 
-$other = if ($IngressController -eq "nginx") { "traefik" } else { "nginx" }
-
-# Uninstall the other controller if present
-$uninstallScript = Join-Path $BaseDir "11-ingress-$other\Uninstall.ps1"
-if (Test-Path $uninstallScript) {
-    & $uninstallScript -Platform $Platform @extraArgs
-    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to remove $other ingress controller"; exit 1 }
-}
-
-# Install chosen controller
+# Install chosen controller — its own Install.ps1 removes the other
+# controller first (right after printing its banner), so the removal output
+# lands inside that install block instead of floating in its own section.
 $installScript = Join-Path $BaseDir "11-ingress-$IngressController\Install.ps1"
 if (-not (Test-Path $installScript)) {
     Write-Error "Install script not found: $installScript"
