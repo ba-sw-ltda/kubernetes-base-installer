@@ -24,7 +24,6 @@ if (-not $useProxy) { return @{} }
 
 $httpProxy = Read-Plain `
     -Prompt "HTTP_PROXY" `
-    -Default "http://proxy.fts.linz:3218" `
     -ContextTitle "Configuration/Proxy — $Platform" `
     -ContextHint "Full URL including port"
 
@@ -39,7 +38,6 @@ if ([string]::IsNullOrWhiteSpace($httpsProxy)) { $httpsProxy = $httpProxy }
 
 $noProxyExtra = Read-Plain `
     -Prompt "NO_PROXY additions (comma-separated, optional)" `
-    -Default ".fts.linz" `
     -ContextTitle "Configuration/Proxy — $Platform" `
     -ContextHint "Added to defaults: localhost,127.0.0.1,.cluster.local,.svc,10.0.0.0/8,192.168.0.0/16" `
     -ContextCurrent ([ordered]@{ HTTP_PROXY = $httpProxy; HTTPS_PROXY = $httpsProxy })
