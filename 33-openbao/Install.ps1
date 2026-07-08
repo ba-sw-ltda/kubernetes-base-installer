@@ -560,7 +560,23 @@ $unsealerYaml | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Auto-unsealer deployed" -ForegroundColor Green }
 
 # ── 7. Ingress ────────────────────────────────────────────────────
+# TLS terminates at the ingress (same convention as Grafana/Rancher/etc.) —
+# OpenBao itself keeps serving plain HTTP on its ClusterIP service, which is
+# also what the ClusterIssuer's own "vault.server" field talks to internally.
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
+    $issuerName    = Get-ClusterIssuerName -Platform $Platform -BaseDir $BaseDir
+    $tlsSecretName = "$($Hostname -replace '\.', '-')-tls"
+    $sslRedirect   = if ($issuerName) { "true" } else { "false" }
+    $tlsBlock      = if ($issuerName) {
+@"
+  tls:
+  - hosts:
+    - $Hostname
+    secretName: $tlsSecretName
+"@
+    } else { "" }
+    $issuerAnnotationLine = if ($issuerName) { "    cert-manager.io/cluster-issuer: $issuerName" } else { "" }
+
     $ingressYaml = @"
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -568,8 +584,8 @@ metadata:
   name: openbao
   namespace: $Namespace
   annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/ssl-redirect: "$sslRedirect"
+$issuerAnnotationLine
 spec:
   ingressClassName: $(Get-IngressClass)
   rules:
@@ -583,6 +599,7 @@ spec:
             name: openbao
             port:
               number: 8200
+$tlsBlock
 "@
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
