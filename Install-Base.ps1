@@ -811,6 +811,10 @@ function Start-Installation {
         @{ Label = "70 - Portal (Homer)"; Value = "Portal" }
         @{ Label = "90 - Utilities (DevOps)"; Value = "Utilities" }
     )
+    # Always mandatory, unlike the other groups above — this is cheap,
+    # idempotent defense-in-depth (kubectl get ns + annotation check), so
+    # there's no "already installed" state worth detecting or re-run-skipping.
+    $componentOptions += @{ Label = "95 - Network Policy Safety Net"; Value = "Network Policy Safety Net" }
 
     # Build default values based on platform — a mandatory group that's
     # already installed (see $preinstalledGroups above) starts unchecked
@@ -826,6 +830,7 @@ function Start-Installation {
     if ($platform -eq "RKE2 (On-Premise)" -and -not $preinstalledGroups.Contains("Storage (Longhorn)")) {
         $defaultValues += "Storage (Longhorn)"
     }
+    $defaultValues += "Network Policy Safety Net"
 
     # Optional Components Selection
     # Ingress & Load Balancing, Security & Certificates, Configuration
@@ -842,6 +847,7 @@ function Start-Installation {
     if ($platform -eq "RKE2 (On-Premise)" -and -not $preinstalledGroups.Contains("Storage (Longhorn)")) {
         $disabledGroups[$storageLabel] = $true
     }
+    $disabledGroups["95 - Network Policy Safety Net"] = $true
 
     $selectedComponentGroups = Read-MultiSelectValues `
         -Title "Select Optional Component Groups" `
@@ -934,6 +940,12 @@ function Start-Installation {
             "Utilities" = @(
                 @{ Number="91"; Name="argocd"; SelKey="argocd"; DisplayName="ArgoCD" }
                 @{ Number="93"; Name="velero"; SelKey="velero"; DisplayName="Velero (Backup)" }
+            )
+            # No SelKey — mandatory, always-on defense-in-depth sweep. Must run
+            # last (see $installOrder below): it needs final namespace state to
+            # correctly tell "forgotten" apart from "not yet created".
+            "Network Policy Safety Net" = @(
+                @{ Number="95"; Name="network-policy-safetynet"; DisplayName="Network Policy Safety Net" }
             )
         }
 
@@ -1164,6 +1176,7 @@ function Start-Installation {
             "Observability Stack"
             "Portal"
             "Utilities"
+            "Network Policy Safety Net"
         )
 
         Clear-Host
