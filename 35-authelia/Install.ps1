@@ -339,6 +339,14 @@ $tlsBlock = if ($issuerName) {
 # match (only fires when scope is literally empty) — harmless to any client
 # that sends real scopes. Remove once Rancher fixes this upstream.
 # Requires controller.allowSnippetAnnotations=true (see 11-ingress-nginx).
+# NGINX-ONLY GAP: no Traefik equivalent is wired up here. Traefik has no
+# snippet/config-injection mechanism at all (by design, unlike nginx where
+# it's merely opt-in) — the closest candidate is a "RedirectRegex" Middleware
+# matching the full request URL (scheme+host+path+query) and 302'ing to a
+# corrected query string, but that's unverified against Traefik's actual
+# regex-matching scope (docs don't confirm query-string inclusion) and has
+# NOT been tested. Until proven, Rancher OIDC login will fail on Traefik the
+# same way it did on nginx before this workaround existed.
 # IMPORTANT: numbered regex captures must stay unbraced ($1/$2) — nginx's
 # braced ${name} form only resolves named variables, not numbered captures,
 # and rejects it at config-test time ("unknown "1" variable"). Confirmed live:
@@ -380,6 +388,35 @@ $tlsBlock
 $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)$(if ($issuerName) { ' [TLS via ' + $issuerName + ']' })" -ForegroundColor Green }
 
+# Traefik equivalent of the nginx auth-url/auth-signin annotation pair —
+# Protect-ComponentIngress (every other component's forward-auth helper)
+# just references this by name ("authelia-forward-auth@kubernetescrd"), so it
+# has to exist under a stable name regardless of install order. Only valid
+# once Traefik's CRDs are registered, hence the ingress-class guard — applying
+# it against nginx would fail with "no matches for kind Middleware".
+if ((Get-IngressClass) -eq "traefik") {
+    $encodedRedirect = [System.Uri]::EscapeDataString("${scheme}://${Hostname}")
+    $middlewareYaml = @"
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: forward-auth
+  namespace: $Namespace
+spec:
+  forwardAuth:
+    address: "http://authelia.authelia.svc.cluster.local/api/verify?rd=$encodedRedirect"
+    trustForwardHeader: true
+    authResponseHeaders:
+      - Remote-User
+      - Remote-Groups
+      - Remote-Name
+      - Remote-Email
+"@
+    $middlewareYaml | & kubectl apply -f - 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Traefik forward-auth Middleware configured" -ForegroundColor Green }
+    else { Write-Warning "  Failed to apply the Traefik forward-auth Middleware" }
+}
+
 # ── Migration sweep — switch every pre-existing Basic-Auth component over ──
 Write-Host ""
 Write-Host "Migrating Basic-Auth components to single sign-on" -ForegroundColor Cyan
@@ -391,17 +428,30 @@ if ($basicAuthIngresses.Count -eq 0) {
     foreach ($ing in $basicAuthIngresses) {
         Remove-ClusterSecret -Path $ing.VaultPath -Keys @("username", "password") -BaseDir $BaseDir -Platform $Platform | Out-Null
 
-        # auth-snippet (X-Forwarded-Method) deliberately omitted — needs
-        # allow-snippet-annotations enabled, which ingress-nginx disables by
-        # default for good reason (arbitrary nginx config injection).
-        $annotateOut = & kubectl annotate ingress $ing.Name -n $ing.Namespace --overwrite `
-            "nginx.ingress.kubernetes.io/auth-url=http://authelia.authelia.svc.cluster.local/api/verify" `
-            "nginx.ingress.kubernetes.io/auth-signin=${scheme}://${Hostname}/?rd=`$scheme://`$host`$request_uri" `
-            "nginx.ingress.kubernetes.io/auth-response-headers=Remote-User,Remote-Groups,Remote-Name,Remote-Email" `
-            "nginx.ingress.kubernetes.io/auth-type-" `
-            "nginx.ingress.kubernetes.io/auth-secret-" `
-            "nginx.ingress.kubernetes.io/auth-realm-" `
-            "baseline.io/vault-path-" 2>&1
+        # Legacy Basic-Auth was only ever an nginx annotation (no Traefik
+        # equivalent exists in this codebase), so the "-" removals only ever
+        # apply to nginx-era ingresses; the forward-auth annotations added
+        # here still have to match whichever controller is active today.
+        if ((Get-IngressClass) -eq "traefik") {
+            $annotateOut = & kubectl annotate ingress $ing.Name -n $ing.Namespace --overwrite `
+                "traefik.ingress.kubernetes.io/router.middlewares=authelia-forward-auth@kubernetescrd" `
+                "nginx.ingress.kubernetes.io/auth-type-" `
+                "nginx.ingress.kubernetes.io/auth-secret-" `
+                "nginx.ingress.kubernetes.io/auth-realm-" `
+                "baseline.io/vault-path-" 2>&1
+        } else {
+            # auth-snippet (X-Forwarded-Method) deliberately omitted — needs
+            # allow-snippet-annotations enabled, which ingress-nginx disables by
+            # default for good reason (arbitrary nginx config injection).
+            $annotateOut = & kubectl annotate ingress $ing.Name -n $ing.Namespace --overwrite `
+                "nginx.ingress.kubernetes.io/auth-url=http://authelia.authelia.svc.cluster.local/api/verify" `
+                "nginx.ingress.kubernetes.io/auth-signin=${scheme}://${Hostname}/?rd=`$scheme://`$host`$request_uri" `
+                "nginx.ingress.kubernetes.io/auth-response-headers=Remote-User,Remote-Groups,Remote-Name,Remote-Email" `
+                "nginx.ingress.kubernetes.io/auth-type-" `
+                "nginx.ingress.kubernetes.io/auth-secret-" `
+                "nginx.ingress.kubernetes.io/auth-realm-" `
+                "baseline.io/vault-path-" 2>&1
+        }
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "  Failed to migrate $($ing.Name) (-n $($ing.Namespace)): $annotateOut"
             continue
