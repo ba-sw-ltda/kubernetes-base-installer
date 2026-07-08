@@ -58,6 +58,15 @@ function Get-PreinstalledGroups {
             & helm status longhorn --namespace longhorn-system 2>&1 | Out-Null
             [PSCustomObject]@{ Found = ($LASTEXITCODE -eq 0) }
         }
+        # Not a Helm release — checks for the default-deny-all NetworkPolicy
+        # that Install-NetworkPolicyBaseline stamps into kube-system.
+        "Network Segmentation" = {
+            param($path, $kubeconfig, $onPremOrKind)
+            $env:PATH = $path
+            if ($kubeconfig) { $env:KUBECONFIG = $kubeconfig }
+            & kubectl get networkpolicy default-deny-all -n kube-system 2>&1 | Out-Null
+            [PSCustomObject]@{ Found = ($LASTEXITCODE -eq 0) }
+        }
         # Cloud-native Vault (Azure Key Vault / AWS Secrets Manager / GCP
         # Secret Manager) isn't a Helm release — no reliable single check, so
         # Security & Certificates only ever unlocks on RKE2/Kind (OpenBao).

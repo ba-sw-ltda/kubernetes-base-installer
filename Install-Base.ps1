@@ -772,10 +772,12 @@ function Start-Installation {
     # "20" and Security is "30", not the other way around.
     $ingressLabel    = "10 - Ingress & Load Balancing"
     $storageLabel    = "20 - Storage"
+    $networkPolLabel = "25 - Network Segmentation"
     $securityLabel   = "30 - Security & Certificates"
     $configMgmtLabel = "40 - Configuration Management"
     if ($preinstalledGroups.Contains("Ingress & Load Balancing")) { $ingressLabel    += " (already installed)" }
     if ($preinstalledGroups.Contains("Storage (Longhorn)"))       { $storageLabel    += " (already installed)" }
+    if ($preinstalledGroups.Contains("Network Segmentation"))     { $networkPolLabel += " (already installed)" }
     if ($preinstalledGroups.Contains("Security & Certificates"))  { $securityLabel   += " (already installed)" }
     if ($preinstalledGroups.Contains("Configuration Management")) { $configMgmtLabel += " (already installed)" }
 
@@ -789,6 +791,8 @@ function Start-Installation {
     if ($platform -eq "RKE2 (On-Premise)") {
         $componentOptions += @{ Label = $storageLabel; Value = "Storage (Longhorn)" }
     }
+
+    $componentOptions += @{ Label = $networkPolLabel; Value = "Network Segmentation" }
 
     $componentOptions += @{ Label = $securityLabel; Value = "Security & Certificates" }
 
@@ -813,6 +817,7 @@ function Start-Installation {
     # instead, since $disabledGroups below also leaves it unlocked.
     $defaultValues = @()
     if (-not $preinstalledGroups.Contains("Ingress & Load Balancing")) { $defaultValues += "Ingress & Load Balancing" }
+    if (-not $preinstalledGroups.Contains("Network Segmentation"))     { $defaultValues += "Network Segmentation" }
     if (-not $preinstalledGroups.Contains("Security & Certificates"))  { $defaultValues += "Security & Certificates" }
     if (-not $preinstalledGroups.Contains("Configuration Management")) { $defaultValues += "Configuration Management" }
     if ($platform -in @("RKE2 (On-Premise)", "Kind (Local)")) {
@@ -831,6 +836,7 @@ function Start-Installation {
     # re-run testing a later group doesn't force reinstalling them too.
     $disabledGroups = @{}
     if (-not $preinstalledGroups.Contains("Ingress & Load Balancing")) { $disabledGroups[$ingressLabel] = $true }
+    if (-not $preinstalledGroups.Contains("Network Segmentation"))     { $disabledGroups[$networkPolLabel] = $true }
     if (-not $preinstalledGroups.Contains("Security & Certificates"))  { $disabledGroups[$securityLabel] = $true }
     if (-not $preinstalledGroups.Contains("Configuration Management")) { $disabledGroups[$configMgmtLabel] = $true }
     if ($platform -eq "RKE2 (On-Premise)" -and -not $preinstalledGroups.Contains("Storage (Longhorn)")) {
@@ -888,6 +894,13 @@ function Start-Installation {
             )
             "Storage (Longhorn)" = @(
                 @{ Number="21"; Name="longhorn"; SelKey="longhorn"; PromptOrder="65"; DisplayName="Longhorn Storage" }
+            )
+            # No SelKey — mandatory baseline, no checkbox. Only touches
+            # kube-system (no installer component owns it); every other
+            # namespace's NetworkPolicies are applied by that namespace's own
+            # component (Finding #4 — see network_policy_label_contract_pattern).
+            "Network Segmentation" = @(
+                @{ Number="22"; Name="network-policies"; DisplayName="Network Policies (kube-system)" }
             )
             # No SelKey on any of these — mandatory baseline, no checkbox. Each
             # still gets its own internal yes/no gate (Proxy Configuration and
@@ -1144,6 +1157,7 @@ function Start-Installation {
         $installOrder = @(
             "Ingress & Load Balancing"
             "Storage (Longhorn)"
+            "Network Segmentation"
             "Security & Certificates"
             "Configuration Management"
             "Management"
