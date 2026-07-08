@@ -633,7 +633,6 @@ $__exportFunctions = @(
   'Sync-AutheliaConfiguration'
   'Register-AutheliaOidcClient'
   'Test-AutheliaInstalled'
-  'Get-BasicAuthIngresses'
   'Register-PortalEntry'
   'Unregister-PortalEntry'
   'Read-ComponentSelectionScreen'
