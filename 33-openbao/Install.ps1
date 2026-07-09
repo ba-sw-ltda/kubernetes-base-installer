@@ -563,19 +563,12 @@ if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Auto-unsealer deployed" -Foreground
 # TLS terminates at the ingress (same convention as Grafana/Rancher/etc.) —
 # OpenBao itself keeps serving plain HTTP on its ClusterIP service, which is
 # also what the ClusterIssuer's own "vault.server" field talks to internally.
+# Gated behind Authelia forward-auth (Protect-ComponentIngress) since only
+# humans use this public hostname — internal consumers (cert-manager, etc.)
+# reach OpenBao via openbao.openbao.svc.cluster.local instead.
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
-    $issuerName    = Get-ClusterIssuerName -Platform $Platform -BaseDir $BaseDir
-    $tlsSecretName = "$($Hostname -replace '\.', '-')-tls"
-    $sslRedirect   = if ($issuerName) { "true" } else { "false" }
-    $tlsBlock      = if ($issuerName) {
-@"
-  tls:
-  - hosts:
-    - $Hostname
-    secretName: $tlsSecretName
-"@
-    } else { "" }
-    $issuerAnnotationLine = if ($issuerName) { "    cert-manager.io/cluster-issuer: $issuerName" } else { "" }
+    $protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform
+    $authAnnotations = ($protect.Annotations.GetEnumerator() | ForEach-Object { "    $($_.Key): `"$($_.Value)`"" }) -join "`n"
 
     $ingressYaml = @"
 apiVersion: networking.k8s.io/v1
@@ -584,10 +577,10 @@ metadata:
   name: openbao
   namespace: $Namespace
   annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "$sslRedirect"
-$issuerAnnotationLine
+$authAnnotations
 spec:
   ingressClassName: $(Get-IngressClass)
+$($protect.TlsBlock)
   rules:
   - host: $Hostname
     http:
@@ -599,12 +592,12 @@ spec:
             name: openbao
             port:
               number: 8200
-$tlsBlock
 "@
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
+    $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
-    Register-PortalEntry -Name $FullConfig.PortalTitle -Url "https://$Hostname" `
+    Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
         -Category "Security" -Subtitle $FullConfig.PortalSubtitle -Order 33 `
         -InternalUrl "http://openbao.openbao.svc.cluster.local:8200" `
         -LogoUrl $portalIcon
