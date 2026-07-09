@@ -530,7 +530,7 @@ spec:
       serviceAccountName: default
       containers:
       - name: unsealer
-        image: curlimages/curl:latest
+        image: curlimages/curl:8.21.0
         command: ["/bin/sh", "-c"]
         args:
         - |
