@@ -83,6 +83,9 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+Install-NetworkPolicyBaseline -Namespace $Namespace
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port 3100
+
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 Write-Host "  Quick Reference" -ForegroundColor White

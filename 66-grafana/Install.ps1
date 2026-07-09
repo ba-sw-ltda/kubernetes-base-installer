@@ -94,6 +94,7 @@ type: Opaque
 
 # Auto-detect tracing backend (tempo-distributed uses tempo-query-frontend; legacy uses tempo)
 $tracingDatasource = ""
+$tracingNamespace  = ""
 & kubectl get svc tempo-query-frontend -n tempo 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
     & kubectl get svc tempo -n tempo 2>&1 | Out-Null
@@ -106,6 +107,7 @@ if ($LASTEXITCODE -eq 0) {
       access: proxy
       isDefault: false
 "@
+    $tracingNamespace = "tempo"
 }
 & kubectl get svc jaeger -n jaeger 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) {
@@ -116,6 +118,7 @@ if ($LASTEXITCODE -eq 0) {
       access: proxy
       isDefault: false
 "@
+    $tracingNamespace = "jaeger"
 }
 
 # ── TLS issuer + OIDC (Authelia) ─────────────────────────────────────────────
@@ -342,6 +345,22 @@ $tlsBlock
 
 if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+}
+
+Install-NetworkPolicyBaseline -Namespace $Namespace
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 80
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "prometheus" -Port 9090
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port 3100
+if ($tracingNamespace -eq "jaeger") {
+    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "jaeger" -Port 16686
+} elseif ($tracingNamespace -eq "tempo") {
+    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "tempo" -Port 3200
+}
+if ($oidcConfig) {
+    $ingressNamespace = "ingress-nginx"
+    & kubectl get namespace ingress-nginx 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { $ingressNamespace = "traefik" }
+    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $ingressNamespace -Port 80
 }
 
 Write-Host ""

@@ -39,12 +39,14 @@ $Namespace    = $FullConfig.Namespace
 $UserConfig   = $FullConfig.UserConfig
 
 # Auto-detect tracing backend: jaeger > tempo-distributed > tempo (legacy)
-$tracingExporter = "otlp/tempo"
-$tracingEndpoint = "tempo.tempo:4317"
+$tracingExporter  = "otlp/tempo"
+$tracingEndpoint  = "tempo.tempo:4317"
+$tracingNamespace = "tempo"
 & kubectl get svc jaeger-collector -n jaeger 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) {
-    $tracingExporter = "otlp/jaeger"
-    $tracingEndpoint = "jaeger-collector.jaeger:4317"
+    $tracingExporter  = "otlp/jaeger"
+    $tracingEndpoint  = "jaeger-collector.jaeger:4317"
+    $tracingNamespace = "jaeger"
 } else {
     & kubectl get svc tempo-distributor -n tempo 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
@@ -164,6 +166,12 @@ if ($LASTEXITCODE -eq 0) {
 if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
+
+Install-NetworkPolicyBaseline -Namespace $Namespace
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 4317,4318
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $tracingNamespace -Port 4317
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "prometheus" -Port 9090
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port 3100
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
