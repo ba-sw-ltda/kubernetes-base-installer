@@ -361,6 +361,9 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+Install-NetworkPolicyBaseline -Namespace $Namespace
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 8080
+
 $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
 
 if ($verbose) {

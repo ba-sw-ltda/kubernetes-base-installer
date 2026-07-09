@@ -230,6 +230,15 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+Install-NetworkPolicyBaseline -Namespace $Namespace
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 80
+if ($oidcConfig) {
+    $ingressNamespace = "ingress-nginx"
+    & kubectl get namespace ingress-nginx 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { $ingressNamespace = "traefik" }
+    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $ingressNamespace -Port 80
+}
+
 $scheme = if ($issuerName -and $Hostname) { "https" } else { "http" }
 if ($Hostname) {
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
