@@ -227,6 +227,24 @@ Invoke-BaoCmd "Configuring Kubernetes auth..." `
 
 Write-Host "  ✓ Kubernetes auth configured" -ForegroundColor Green
 
+# ── 3b. Audit device (Finding #9) ─────────────────────────────────
+# Local file audit log on the existing data PVC (no new volume needed) —
+# gives OpenBao its own record of who accessed which secret, mirroring the
+# Kubernetes API audit logging this same finding adds for the cluster.
+$auditListRef = [ref]$null
+Invoke-WithSpinner -Message "Checking OpenBao audit devices..." -Executable "kubectl" `
+    -Arguments @("exec", "openbao-0", "-n", $Namespace, "--", "sh", "-c",
+                 "BAO_TOKEN=$rootToken bao audit list -format=json 2>/dev/null") `
+    -OutputVariable $auditListRef | Out-Null
+$auditListJson = ($auditListRef.Value -join "`n")
+if ($auditListJson -notmatch '"file/"') {
+    Invoke-BaoCmd "Enabling audit device (file)..." `
+        "BAO_TOKEN=$rootToken bao audit enable file file_path=/openbao/data/audit/audit.log || true"
+    Write-Host "  ✓ Audit device enabled (/openbao/data/audit/audit.log)" -ForegroundColor Green
+} else {
+    Write-Host "  ✓ Audit device already enabled" -ForegroundColor Green
+}
+
 # ── 4. PKI Engines — one per PKI definition ───────────────────────
 # Each PKI becomes a separate secrets engine mount ("pki-<name>").
 # Supported types:
