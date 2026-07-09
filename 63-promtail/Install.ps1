@@ -50,6 +50,36 @@ $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executa
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
 Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
+# Extra static scrape job for the RKE2 API audit log (Finding #9) —
+# mounted read-only from the host path RKE2 writes it to. Only present on
+# server nodes; worker-node Promtail pods just see an empty DirectoryOrCreate
+# mount and the job stays idle there.
+$promtailAuditValues = @'
+extraVolumes:
+  - name: rke2-audit-log
+    hostPath:
+      path: /var/log/rancher/rke2/audit
+      type: DirectoryOrCreate
+
+extraVolumeMounts:
+  - name: rke2-audit-log
+    mountPath: /var/log/rancher/rke2/audit
+    readOnly: true
+
+config:
+  snippets:
+    extraScrapeConfigs: |
+      - job_name: rke2-audit
+        static_configs:
+          - targets:
+              - localhost
+            labels:
+              job: rke2-audit
+              __path__: /var/log/rancher/rke2/audit/audit.log
+'@
+$tempValues = Join-Path $env:TEMP "promtail-audit-values.yaml"
+Set-Content -Path $tempValues -Value $promtailAuditValues -Encoding UTF8
+
 $HelmArgs = @(
     "upgrade", "--install", "--force", "promtail", "grafana/$ChartName",
     "--namespace", $Namespace,
@@ -58,13 +88,15 @@ $HelmArgs = @(
     "--set", "resources.limits.cpu=$($UserConfig.Resources.Limits.Cpu)",
     "--set", "resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
-    "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)"
+    "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
+    "--values", $tempValues
 )
 
 Reset-StuckHelmRelease -ReleaseName "promtail" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying Promtail..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
+Remove-Item $tempValues -Force -ErrorAction SilentlyContinue
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Promtail (exit code $exitCode)"; exit 1 }
 Write-Host "  ✓ Deployed" -ForegroundColor Green
 
