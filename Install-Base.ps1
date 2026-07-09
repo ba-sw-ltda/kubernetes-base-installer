@@ -769,6 +769,19 @@ function Start-Installation {
         }
     }
 
+    # Step 2c: RKE2 API audit logging (Finding #9). Same piggyback shape as
+    # Step 2b above — only populated on a fresh SSH fetch, $null (and
+    # skipped entirely) on the common repeat-run path.
+    if ($platform -eq "RKE2 (On-Premise)" -and $clusterInitResult.AuditLoggingEnabled -eq $false) {
+        Write-Warning "  ⚠ RKE2 API audit logging is disabled — no record of who accessed or changed cluster resources."
+        $enableAuditLogging = Read-YesNo -Title "Enable API audit logging now?" -DefaultYes $true
+        if ($enableAuditLogging) {
+            $rke2ServerNodes = Get-Rke2ServerNodes
+            Enable-Rke2AuditLogging -ServerNodes $rke2ServerNodes `
+                -SshUser $rke2SshUser -SshKeyPath $rke2SshKeyPath -SshPassword $rke2SshPassword | Out-Null
+        }
+    }
+
     # Detect mandatory groups that are already fully installed on the
     # connected cluster — lets the selection screen in Step 3 unlock and
     # pre-uncheck them, so re-running the installer to test a later group
