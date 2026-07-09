@@ -157,6 +157,8 @@ Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "jaeger" 
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "grafana" -Port 80
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "portal" -Port 8080
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "argocd" -Port 80
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "mqtt" -Port 18083,3000
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "redis" -Port 5540
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
