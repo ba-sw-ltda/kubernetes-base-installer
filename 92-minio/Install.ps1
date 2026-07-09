@@ -215,6 +215,9 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+Install-NetworkPolicyBaseline -Namespace $Namespace
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 9000
+
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 Write-Host "  Quick Reference" -ForegroundColor White
