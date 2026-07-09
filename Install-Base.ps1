@@ -702,7 +702,7 @@ function Start-Installation {
     Write-Host ""
     # When reusing existing RKE2 state: skip SSH re-fetch if kubeconfig is already present
     $rke2SshServerArg = if ($rke2UseExisting -and (Test-Path ($rke2KubeconfigPath -replace '^~', $env:USERPROFILE))) { "" } else { $rke2SshServer }
-    Initialize-ClusterEnvironment -Platform $platform `
+    $clusterInitResult = Initialize-ClusterEnvironment -Platform $platform `
         -KindClusterName $kindClusterName -KindReplaceCluster $kindReplaceCluster -KindDomain $kindDomain `
         -AksSubscriptionId $aksSubscriptionId -AksResourceGroup $aksResourceGroup `
         -AksLocation $aksLocation -AksClusterName $aksClusterName `
@@ -750,6 +750,24 @@ function Start-Installation {
         exit 1
     }
     Write-Host "  ✓ Kubernetes $serverVersion detected" -ForegroundColor Green
+
+    # Step 2b: RKE2 secrets-at-rest encryption (Finding #8). Only ever
+    # populated when this run's Initialize-ClusterEnvironment call did a
+    # fresh SSH fetch (see $rke2SshServerArg above) — on the common
+    # repeat-run path (existing kubeconfig reused) this is $null and nothing
+    # here runs at all: no warning, no prompt, no state read/write. Rests on
+    # the assumption that encryption, once enabled, is never disabled
+    # out-of-band, so it only needs to be caught whenever a fresh fetch
+    # happens to occur.
+    if ($platform -eq "RKE2 (On-Premise)" -and $clusterInitResult.SecretsEncryptionEnabled -eq $false) {
+        Write-Warning "  ⚠ RKE2 secrets-at-rest encryption is disabled — Kubernetes Secrets are stored in etcd as plaintext."
+        $enableEncryption = Read-YesNo -Title "Enable secrets-at-rest encryption now?" -DefaultYes $true
+        if ($enableEncryption) {
+            $rke2ServerNodes = Get-Rke2ServerNodes
+            Enable-Rke2SecretsEncryption -ServerNodes $rke2ServerNodes `
+                -SshUser $rke2SshUser -SshKeyPath $rke2SshKeyPath -SshPassword $rke2SshPassword | Out-Null
+        }
+    }
 
     # Detect mandatory groups that are already fully installed on the
     # connected cluster — lets the selection screen in Step 3 unlock and
