@@ -97,6 +97,49 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+Install-NetworkPolicyBaseline -Namespace $Namespace
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "openbao" -Port 8200
+
+# The default-deny above also blocks the kube-apiserver's admission-webhook
+# calls into this namespace (every Certificate/ClusterIssuer create or update,
+# cluster-wide, goes through cert-manager-webhook). That traffic arrives from
+# the control-plane nodes' host network, not from a pod, so the label-contract
+# pattern used everywhere else can't cover it — carve out an explicit ipBlock
+# exception scoped to just the webhook pod and port.
+$controlPlaneIps = (& kubectl get nodes -l "node-role.kubernetes.io/control-plane" -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>$null) -split '\s+' | Where-Object { $_ }
+if (-not $controlPlaneIps) {
+    $controlPlaneIps = (& kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>$null) -split '\s+' | Where-Object { $_ }
+}
+if ($controlPlaneIps) {
+    $ipBlockYaml = ($controlPlaneIps | ForEach-Object { "    - ipBlock:`n        cidr: $_/32" }) -join "`n"
+    $webhookYaml = @"
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apiserver-to-webhook
+  namespace: $Namespace
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: webhook
+  policyTypes: ["Ingress"]
+  ingress:
+  - from:
+$ipBlockYaml
+    ports:
+    - protocol: TCP
+      port: 10250
+"@
+    $webhookYaml | & kubectl apply -f - 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✓ NetworkPolicy exception applied (apiserver -> cert-manager-webhook:10250)" -ForegroundColor Green
+    } else {
+        Write-Warning "  ⚠ Failed to apply apiserver->webhook NetworkPolicy exception"
+    }
+} else {
+    Write-Warning "  ⚠ Could not determine control-plane node IPs — cert-manager webhook may be unreachable from the API server under the new default-deny policy"
+}
+
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 Write-Host "  Quick Reference" -ForegroundColor White
