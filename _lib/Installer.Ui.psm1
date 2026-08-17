@@ -636,6 +636,9 @@ $__exportFunctions = @(
   'Register-PortalEntry'
   'Unregister-PortalEntry'
   'Read-ComponentSelectionScreen'
+  'Install-NetworkPolicyBaseline'
+  'Set-NetworkPolicyProviderIngress'
+  'Set-NetworkPolicyConsumerEgress'
 )
 
 Export-ModuleMember -Function $__exportFunctions
