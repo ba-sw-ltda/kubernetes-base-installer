@@ -113,7 +113,7 @@ if (-not $UseExisting) {
             } else {
                 Write-Host "  ⚠ Azure Key Vault purge kann bis zu 15 Minuten dauern..." -ForegroundColor Yellow
                 $exitCode = Invoke-WithSpinner -Message "Purging soft-deleted Key Vault '$VaultName'..." -Executable "az" `
-                    -Arguments @("keyvault", "purge", "--name", $VaultName, "--location", $location) -ShowOutput:$verbose
+                    -Arguments @("keyvault", "purge", "--name", $VaultName, "--location", $location) -ShowOutput:$verbose -ShowElapsed
                 if ($exitCode -ne 0) { Write-Error "Failed to purge Key Vault '$VaultName'"; exit 1 }
                 Write-Host "  ✓ Key Vault purged" -ForegroundColor Green
                 $exitCode = Invoke-WithSpinner -Message "Creating Key Vault '$VaultName'..." -Executable "az" `

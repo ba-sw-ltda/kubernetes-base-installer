@@ -117,7 +117,7 @@ Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for longhorn-manager (up to 20m)..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "daemonset/longhorn-manager", "-n", $Namespace, "--timeout=20m") `
-    -ShowOutput:$verbose
+    -ShowOutput:$verbose -ShowElapsed
 if ($exitCode -ne 0) {
     Write-Host ""
     Write-Host "  ── Pod status ──────────────────────────────" -ForegroundColor DarkGray
