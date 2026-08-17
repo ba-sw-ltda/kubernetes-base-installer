@@ -133,21 +133,23 @@ $exitCode = Invoke-WithSpinner -Message "Waiting for OpenBao pod..." -Executable
 if ($exitCode -ne 0) { Write-Error "OpenBao pod did not start"; exit 1 }
 
 # Wait until the OpenBao HTTP listener is up and returns parseable JSON.
-$baoStatus = $null
-$elapsed   = 0
-$frames0   = @('|', '/', '-', '\'); $fi0 = 0
-while ($elapsed -lt 60) {
-    Write-Host ("`r  $($frames0[$fi0++ % 4]) Waiting for OpenBao listener... (${elapsed}s)") -NoNewline -ForegroundColor Cyan
-    $raw = & kubectl exec openbao-0 -n $Namespace -- bao status -format=json 2>$null
-    $jsonStart = if ($raw) { $raw.IndexOf('{') } else { -1 }
-    if ($jsonStart -ge 0) {
-        $baoStatus = $raw.Substring($jsonStart) | ConvertFrom-Json -AsHashtable -ErrorAction SilentlyContinue
-        if ($baoStatus) { break }
+$baoStatus = Invoke-ScriptBlockWithSpinner -Message "Waiting for OpenBao listener..." -ShowElapsed `
+    -ArgumentList @($Namespace) -ScriptBlock {
+        param($Namespace)
+        $elapsed = 0
+        while ($elapsed -lt 60) {
+            $raw = & kubectl exec openbao-0 -n $Namespace -- bao status -format=json 2>$null
+            $jsonStart = if ($raw) { $raw.IndexOf('{') } else { -1 }
+            if ($jsonStart -ge 0) {
+                $parsed = $raw.Substring($jsonStart) | ConvertFrom-Json -AsHashtable -ErrorAction SilentlyContinue
+                if ($parsed) { return $parsed }
+            }
+            Start-Sleep -Seconds 3; $elapsed += 3
+        }
+        return $null
     }
-    Start-Sleep -Seconds 3; $elapsed += 3
-}
-Write-Host ("`r" + (" " * 55) + "`r") -NoNewline
-if (-not $baoStatus -and $elapsed -ge 60) {
+
+if (-not $baoStatus) {
     Write-Error "OpenBao listener did not respond after 60s — check pod logs: kubectl logs openbao-0 -n $Namespace"
     exit 1
 }
