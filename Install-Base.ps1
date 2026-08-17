@@ -29,7 +29,7 @@ function Start-Installation {
     Write-Host "          Kubernetes Base Installer                       " -NoNewline -ForegroundColor Cyan
     Write-Host "║" -ForegroundColor Cyan
     Write-Host "  ║" -NoNewline -ForegroundColor Cyan
-    Write-Host "          AKS · EKS · GKE · RKE2 · Kind · Magalu          " -NoNewline -ForegroundColor Cyan
+    Write-Host "          AKS · EKS · GKE · Magalu · RKE2 · Kind          " -NoNewline -ForegroundColor Cyan
     Write-Host "║" -ForegroundColor Cyan
     Write-Host "  ╠══════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
     Write-Host "  ║" -NoNewline -ForegroundColor Cyan
@@ -66,9 +66,9 @@ function Start-Installation {
             @{ Label = "Azure AKS"; Value = "Azure AKS" }
             @{ Label = "AWS EKS"; Value = "AWS EKS" }
             @{ Label = "Google GKE"; Value = "Google GKE" }
+            @{ Label = "Magalu Cloud"; Value = "Magalu Cloud" }
             @{ Label = "RKE2 (On-Premise)"; Value = "RKE2 (On-Premise)" }
             @{ Label = "Kind (Local)"; Value = "Kind (Local)" }
-            @{ Label = "Magalu Cloud"; Value = "Magalu Cloud" }
         ) `
         -Default 0
     

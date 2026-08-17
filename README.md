@@ -1,7 +1,7 @@
 # Kubernetes Base Installer
 
 A PowerShell-based, fully automated base stack installer for Kubernetes clusters.  
-Supports **AKS · EKS · GKE · RKE2 (On-Premise) · Kind (Local)** from a single codebase.
+Supports **AKS · EKS · GKE · Magalu Cloud · RKE2 (On-Premise) · Kind (Local)** from a single codebase.
 
 ---
 
