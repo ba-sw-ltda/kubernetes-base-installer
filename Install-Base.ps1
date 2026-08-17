@@ -54,6 +54,7 @@ function Start-Installation {
     Write-Host "  ╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Press any key to continue..." -ForegroundColor DarkGray
+    while ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null }
     [Console]::ReadKey($true) | Out-Null
     Clear-Host
 
@@ -90,6 +91,7 @@ function Start-Installation {
     Write-Host "`nTools ready." -ForegroundColor Green
     Start-Sleep -Seconds 1
     Write-Host "Press any key to continue..." -ForegroundColor DarkGray
+    while ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null }
     [Console]::ReadKey($true) | Out-Null
 
     # AKS variables
@@ -746,6 +748,7 @@ function Start-Installation {
         Write-Host "  Bitte den Cluster auf 1.30+ upgraden." -ForegroundColor Red
         Write-Host ""
         Write-Host "Press any key to abort..." -ForegroundColor DarkGray
+        while ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null }
         [Console]::ReadKey($true) | Out-Null
         exit 1
     }
@@ -794,6 +797,7 @@ function Start-Installation {
     Write-Host "`nCluster environment ready for $platform." -ForegroundColor Green
     Start-Sleep -Seconds 1
     Write-Host "Press any key to continue..." -ForegroundColor DarkGray
+    while ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null }
     [Console]::ReadKey($true) | Out-Null
 
     # Build component options based on platform
