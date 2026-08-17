@@ -432,6 +432,7 @@ users:
   admin:
     displayname: "Admin"
     password: "$adminHashOnly"
+    email: "admin@$clusterDomain"
     groups:
       - "admins"
 "@

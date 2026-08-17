@@ -12,7 +12,12 @@
     PortalIcon      = "logo.svg"
 
     UserConfig = @{
-        AdminUser     = "admin"
+        # Not "admin" — Authelia's own SSO admin identity has preferred_username
+        # "admin" too, and Grafana refuses to auto-link a new OIDC user onto an
+        # existing local account with a different email, so a same-named local
+        # admin permanently breaks "Sign in with Authelia" (user.sync: "user not
+        # found"). Keep this distinct from any SSO login name.
+        AdminUser     = "local-admin"
 
         Resources = @{
             Limits   = @{ Cpu = "500m"; Memory = "512Mi" }
