@@ -1260,6 +1260,7 @@ function Start-Installation {
                   elseif ($platform -eq "Azure AKS") { $aksDomain }
                   elseif ($platform -eq "AWS EKS") { $eksDomain }
                   elseif ($platform -eq "Google GKE") { $gkeDomain }
+                  elseif ($platform -eq "Magalu Cloud") { $mgcDomain }
                   elseif ($platform -eq "RKE2 (On-Premise)") { $rke2Domain }
                   else { "" }
 
