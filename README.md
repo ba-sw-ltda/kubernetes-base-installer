@@ -62,7 +62,7 @@ Follow the interactive prompts — group selection, then component selection and
 | Script | Purpose |
 |---|---|
 | `Reset-RKE2.ps1` | Remove the entire stack from an RKE2 cluster (cluster stays intact) |
-| `Reset-AKS.ps1` / `Reset-EKS.ps1` / `Reset-GKE.ps1` | Delete cloud cluster and clean up resources |
+| `Reset-AKS.ps1` / `Reset-EKS.ps1` / `Reset-GKE.ps1` / `Reset-Magalu.ps1` | Delete cloud cluster and clean up resources |
 | `Verify-RKE2.ps1` | Verify a clean reset — lists any remaining resources |
 | `Rotate-Secret.ps1` | Rotate a secret in the vault and restart affected workloads |
 
