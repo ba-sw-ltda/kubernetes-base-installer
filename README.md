@@ -40,7 +40,7 @@ Security/Configuration Management first.
 
 - **PowerShell 7+** (pwsh)
 - **kubectl** and **helm** (auto-installed if missing)
-- Platform CLI for cloud targets: `az` / `aws` + `eksctl` / `gcloud`
+- Platform CLI for cloud targets: `az` / `aws` + `eksctl` / `gcloud` / `mgc`
 - SSH access to RKE2 control-plane node (on-premise)
 
 ---
