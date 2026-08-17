@@ -604,6 +604,7 @@ $__exportFunctions = @(
   'ConvertTo-UiOptions'
   'Invoke-WithSpinner'
   'Invoke-ScriptBlockWithSpinner'
+  'Invoke-DownloadWithSpinner'
   'Get-ComponentConfig'
   'Merge-Config'
   'Get-IngressClass'
