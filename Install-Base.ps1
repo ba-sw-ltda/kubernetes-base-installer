@@ -761,12 +761,20 @@ function Start-Installation {
             # "cloud-k8s.gp1.small") that `cluster create --node-pools` does NOT
             # accept as a "flavor" value — the API rejects it with "use magalu
             # virtual machine API to get valid machine type" (HTTP 400). The
-            # actual valid value is the Virtual Machine machine-type name (e.g.
-            # "BV2-4-20"), from `mgc virtual-machine machine-types list`. Resolve
-            # each curated k8s flavor to its matching machine-type name by
-            # vcpu + ram (falling back to the smallest disk when several
-            # machine-types share the same vcpu/ram), so the picker keeps the
-            # friendly k8s names while the Value sent to the API is valid.
+            # actual valid value is a Virtual Machine machine-type name (e.g.
+            # "BV2-4-40"), from `mgc virtual-machine machine-types list`.
+            #
+            # The curated flavor's own "size" field is misleading and NOT the
+            # required disk: gp1.small reports size=20, but live testing showed
+            # the API enforces a fixed disk >= 40GB floor on every MKE node pool
+            # regardless of flavor tier (confirmed via a live 400: "does not
+            # meet the requirement: 2 CPU Count / 2 Ram GB / 40 Disk GB" — those
+            # numbers match neither gp1.small's own ram(4) nor size(20), so
+            # they're a platform-wide minimum, not derived from the chosen
+            # flavor). Resolve each curated k8s flavor to the smallest
+            # machine-type with matching vcpu + ram and disk >= 40; verified
+            # live that gp1.small resolves to "BV2-4-40" — the exact value used
+            # in `mgc kubernetes cluster create --help`'s own example.
             $mgcNodePoolFlavor = Read-SelectValue `
                 -Title "Node Pool Flavor" `
                 -Message "Machine type for the worker nodes" `
@@ -787,11 +795,9 @@ function Start-Installation {
                     $machineTypes = Get-MgcJson (& mgc virtual-machine machine-types list -o json 2>&1)
                     $opts = @()
                     foreach ($f in $flavors.results[0].nodepool) {
-                        $candidates = @($machineTypes.machine_types | Where-Object {
-                            $_.vcpus -eq $f.vcpu -and $_.ram -eq ($f.ram * 1024)
-                        })
-                        $match = $candidates | Where-Object { $_.disk -eq $f.size } | Select-Object -First 1
-                        if (-not $match) { $match = $candidates | Sort-Object disk | Select-Object -First 1 }
+                        $match = $machineTypes.machine_types |
+                            Where-Object { $_.vcpus -eq $f.vcpu -and $_.ram -eq ($f.ram * 1024) -and $_.disk -ge 40 } |
+                            Sort-Object disk | Select-Object -First 1
                         if (-not $match) { continue }
                         $opts += @{ Label = "$($f.name)  ($($f.vcpu) vCPU / $($f.ram) GB RAM)"; Value = $match.name }
                     }
