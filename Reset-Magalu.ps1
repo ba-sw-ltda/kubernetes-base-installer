@@ -70,12 +70,23 @@ if (-not $cluster) {
 }
 
 # ── 3. Delete cluster ────────────────────────────────────────────
+# `mgc kubernetes cluster delete` returns as soon as the API *accepts* the
+# request, not when the cluster is actually gone — Magalu tears it down
+# asynchronously and it keeps showing up in `cluster list` for several more
+# minutes. Wait-MagaluClusterDeleted polls until it's really gone before
+# printing success, so this script doesn't lie about the cluster being dead
+# while it's still visibly sitting in the Magalu console.
 $exitCode = Invoke-WithSpinner `
-    -Message "Deleting Magalu cluster '$($state.ClusterName)' (5-10 min)..." `
+    -Message "Deleting Magalu cluster '$($state.ClusterName)'..." `
     -Executable "mgc" `
     -Arguments @("kubernetes", "cluster", "delete", "--cluster-id", $cluster.id, "--region", $state.Region, "--no-confirm")
 if ($exitCode -ne 0) { Write-Error "Failed to delete Magalu cluster '$($state.ClusterName)'"; exit 1 }
-Write-Host "  ✓ Magalu cluster deleted" -ForegroundColor Green
+
+if (Wait-MagaluClusterDeleted -Region $state.Region -ClusterName $state.ClusterName) {
+    Write-Host "  ✓ Magalu cluster deleted" -ForegroundColor Green
+} else {
+    Write-Warning "  ⚠ Cluster '$($state.ClusterName)' still shows up in 'cluster list' after the wait timeout — it may still be tearing down in the background. Check the Magalu console."
+}
 
 # ── 4. Remove state file ─────────────────────────────────────────
 Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
