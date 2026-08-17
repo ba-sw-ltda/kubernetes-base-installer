@@ -263,11 +263,10 @@ groupPrincipalName: "oidc_group://admins"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 80
+Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port 80
 if ($oidc) {
-    $ingressNamespace = "ingress-nginx"
-    & kubectl get namespace ingress-nginx 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { $ingressNamespace = "traefik" }
-    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $ingressNamespace -Port 80
+    # Rancher itself calls out to Authelia's OIDC endpoints via the ingress hostname.
+    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "ingress" -Port 80
 }
 
 # Rancher v2.14 creates these system namespaces itself (CAPI/turtles/UI-plugin

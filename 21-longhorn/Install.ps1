@@ -208,6 +208,7 @@ if ($FullConfig.RancherProject) {
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 80
+Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port 80
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

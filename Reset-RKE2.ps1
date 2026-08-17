@@ -414,10 +414,9 @@ Remove-Namespace   -Namespace "metallb-system"
 
 # ── 15. Ingress (11) ────────────────────────────────────────────
 Write-Host "`n--- 15. Ingress ---" -ForegroundColor Magenta
-Remove-HelmRelease -Release "ingress-nginx" -Namespace "ingress-nginx"
-Remove-HelmRelease -Release "traefik"       -Namespace "traefik"
-Remove-Namespace   -Namespace "ingress-nginx"
-Remove-Namespace   -Namespace "traefik"
+Remove-HelmRelease -Release "ingress-nginx" -Namespace "ingress"
+Remove-HelmRelease -Release "traefik"       -Namespace "ingress"
+Remove-Namespace   -Namespace "ingress"
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green

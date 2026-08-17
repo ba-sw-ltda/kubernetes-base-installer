@@ -47,7 +47,7 @@ function Get-PreinstalledGroups {
                 & helm status $Name --namespace $Namespace 2>&1 | Out-Null
                 return $LASTEXITCODE -eq 0
             }
-            $ingressOk = (Test-ReleasePresent "ingress-nginx" "ingress-nginx") -or (Test-ReleasePresent "traefik" "traefik")
+            $ingressOk = (Test-ReleasePresent "ingress-nginx" "ingress") -or (Test-ReleasePresent "traefik" "ingress")
             $metallbOk = -not $onPremOrKind -or (Test-ReleasePresent "metallb" "metallb-system")
             [PSCustomObject]@{ Found = ($ingressOk -and $metallbOk) }
         }

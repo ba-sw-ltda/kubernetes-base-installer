@@ -12,7 +12,7 @@ Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
 $verbose   = $VerbosePreference -eq 'Continue'
-$namespace = "traefik"
+$namespace = "ingress"
 $release   = "traefik"
 
 $existing = & helm list -n $namespace --filter "^$release$" --short 2>&1

@@ -58,7 +58,7 @@ Write-Section "Namespaces"
 $expectedGone = @(
     "argocd", "cattle-system", "rancher-operator-system",
     "proxy-config", "longhorn-system", "openbao",
-    "cert-manager", "metallb-system", "ingress-nginx", "traefik"
+    "cert-manager", "metallb-system", "ingress"
 )
 $existingNs = & kubectl get namespaces --no-headers -o custom-columns="NAME:.metadata.name" 2>$null
 foreach ($ns in $expectedGone) {

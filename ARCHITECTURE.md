@@ -164,7 +164,7 @@ delete`).
 
 | Namespace | Component | Port(s) | Externally reachable? |
 |---|---|---|---|
-| `traefik` (default) / `ingress-nginx` (deprecated, EOL March 2026) | Ingress Controller | 80, 443 | ✅ LoadBalancer (`ingress-pool`) |
+| `ingress` (shared by Traefik, default, and NGINX, deprecated EOL March 2026) | Ingress Controller | 80, 443 | ✅ LoadBalancer (`ingress-pool`) |
 | `cert-manager` | cert-manager | – | ❌ internal |
 | `openbao` (RKE2/Kind) or cloud-native KV | Vault (+ PKI root CA on RKE2/Kind) | 8200 | optional via Ingress |
 | `authelia` | Authelia (forward-auth + OIDC Provider) | 9091 | ✅ via Ingress |

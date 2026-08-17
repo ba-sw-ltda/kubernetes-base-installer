@@ -153,17 +153,10 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+# Every component that wants ingress traffic registers itself — see its own
+# Install.ps1 (Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace <self>).
+# This namespace only sets up its own baseline; it doesn't know or care who's behind it.
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "longhorn-system" -Port 80
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "authelia" -Port 80
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "cattle-system" -Port 80
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "prometheus" -Port 9090
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "jaeger" -Port 16686
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "grafana" -Port 80
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "portal" -Port 8080
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "argocd" -Port 80
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "mqtt" -Port 18083,3000
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "redis" -Port 5540
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

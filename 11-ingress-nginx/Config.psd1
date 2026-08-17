@@ -11,7 +11,8 @@
     Version         = "4.15.1"
     Repository      = "https://kubernetes.github.io/ingress-nginx"
     ChartName       = "ingress-nginx"
-    Namespace       = "ingress-nginx"
+    # Shared with 11-ingress-traefik on purpose — see that Config.psd1 for why.
+    Namespace       = "ingress"
     RancherProject  = "Ingress"
     CreateNamespace = $true
 

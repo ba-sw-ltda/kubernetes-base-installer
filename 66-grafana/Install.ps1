@@ -434,20 +434,11 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 # port (80) that fronts it via kube-proxy DNAT — Grafana's container listens
 # on 3000, so the policy must allow 3000 or ingress traffic is silently dropped.
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 3000
-# The provider-ingress rule above only matches traffic from namespaces carrying
-# network.k8s/allow-$Namespace — but the ingress controller has no per-backend
-# Install.ps1 hook to label itself as a consumer. Grafana, as the exposed
-# provider, labels the ingress controller's namespace directly instead. This
-# is a plain label add — deliberately NOT Set-NetworkPolicyConsumerEgress,
-# which would also install ingress-nginx's first-ever NetworkPolicy object
-# and flip it into default-deny egress for every namespace it fronts.
-$ingressCtrlNamespace = "ingress-nginx"
-& kubectl get namespace $ingressCtrlNamespace 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { $ingressCtrlNamespace = "traefik" }
-& kubectl get namespace $ingressCtrlNamespace 2>&1 | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    & kubectl label namespace $ingressCtrlNamespace "network.k8s/allow-$Namespace=true" --overwrite 2>&1 | Out-Null
-}
+# Register grafana as an egress target inside the shared "ingress" namespace
+# (Service port 80, not the container port above — this rule lives on the
+# pre-DNAT/egress side). Safe because 11-ingress-* always applies its own
+# baseline before any later component (numeric order 11 < 66) gets here.
+Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port 80
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "prometheus" -Port 9090
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port 3100
 if ($tracingNamespace -eq "jaeger") {
@@ -456,12 +447,9 @@ if ($tracingNamespace -eq "jaeger") {
     Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "tempo" -Port 3200
 }
 if ($oidcConfig) {
-    $ingressNamespace = "ingress-nginx"
-    & kubectl get namespace ingress-nginx 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { $ingressNamespace = "traefik" }
     # auth_url/token_url/api_url are all https://$autheliaHost/... (public ingress
     # hostname, TLS-terminated at the ingress controller) — port 443, not 80.
-    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $ingressNamespace -Port 443
+    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "ingress" -Port 443
 }
 
 Write-Host ""
