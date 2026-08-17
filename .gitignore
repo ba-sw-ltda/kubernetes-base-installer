@@ -3,6 +3,7 @@
 .aks-state.json
 .eks-state.json
 .gke-state.json
+.magalu-state.json
 .kind-state.json
 .openbao-state.json
 .openbao-state-*.json

@@ -757,6 +757,16 @@ function Start-Installation {
                 -LoadingMessage "Loading Kubernetes versions..."
 
             # ── Node pool flavor ─────────────────────────────────────
+            # `mgc kubernetes flavor list` returns curated names (e.g.
+            # "cloud-k8s.gp1.small") that `cluster create --node-pools` does NOT
+            # accept as a "flavor" value — the API rejects it with "use magalu
+            # virtual machine API to get valid machine type" (HTTP 400). The
+            # actual valid value is the Virtual Machine machine-type name (e.g.
+            # "BV2-4-20"), from `mgc virtual-machine machine-types list`. Resolve
+            # each curated k8s flavor to its matching machine-type name by
+            # vcpu + ram (falling back to the smallest disk when several
+            # machine-types share the same vcpu/ram), so the picker keeps the
+            # friendly k8s names while the Value sent to the API is valid.
             $mgcNodePoolFlavor = Read-SelectValue `
                 -Title "Node Pool Flavor" `
                 -Message "Machine type for the worker nodes" `
@@ -764,17 +774,26 @@ function Start-Installation {
                 -ContextCurrent ([ordered]@{ Cluster = $mgcClusterName }) `
                 -Loader {
                     param($path); $env:PATH = $path
-                    $raw = & mgc kubernetes flavor list -o json 2>&1
-                    $joined = (($raw -join "`n") -replace "`e\[[0-9;]*m", "")
-                    $jsonStart = -1
-                    foreach ($ch in @('{', '[')) {
-                        $i = $joined.IndexOf($ch)
-                        if ($i -ge 0 -and ($jsonStart -lt 0 -or $i -lt $jsonStart)) { $jsonStart = $i }
+                    function Get-MgcJson($rawLines) {
+                        $joined = (($rawLines -join "`n") -replace "`e\[[0-9;]*m", "")
+                        $jsonStart = -1
+                        foreach ($ch in @('{', '[')) {
+                            $i = $joined.IndexOf($ch)
+                            if ($i -ge 0 -and ($jsonStart -lt 0 -or $i -lt $jsonStart)) { $jsonStart = $i }
+                        }
+                        if ($jsonStart -ge 0) { try { $joined.Substring($jsonStart) | ConvertFrom-Json -ErrorAction Stop } catch { $null } } else { $null }
                     }
-                    $parsed = if ($jsonStart -ge 0) { try { $joined.Substring($jsonStart) | ConvertFrom-Json -ErrorAction Stop } catch { $null } } else { $null }
+                    $flavors      = Get-MgcJson (& mgc kubernetes flavor list -o json 2>&1)
+                    $machineTypes = Get-MgcJson (& mgc virtual-machine machine-types list -o json 2>&1)
                     $opts = @()
-                    foreach ($f in $parsed.results[0].nodepool) {
-                        $opts += @{ Label = "$($f.name)  ($($f.vcpu) vCPU / $($f.ram) GB RAM)"; Value = $f.name }
+                    foreach ($f in $flavors.results[0].nodepool) {
+                        $candidates = @($machineTypes.machine_types | Where-Object {
+                            $_.vcpus -eq $f.vcpu -and $_.ram -eq ($f.ram * 1024)
+                        })
+                        $match = $candidates | Where-Object { $_.disk -eq $f.size } | Select-Object -First 1
+                        if (-not $match) { $match = $candidates | Sort-Object disk | Select-Object -First 1 }
+                        if (-not $match) { continue }
+                        $opts += @{ Label = "$($f.name)  ($($f.vcpu) vCPU / $($f.ram) GB RAM)"; Value = $match.name }
                     }
                     return $opts
                 } `
