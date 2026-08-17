@@ -19,7 +19,7 @@ Redis, ...) is intentionally out of scope here — see the note at the bottom.
 flowchart TB
     Internet["🌐 Internet / external client"] --> DNS["DNS (*.kubernetes.local)"]
     DNS --> IngressLB["LoadBalancer :80 / :443"]
-    IngressLB --> Ingress["Ingress Controller\n(NGINX or Traefik)"]
+    IngressLB --> Ingress["Ingress Controller\n(Traefik, default — NGINX deprecated, EOL March 2026)"]
 
     CertMgr["cert-manager"]
     Vault["Vault\nOpenBao (RKE2/Kind) or cloud-native KV\nKV-v2 secrets + PKI root CA"]
@@ -164,7 +164,7 @@ delete`).
 
 | Namespace | Component | Port(s) | Externally reachable? |
 |---|---|---|---|
-| `ingress-nginx` / `traefik` | Ingress Controller | 80, 443 | ✅ LoadBalancer (`ingress-pool`) |
+| `traefik` (default) / `ingress-nginx` (deprecated, EOL March 2026) | Ingress Controller | 80, 443 | ✅ LoadBalancer (`ingress-pool`) |
 | `cert-manager` | cert-manager | – | ❌ internal |
 | `openbao` (RKE2/Kind) or cloud-native KV | Vault (+ PKI root CA on RKE2/Kind) | 8200 | optional via Ingress |
 | `authelia` | Authelia (forward-auth + OIDC Provider) | 9091 | ✅ via Ingress |

@@ -24,6 +24,11 @@ $verbose = $VerbosePreference -eq 'Continue'
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "  Installing: NGINX Ingress Controller" -ForegroundColor Cyan
 Write-Host "========================================`n" -ForegroundColor Cyan
+Write-Host "  ⚠ DEPRECATED: kubernetes/ingress-nginx reaches End-of-Life in" -ForegroundColor Yellow
+Write-Host "    March 2026 — no more releases, bugfixes, or CVE patches." -ForegroundColor Yellow
+Write-Host "    Use Traefik (11-ingress-traefik) instead unless you have a" -ForegroundColor Yellow
+Write-Host "    specific reason to keep NGINX." -ForegroundColor Yellow
+Write-Host ""
 
 $extraArgs = if ($verbose) { @{ Verbose = $true } } else { @{} }
 $otherUninstall = Join-Path $BaseDir "11-ingress-traefik\Uninstall.ps1"

@@ -14,8 +14,8 @@ $choice = Read-SelectValue `
     -Title "Select Ingress Controller" `
     -Message "Choose the ingress controller for your cluster" `
     -Options @(
-        @{ Label = "NGINX    (most widely used, community-maintained)"; Value = "nginx" }
         @{ Label = "Traefik  (built-in dashboard, dynamic configuration)"; Value = "traefik" }
+        @{ Label = "NGINX    (DEPRECATED - EOL March 2026, no more releases/CVE fixes)"; Value = "nginx" }
     ) `
     -Default 0 `
     -ContextTitle "Ingress — $Platform"

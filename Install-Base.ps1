@@ -1032,8 +1032,8 @@ function Start-Installation {
             if ($group -eq "Ingress & Load Balancing") {
                 $ingressType = Read-SelectValue -Title "Which Ingress Controller should be installed?" `
                     -Options @(
-                        @{ Label = "NGINX Ingress Controller"; Value = "nginx" }
-                        @{ Label = "Traefik";                  Value = "traefik" }
+                        @{ Label = "Traefik";                                     Value = "traefik" }
+                        @{ Label = "NGINX Ingress Controller (DEPRECATED - EOL March 2026, no more releases/CVE fixes)"; Value = "nginx" }
                     ) -Default 0 -ContextTitle "Ingress — $platform"
                 if ($null -eq $ingressType) { Write-Host "Installation cancelled." -ForegroundColor Red; exit }
                 $componentInputs["ingress"] = @{ IngressController = $ingressType }

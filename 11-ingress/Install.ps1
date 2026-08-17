@@ -9,7 +9,7 @@
 [CmdletBinding()]
 param(
     [string]$Platform,
-    [string]$IngressController = "nginx",
+    [string]$IngressController = "traefik",
     [string]$DnsLabel = ""
 )
 

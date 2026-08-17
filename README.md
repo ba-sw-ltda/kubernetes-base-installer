@@ -11,7 +11,7 @@ Supports **AKS · EKS · GKE · RKE2 (On-Premise) · Kind (Local)** from a singl
 
 | # | Component | Notes |
 |---|---|---|
-| 11 | **Ingress** (NGINX or Traefik) | Auto-selects between controllers |
+| 11 | **Ingress** (Traefik default, NGINX deprecated/EOL March 2026) | Auto-selects between controllers |
 | 12 | **MetalLB** | On-premise / Kind only |
 | 21 | **Longhorn** | Distributed block storage (on-premise / Kind) |
 | 31 | **cert-manager** | TLS certificate management — issuer created by 33 (RKE2/Kind only) |
