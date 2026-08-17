@@ -47,7 +47,7 @@ function Get-PkiSummary {
     param([System.Collections.Generic.List[hashtable]]$PKIs)
     $ctx = [ordered]@{}
     if ($PKIs.Count -eq 0) {
-        $ctx["PKIs"] = "(noch keine definiert)"
+        $ctx["PKIs"] = "(none defined yet)"
     } else {
         foreach ($p in $PKIs) {
             $label  = $p.Name + $(if ($p.IsDefault) { " [DEFAULT]" })
@@ -67,20 +67,20 @@ $restartPkiLoop = $false
 $continueLoop = $true
 while ($continueLoop) {
     $menuOptions = [System.Collections.Generic.List[hashtable]]::new()
-    $menuOptions.Add(@{ Label = "Fertig — PKIs übernehmen"; Value = "done" }) | Out-Null
-    $menuOptions.Add(@{ Label = "PKI hinzufügen";           Value = "add"  }) | Out-Null
+    $menuOptions.Add(@{ Label = "Done — apply PKIs"; Value = "done" }) | Out-Null
+    $menuOptions.Add(@{ Label = "Add PKI";           Value = "add"  }) | Out-Null
     foreach ($p in $pkis) {
-        $menuOptions.Add(@{ Label = "Bearbeiten: $($p.Name)"; Value = "edit:$($p.Name)"   }) | Out-Null
-        $menuOptions.Add(@{ Label = "Löschen:    $($p.Name)"; Value = "delete:$($p.Name)" }) | Out-Null
+        $menuOptions.Add(@{ Label = "Edit:   $($p.Name)"; Value = "edit:$($p.Name)"   }) | Out-Null
+        $menuOptions.Add(@{ Label = "Delete: $($p.Name)"; Value = "delete:$($p.Name)" }) | Out-Null
     }
 
     $choice = Read-SelectValue `
-        -Title   "PKI Verwaltung" `
-        -Message "Zertifizierungsstellen definieren — jede PKI wird als eigene secrets engine in OpenBao gemountet" `
+        -Title   "PKI Management" `
+        -Message "Define certificate authorities — each PKI is mounted as its own secrets engine in OpenBao" `
         -Options $menuOptions `
         -Default 0 `
         -ContextTitle "Security/OpenBao — PKIs" `
-        -ContextHint  "Root CA: selbst signiert. Intermediate CA: von einer Parent CA signiert (intern oder extern)." `
+        -ContextHint  "Root CA: self-signed. Intermediate CA: signed by a parent CA (internal or external)." `
         -ContextCurrent (Get-PkiSummary -PKIs $pkis)
 
     if ($null -eq $choice -or $choice -eq "done") {
@@ -91,26 +91,26 @@ while ($continueLoop) {
     if ($choice -eq "add") {
         # Name
         $nameRaw = Read-Plain `
-            -Prompt       "PKI Name (z.B. ingress, vehicles, corporate)" `
-            -ContextTitle "Security/OpenBao — PKI hinzufügen" `
-            -ContextHint  "MountPath wird automatisch 'pki-<name>'; CommonName wird '<name>.$Domain'" `
+            -Prompt       "PKI name (e.g. ingress, vehicles, corporate)" `
+            -ContextTitle "Security/OpenBao — Add PKI" `
+            -ContextHint  "MountPath will automatically be 'pki-<name>'; CommonName will be '<name>.$Domain'" `
             -ContextCurrent (Get-PkiSummary -PKIs $pkis)
         if ([string]::IsNullOrWhiteSpace($nameRaw)) { continue }
         $name = $nameRaw.Trim().ToLower() -replace '[^a-z0-9-]', '-'
 
         if ($pkis | Where-Object { $_.Name -eq $name }) {
-            Write-Host "  PKI '$name' existiert bereits." -ForegroundColor Yellow; continue
+            Write-Host "  PKI '$name' already exists." -ForegroundColor Yellow; continue
         }
 
         # Type
         $type = Read-SelectValue `
-            -Title   "PKI Typ" `
+            -Title   "PKI type" `
             -Options @(
-                @{ Label = "Root CA — selbst signiert (z.B. eigene Infrastruktur, Fahrzeuge)"; Value = "Root"         }
-                @{ Label = "Intermediate CA — von einer Parent CA signiert";                    Value = "Intermediate" }
+                @{ Label = "Root CA — self-signed (e.g. own infrastructure, vehicles)"; Value = "Root"         }
+                @{ Label = "Intermediate CA — signed by a parent CA";                   Value = "Intermediate" }
             ) `
             -Default 0 `
-            -ContextTitle   "Security/OpenBao — PKI hinzufügen" `
+            -ContextTitle   "Security/OpenBao — Add PKI" `
             -ContextCurrent ([ordered]@{ Name = $name; MountPath = "pki-$name" })
         if ($null -eq $type) { continue }
 
@@ -119,18 +119,18 @@ while ($continueLoop) {
 
         if ($type -eq "Intermediate") {
             $parentOptions = [System.Collections.Generic.List[hashtable]]::new()
-            $parentOptions.Add(@{ Label = "Extern — Corporate CA außerhalb von OpenBao (CSR wird exportiert)"; Value = "External" }) | Out-Null
+            $parentOptions.Add(@{ Label = "External — Corporate CA outside of OpenBao (CSR is exported)"; Value = "External" }) | Out-Null
             foreach ($p in $pkis) {
                 $parentOptions.Add(@{ Label = "OpenBao PKI: $($p.Name) ($($p.Type))"; Value = "openbao:$($p.Name)" }) | Out-Null
             }
 
             $parentChoice = Read-SelectValue `
                 -Title   "Parent CA" `
-                -Message "Welche CA soll dieses Intermediate signieren?" `
+                -Message "Which CA should sign this intermediate?" `
                 -Options $parentOptions `
                 -Default 0 `
-                -ContextTitle   "Security/OpenBao — PKI hinzufügen" `
-                -ContextCurrent ([ordered]@{ Name = $name; Typ = $type })
+                -ContextTitle   "Security/OpenBao — Add PKI" `
+                -ContextCurrent ([ordered]@{ Name = $name; Type = $type })
             if ($null -eq $parentChoice) { continue }
 
             if ($parentChoice -eq "External") {
@@ -145,29 +145,29 @@ while ($continueLoop) {
 
         # Roles
         $roleOptions = @(
-            @{ Label = "HTTP — Server-Zertifikate für Ingress (ServerAuth, cert-manager ClusterIssuer)"; Value = "HTTP"        }
-            @{ Label = "mTLS — Client-Zertifikate für Geräte (ClientAuth, CSR-basiert)";                Value = "mTLS"        }
-            @{ Label = "CodeSigning — Code-Signing (Platzhalter, noch keine Logik)";                    Value = "CodeSigning" }
+            @{ Label = "HTTP — server certificates for Ingress (ServerAuth, cert-manager ClusterIssuer)"; Value = "HTTP"        }
+            @{ Label = "mTLS — client certificates for devices (ClientAuth, CSR-based)";                  Value = "mTLS"        }
+            @{ Label = "CodeSigning — code signing (placeholder, no logic yet)";                          Value = "CodeSigning" }
         )
         $preSelected = @("HTTP")  # default pre-check
         $selectedRoles = Read-MultiSelectValues `
-            -Title         "Rollen für PKI '$name'" `
-            -Message       "Welche Zertifikatstypen soll diese PKI ausstellen?" `
+            -Title         "Roles for PKI '$name'" `
+            -Message       "Which certificate types should this PKI issue?" `
             -Options       $roleOptions `
             -DefaultValues $preSelected `
-            -ContextTitle  "Security/OpenBao — PKI hinzufügen" `
-            -ContextCurrent ([ordered]@{ Name = $name; Typ = $type })
+            -ContextTitle  "Security/OpenBao — Add PKI" `
+            -ContextCurrent ([ordered]@{ Name = $name; Type = $type })
         if ($null -eq $selectedRoles -or $selectedRoles.Count -eq 0) { $selectedRoles = @("HTTP") }
 
         # mTLS TTL
         $mTlsTtlHours = 336
         if ("mTLS" -in $selectedRoles) {
             $ttlInput = Read-Plain `
-                -Prompt       "Client-Cert TTL in Stunden" `
+                -Prompt       "Client cert TTL in hours" `
                 -Default      "336" `
-                -ContextTitle "Security/OpenBao — PKI hinzufügen" `
-                -ContextHint  "336h = 14 Tage; Erneuerung startet bei 50% (Tag 7)" `
-                -ContextCurrent ([ordered]@{ Name = $name; Rollen = ($selectedRoles -join ", ") })
+                -ContextTitle "Security/OpenBao — Add PKI" `
+                -ContextHint  "336h = 14 days; renewal starts at 50% (day 7)" `
+                -ContextCurrent ([ordered]@{ Name = $name; Roles = ($selectedRoles -join ", ") })
             $ttlVal = [int]($ttlInput -replace '\D', '0')
             if ($ttlVal -gt 0) { $mTlsTtlHours = $ttlVal }
         }
@@ -179,10 +179,10 @@ while ($continueLoop) {
             $isDefault = $true
         } elseif ("HTTP" -in $selectedRoles) {
             $isDefault = Read-YesNo `
-                -Title       "Als Standard-PKI für Ingress-Zertifikate setzen?" `
+                -Title       "Set as default PKI for Ingress certificates?" `
                 -DefaultYes  $false `
-                -ContextTitle "Security/OpenBao — PKI hinzufügen" `
-                -ContextCurrent ([ordered]@{ Name = $name; Typ = $type })
+                -ContextTitle "Security/OpenBao — Add PKI" `
+                -ContextCurrent ([ordered]@{ Name = $name; Type = $type })
             if ($isDefault) {
                 foreach ($p in $pkis) { $p['IsDefault'] = $false }
             }
@@ -205,7 +205,7 @@ while ($continueLoop) {
         }
 
         $pkis.Add($newPki) | Out-Null
-        Write-Host "  ✓ PKI '$name' zur Liste hinzugefügt" -ForegroundColor Green
+        Write-Host "  ✓ PKI '$name' added to the list" -ForegroundColor Green
     }
 
     # ── Edit ─────────────────────────────────────────────────────
@@ -215,70 +215,70 @@ while ($continueLoop) {
         if (-not $pki) { continue }
 
         $editChoice = Read-SelectValue `
-            -Title   "Bearbeiten: $editName" `
+            -Title   "Edit: $editName" `
             -Options @(
-                @{ Label = "Rollen anpassen";                Value = "roles"   }
-                @{ Label = "Als Standard-PKI setzen";        Value = "default" }
-                @{ Label = "Umbenennen";                     Value = "rename"  }
-                @{ Label = "Zurück";                         Value = "back"    }
+                @{ Label = "Adjust roles";                Value = "roles"   }
+                @{ Label = "Set as default PKI";          Value = "default" }
+                @{ Label = "Rename";                      Value = "rename"  }
+                @{ Label = "Back";                        Value = "back"    }
             ) `
             -Default 0 `
-            -ContextTitle   "Security/OpenBao — PKI bearbeiten" `
+            -ContextTitle   "Security/OpenBao — Edit PKI" `
             -ContextCurrent ([ordered]@{
                 Name      = $pki.Name
-                Typ       = $pki.Type
-                Rollen    = (@($pki.Roles) -join ", ")
+                Type      = $pki.Type
+                Roles     = (@($pki.Roles) -join ", ")
                 MountPath = $pki.MountPath
-                Standard  = if ($pki.IsDefault) { "Ja" } else { "Nein" }
-                Status    = if ($pki.Status) { $pki.Status } else { "neu" }
+                Default   = if ($pki.IsDefault) { "Yes" } else { "No" }
+                Status    = if ($pki.Status) { $pki.Status } else { "new" }
             })
 
         switch ($editChoice) {
             "roles" {
                 $roleOptions = @(
-                    @{ Label = "HTTP — Server-Zertifikate für Ingress (ServerAuth)"; Value = "HTTP"        }
-                    @{ Label = "mTLS — Client-Zertifikate für Geräte (ClientAuth)";  Value = "mTLS"        }
-                    @{ Label = "CodeSigning — Code-Signing (Platzhalter)";            Value = "CodeSigning" }
+                    @{ Label = "HTTP — server certificates for Ingress (ServerAuth)"; Value = "HTTP"        }
+                    @{ Label = "mTLS — client certificates for devices (ClientAuth)";  Value = "mTLS"        }
+                    @{ Label = "CodeSigning — code signing (placeholder)";              Value = "CodeSigning" }
                 )
                 $newRoles = Read-MultiSelectValues `
-                    -Title         "Rollen für '$editName'" `
+                    -Title         "Roles for '$editName'" `
                     -Options       $roleOptions `
                     -DefaultValues @($pki.Roles) `
-                    -ContextTitle  "Security/OpenBao — PKI bearbeiten" `
+                    -ContextTitle  "Security/OpenBao — Edit PKI" `
                     -ContextCurrent ([ordered]@{ Name = $pki.Name })
                 if ($newRoles -and $newRoles.Count -gt 0) {
                     $pki['Roles'] = @($newRoles)
                     if ("mTLS" -in $newRoles -and -not $pki.ContainsKey('mTlsTtlHours')) {
                         $ttlInput = Read-Plain `
-                            -Prompt       "Client-Cert TTL in Stunden" `
+                            -Prompt       "Client cert TTL in hours" `
                             -Default      "336" `
-                            -ContextTitle "Security/OpenBao — PKI bearbeiten" `
-                            -ContextHint  "336h = 14 Tage"
+                            -ContextTitle "Security/OpenBao — Edit PKI" `
+                            -ContextHint  "336h = 14 days"
                         $ttlVal = [int]($ttlInput -replace '\D', '0')
                         $pki['mTlsTtlHours'] = if ($ttlVal -gt 0) { $ttlVal } else { 336 }
                     }
-                    Write-Host "  ✓ Rollen aktualisiert: $((@($pki['Roles'])) -join ', ')" -ForegroundColor Green
+                    Write-Host "  ✓ Roles updated: $((@($pki['Roles'])) -join ', ')" -ForegroundColor Green
                 }
             }
             "default" {
                 foreach ($p in $pkis) { $p['IsDefault'] = $false }
                 $pki['IsDefault'] = $true
-                Write-Host "  ✓ '$editName' ist jetzt die Standard-PKI" -ForegroundColor Green
+                Write-Host "  ✓ '$editName' is now the default PKI" -ForegroundColor Green
             }
             "rename" {
                 $newNameRaw = Read-Plain `
-                    -Prompt       "Neuer Name für '$editName'" `
-                    -ContextTitle "Security/OpenBao — PKI umbenennen" `
-                    -ContextCurrent ([ordered]@{ Aktueller_Name = $editName })
+                    -Prompt       "New name for '$editName'" `
+                    -ContextTitle "Security/OpenBao — Rename PKI" `
+                    -ContextCurrent ([ordered]@{ Current_Name = $editName })
                 if ([string]::IsNullOrWhiteSpace($newNameRaw)) { break }
                 $newName = $newNameRaw.Trim().ToLower() -replace '[^a-z0-9-]', '-'
                 if ($pkis | Where-Object { $_.Name -eq $newName -and $_.Name -ne $editName }) {
-                    Write-Host "  Name '$newName' existiert bereits." -ForegroundColor Yellow; break
+                    Write-Host "  Name '$newName' already exists." -ForegroundColor Yellow; break
                 }
                 # Only auto-update MountPath if it was auto-derived
                 if ($pki['MountPath'] -eq "pki-$editName") { $pki['MountPath'] = "pki-$newName" }
                 $pki['Name'] = $newName
-                Write-Host "  ✓ Umbenannt: '$editName' → '$newName'" -ForegroundColor Green
+                Write-Host "  ✓ Renamed: '$editName' → '$newName'" -ForegroundColor Green
             }
         }
     }
@@ -287,15 +287,15 @@ while ($continueLoop) {
     elseif ($choice -like "delete:*") {
         $delName = $choice -replace '^delete:', ''
         $confirm = Read-YesNo `
-            -Title      "PKI '$delName' aus der Liste entfernen?" `
+            -Title      "Remove PKI '$delName' from the list?" `
             -DefaultYes $false `
-            -ContextTitle   "Security/OpenBao — PKI löschen" `
-            -ContextHint    "Löscht die PKI aus dem Installer. Bestehende OpenBao-Mounts werden NICHT automatisch gelöscht." `
+            -ContextTitle   "Security/OpenBao — Delete PKI" `
+            -ContextHint    "Removes the PKI from the installer. Existing OpenBao mounts are NOT automatically deleted." `
             -ContextCurrent ([ordered]@{ Name = $delName })
         if ($confirm) {
             $toRemove = $pkis | Where-Object { $_.Name -eq $delName } | Select-Object -First 1
             $pkis.Remove($toRemove) | Out-Null
-            Write-Host "  ✓ '$delName' entfernt" -ForegroundColor Green
+            Write-Host "  ✓ '$delName' removed" -ForegroundColor Green
         }
     }
 }
@@ -307,18 +307,18 @@ while ($continueLoop) {
 # case), but must be an explicit choice — not an accidental omission.
 if ($pkis.Count -eq 0) {
     Write-Host ""
-    Write-Host "  ⚠  Keine PKI definiert!" -ForegroundColor Yellow
-    Write-Host "     Ohne PKI: kein TLS, kein ClusterIssuer." -ForegroundColor Yellow
-    Write-Host "     Authelia-Login funktioniert nicht (Secure-Cookie erfordert HTTPS)." -ForegroundColor Yellow
-    Write-Host "     Nur für Entwicklung/CI ohne Browser geeignet." -ForegroundColor DarkGray
+    Write-Host "  ⚠  No PKI defined!" -ForegroundColor Yellow
+    Write-Host "     Without a PKI: no TLS, no ClusterIssuer." -ForegroundColor Yellow
+    Write-Host "     Authelia login will not work (Secure cookie requires HTTPS)." -ForegroundColor Yellow
+    Write-Host "     Only suitable for development/CI without a browser." -ForegroundColor DarkGray
     Write-Host ""
     $proceed = Read-YesNo `
-        -Title      "Ohne PKI fortfahren?" `
+        -Title      "Continue without a PKI?" `
         -DefaultYes $false `
-        -YesLabel   "Ja — kein TLS, Authelia-Login deaktiviert (nur Dev/CI)" `
-        -NoLabel    "Nein — zurück zur PKI-Verwaltung" `
-        -ContextTitle "Security/OpenBao — PKI Warnung" `
-        -ContextCurrent ([ordered]@{ TLS = "deaktiviert"; Authelia = "Login nicht funktionsfähig" })
+        -YesLabel   "Yes — no TLS, Authelia login disabled (Dev/CI only)" `
+        -NoLabel    "No — back to PKI management" `
+        -ContextTitle "Security/OpenBao — PKI warning" `
+        -ContextCurrent ([ordered]@{ TLS = "disabled"; Authelia = "Login not functional" })
     if (-not $proceed) { $restartPkiLoop = $true }
 }
 } while ($restartPkiLoop)  # outer do-while: re-runs the management loop if user goes back
@@ -329,9 +329,9 @@ $hostname = Read-Plain `
     -Prompt       "OpenBao hostname" `
     -Default      $defaultHostname `
     -ContextTitle "Security/OpenBao — $Platform" `
-    -ContextHint  "DNS-Name unter dem die OpenBao UI erreichbar ist" `
+    -ContextHint  "DNS name under which the OpenBao UI is reachable" `
     -ContextCurrent ([ordered]@{
-        PKIs   = if ($pkis.Count -gt 0) { ($pkis | ForEach-Object { $_.Name }) -join ", " } else { "(keine)" }
+        PKIs   = if ($pkis.Count -gt 0) { ($pkis | ForEach-Object { $_.Name }) -join ", " } else { "(none)" }
         Domain = $Domain
     })
 

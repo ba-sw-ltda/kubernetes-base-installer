@@ -54,7 +54,7 @@ Write-Host "  Chart:      openbao v$ChartVersion" -ForegroundColor Gray
 Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
 Write-Host "  Storage:    $($UserConfig.StorageSize)" -ForegroundColor Gray
 if ($PKIs.Count -gt 0) {
-    Write-Host "  PKIs:       $($PKIs.Count) definiert ($( ($PKIs | ForEach-Object { $_.Name }) -join ', '))" -ForegroundColor Gray
+    Write-Host "  PKIs:       $($PKIs.Count) defined ($( ($PKIs | ForEach-Object { $_.Name }) -join ', '))" -ForegroundColor Gray
 }
 Write-Host ""
 
@@ -261,7 +261,7 @@ if ($auditListJson -notmatch '"file/"') {
 # on mount "pki" so existing clusters keep working without re-running Prompt.ps1.
 
 if ($PKIs.Count -eq 0) {
-    Write-Host "  Keine PKIs definiert — PKI-Engine wird nicht aktiviert (kein TLS, kein ClusterIssuer)." -ForegroundColor Yellow
+    Write-Host "  No PKIs defined — PKI engine will not be activated (no TLS, no ClusterIssuer)." -ForegroundColor Yellow
 }
 
 # The old single ClusterIssuer "openbao-pki" is intentionally NOT deleted here.
@@ -270,8 +270,8 @@ if ($PKIs.Count -eq 0) {
 # migrates to "openbao-pki-<name>" the next time its own Install.ps1 is re-run.
 $oldIssuerExists = & kubectl get clusterissuer openbao-pki --ignore-not-found 2>$null
 if ($oldIssuerExists -and ($PKIs | Where-Object { "HTTP" -in @($_.Roles) -and $_.MountPath -ne "pki" })) {
-    Write-Host "  ℹ  Alter ClusterIssuer 'openbao-pki' bleibt erhalten." -ForegroundColor DarkGray
-    Write-Host "     Komponenten migrieren beim nächsten Re-Install auf 'openbao-pki-<name>'." -ForegroundColor DarkGray
+    Write-Host "  ℹ  Old ClusterIssuer 'openbao-pki' is kept." -ForegroundColor DarkGray
+    Write-Host "     Components migrate to 'openbao-pki-<name>' on their next re-install." -ForegroundColor DarkGray
 }
 
 # Helper: write a Vault policy via file + kubectl cp (avoids CRLF issues with heredocs)
@@ -307,7 +307,7 @@ foreach ($pki in $PKIs) {
 
     # Skip if this is a pending external intermediate — Complete-PkiIntermediate handles it
     if ($currentStatus -eq "PendingCSR") {
-        Write-Host "  ⏸ Status PendingCSR — warte auf externes Zertifikat (Complete-PkiIntermediate.ps1)" -ForegroundColor Yellow
+        Write-Host "  ⏸ Status PendingCSR — waiting for external certificate (Complete-PkiIntermediate.ps1)" -ForegroundColor Yellow
         $pkiResults.Add($pki) | Out-Null
         continue
     }
@@ -349,7 +349,7 @@ foreach ($pki in $PKIs) {
                 ("BAO_TOKEN=$rootToken bao write $mountPath/config/urls " +
                  "issuing_certificates='http://openbao.$Namespace.svc.cluster.local:8200/v1/$mountPath/ca' " +
                  "crl_distribution_points='http://openbao.$Namespace.svc.cluster.local:8200/v1/$mountPath/crl'")
-            Write-Host "  ✓ Root CA erstellt (10y, CN=$cn)" -ForegroundColor Green
+            Write-Host "  ✓ Root CA created (10y, CN=$cn)" -ForegroundColor Green
         }
         elseif ($pkiType -eq "Intermediate") {
             $cn = "$pkiName-intermediate.$Domain"
@@ -407,7 +407,7 @@ foreach ($pki in $PKIs) {
                     ("BAO_TOKEN=$rootToken bao write $mountPath/config/urls " +
                      "issuing_certificates='http://openbao.$Namespace.svc.cluster.local:8200/v1/$mountPath/ca' " +
                      "crl_distribution_points='http://openbao.$Namespace.svc.cluster.local:8200/v1/$mountPath/crl'")
-                Write-Host "  ✓ Intermediate CA signiert und importiert (Parent: $parentMount)" -ForegroundColor Green
+                Write-Host "  ✓ Intermediate CA signed and imported (Parent: $parentMount)" -ForegroundColor Green
             }
             elseif ($pki.ParentType -eq "External") {
                 # Export CSR, set PendingCSR status — Complete-PkiIntermediate.ps1 finishes this
@@ -420,10 +420,10 @@ foreach ($pki in $PKIs) {
 
                 $csrExportPath = Join-Path $BaseDir "$pkiName-intermediate.csr"
                 Set-Content -Path $csrExportPath -Value $csr -Encoding UTF8
-                Write-Host "  ✓ CSR generiert und exportiert nach:" -ForegroundColor Green
+                Write-Host "  ✓ CSR generated and exported to:" -ForegroundColor Green
                 Write-Host "    $csrExportPath" -ForegroundColor Yellow
-                Write-Host "  → Lasse die CSR von deiner Corporate CA signieren," -ForegroundColor DarkGray
-                Write-Host "    dann: .\33-openbao\Complete-PkiIntermediate.ps1 -Platform $Platform" -ForegroundColor DarkGray
+                Write-Host "  → Have the CSR signed by your Corporate CA," -ForegroundColor DarkGray
+                Write-Host "    then: .\33-openbao\Complete-PkiIntermediate.ps1 -Platform $Platform" -ForegroundColor DarkGray
 
                 $pki['Status']        = "PendingCSR"
                 $pki['CSRExportPath'] = $csrExportPath
@@ -432,7 +432,7 @@ foreach ($pki in $PKIs) {
             }
         }
     } else {
-        Write-Host "  ✓ CA bereits vorhanden" -ForegroundColor Green
+        Write-Host "  ✓ CA already exists" -ForegroundColor Green
     }
 
     # ── Configure PKI roles ──────────────────────────────────────
@@ -443,7 +443,7 @@ foreach ($pki in $PKIs) {
              "allowed_domains='$Domain' allow_subdomains=true allow_bare_domains=true allow_any_name=false " +
              "require_cn=false max_ttl=720h ttl=720h key_type=rsa key_bits=2048 " +
              "key_usage='DigitalSignature,KeyEncipherment' ext_key_usage='ServerAuth'")
-        Write-Host "  ✓ Rolle 'http' (ServerAuth, *.${Domain})" -ForegroundColor Green
+        Write-Host "  ✓ Role 'http' (ServerAuth, *.${Domain})" -ForegroundColor Green
     }
 
     if ("mTLS" -in $roles) {
@@ -454,7 +454,7 @@ foreach ($pki in $PKIs) {
              "allow_any_name=true enforce_hostnames=false require_cn=true " +
              "max_ttl=${ttlH}h ttl=${ttlH}h key_type=rsa key_bits=2048 " +
              "key_usage='DigitalSignature' ext_key_usage='ClientAuth' no_store=false")
-        Write-Host "  ✓ Rolle 'mtls' (ClientAuth, TTL=${ttlH}h)" -ForegroundColor Green
+        Write-Host "  ✓ Role 'mtls' (ClientAuth, TTL=${ttlH}h)" -ForegroundColor Green
 
         # AppRole for device enrollment (one-time token) — infrastructure only.
         # Actual token generation happens in the vehicle/MQTT onboarding script.
@@ -472,7 +472,7 @@ path "$mountPath/sign/mtls" {
             ("BAO_TOKEN=$rootToken bao write auth/approle/role/$pkiName-enroll " +
              "secret_id_ttl=1h token_policies=vehicle-enroll-$pkiName " +
              "token_ttl=10m token_max_ttl=30m")
-        Write-Host "  ✓ AppRole '$pkiName-enroll' bereit (Einmal-Token, 1h TTL)" -ForegroundColor Green
+        Write-Host "  ✓ AppRole '$pkiName-enroll' ready (one-time token, 1h TTL)" -ForegroundColor Green
     }
 
     # ── cert-manager ClusterIssuer (HTTP role only) ───────────────
@@ -511,9 +511,9 @@ spec:
 "@
         $clusterIssuerYaml | & kubectl apply -f - 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "  ✓ ClusterIssuer '$issuerName' bereit" -ForegroundColor Green
+            Write-Host "  ✓ ClusterIssuer '$issuerName' ready" -ForegroundColor Green
         } else {
-            Write-Warning "  ClusterIssuer '$issuerName' konnte nicht angelegt werden — cert-manager CRDs fehlen noch?"
+            Write-Warning "  ClusterIssuer '$issuerName' could not be created — cert-manager CRDs missing?"
         }
     }
 
@@ -525,7 +525,7 @@ spec:
 if ($pkiResults.Count -gt 0) {
     Save-OpenBaoPkis -PKIs @($pkiResults | ForEach-Object { [hashtable]$_ }) -BaseDir $BaseDir -Platform $Platform
     Write-Host ""
-    Write-Host "  ✓ PKI-Status gespeichert ($StateFile)" -ForegroundColor Green
+    Write-Host "  ✓ PKI status saved ($StateFile)" -ForegroundColor Green
 }
 
 # ── 6. Auto-Unsealer Deployment ───────────────────────────────────
@@ -636,7 +636,7 @@ Write-Host "  ──────────────────────
 if ($Hostname) { Write-Host "  UI:         https://$Hostname" -ForegroundColor Yellow }
 Write-Host "  Root token: $StateFile" -ForegroundColor Gray
 Write-Host ""
-Write-Host "  PKI Übersicht:" -ForegroundColor Gray
+Write-Host "  PKI overview:" -ForegroundColor Gray
 foreach ($r in $pkiResults) {
     $default = if ($r.IsDefault) { " [DEFAULT]" } else { "" }
     $roles   = (@($r.Roles) -join ", ")
@@ -646,11 +646,11 @@ foreach ($r in $pkiResults) {
 $pendingList = @($pkiResults | Where-Object { $_.Status -eq "PendingCSR" })
 if ($pendingList.Count -gt 0) {
     Write-Host ""
-    Write-Host "  Ausstehende Intermediate CAs (Extern):" -ForegroundColor Yellow
+    Write-Host "  Pending Intermediate CAs (External):" -ForegroundColor Yellow
     foreach ($p in $pendingList) {
         Write-Host "    $($p.Name) — CSR: $($p.CSRExportPath)" -ForegroundColor Yellow
     }
-    Write-Host "  → Nach Signierung: .\33-openbao\Complete-PkiIntermediate.ps1 -Platform $Platform" -ForegroundColor DarkGray
+    Write-Host "  → After signing: .\33-openbao\Complete-PkiIntermediate.ps1 -Platform $Platform" -ForegroundColor DarkGray
 }
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 

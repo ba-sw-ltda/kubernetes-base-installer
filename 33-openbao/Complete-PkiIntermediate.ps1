@@ -36,13 +36,13 @@ $Namespace = "openbao"
 # ── Load state ───────────────────────────────────────────────────
 $StateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
 if (-not (Test-Path $StateFile)) {
-    Write-Error "Kein State File gefunden ($StateFile) — OpenBao wurde noch nicht installiert."
+    Write-Error "No state file found ($StateFile) — OpenBao has not been installed yet."
     exit 1
 }
 $state     = Get-Content $StateFile | ConvertFrom-Json
 $rootToken = $state.RootToken
 if (-not $rootToken) {
-    Write-Error "RootToken im State File fehlt — OpenBao neu initialisieren."
+    Write-Error "RootToken missing from state file — re-initialize OpenBao."
     exit 1
 }
 
@@ -51,8 +51,8 @@ $allPkis     = Get-OpenBaoPkis -BaseDir $BaseDir -Platform $Platform
 $pendingPkis = @($allPkis | Where-Object { $_['Status'] -eq 'PendingCSR' })
 
 if ($pendingPkis.Count -eq 0) {
-    Write-Host "  Keine ausstehenden Intermediate CAs gefunden." -ForegroundColor Green
-    Write-Host "  (Status=PendingCSR nicht vorhanden — alles bereits abgeschlossen?)" -ForegroundColor DarkGray
+    Write-Host "  No pending Intermediate CAs found." -ForegroundColor Green
+    Write-Host "  (Status=PendingCSR not present — is everything already complete?)" -ForegroundColor DarkGray
     exit 0
 }
 
@@ -63,16 +63,16 @@ $pkiOptions = $pendingPkis | ForEach-Object {
 }
 
 $selectedName = if ($pendingPkis.Count -eq 1) {
-    Write-Host "  Ausstehend: $($pendingPkis[0].Name) ($($pendingPkis[0].MountPath))" -ForegroundColor Yellow
+    Write-Host "  Pending: $($pendingPkis[0].Name) ($($pendingPkis[0].MountPath))" -ForegroundColor Yellow
     $pendingPkis[0]['Name']
 } else {
     Read-SelectValue `
-        -Title   "Welche PKI abschließen?" `
+        -Title   "Which PKI to complete?" `
         -Options $pkiOptions `
         -Default 0 `
         -ContextTitle "Complete Intermediate CA — $Platform"
 }
-if (-not $selectedName) { Write-Host "Abgebrochen." -ForegroundColor Red; exit 0 }
+if (-not $selectedName) { Write-Host "Cancelled." -ForegroundColor Red; exit 0 }
 
 $pki = $pendingPkis | Where-Object { $_['Name'] -eq $selectedName } | Select-Object -First 1
 $mountPath = $pki['MountPath']
@@ -81,7 +81,7 @@ $roles     = @($pki['Roles'])
 Write-Host ""
 Write-Host "  PKI:       $($pki.Name)" -ForegroundColor White
 Write-Host "  MountPath: $mountPath" -ForegroundColor Gray
-Write-Host "  Rollen:    $($roles -join ', ')" -ForegroundColor Gray
+Write-Host "  Roles:     $($roles -join ', ')" -ForegroundColor Gray
 Write-Host ""
 
 # ── Ask for signed certificate file ──────────────────────────────
@@ -92,20 +92,20 @@ $defaultCertPath = if ($pki['CSRExportPath']) {
 }
 
 $certPath = Read-Plain `
-    -Prompt       "Pfad zur signierten Zertifikat-Datei (PEM)" `
+    -Prompt       "Path to the signed certificate file (PEM)" `
     -Default      $defaultCertPath `
     -ContextTitle "Complete Intermediate CA — $($pki.Name)" `
-    -ContextHint  "Die von der Corporate CA signierte Zertifikat-Kette (PEM Format)"
+    -ContextHint  "The certificate chain signed by the Corporate CA (PEM format)"
 
 $certPath = $certPath.Trim()
 if (-not (Test-Path $certPath)) {
-    Write-Error "Datei nicht gefunden: $certPath"
+    Write-Error "File not found: $certPath"
     exit 1
 }
 
 $signedCert = Get-Content -Path $certPath -Raw
 if ($signedCert -notmatch '-----BEGIN CERTIFICATE-----') {
-    Write-Error "Datei enthält kein gültiges PEM-Zertifikat: $certPath"
+    Write-Error "File does not contain a valid PEM certificate: $certPath"
     exit 1
 }
 
@@ -140,10 +140,10 @@ $importExit = Invoke-WithSpinner -Message "Importing signed intermediate certifi
 & kubectl exec openbao-0 -n $Namespace -- rm -f $signedRemote 2>$null | Out-Null
 
 if ($importExit -ne 0) {
-    Write-Error "Zertifikat konnte nicht importiert werden — ist die PEM-Datei korrekt?"
+    Write-Error "Certificate could not be imported — is the PEM file correct?"
     exit 1
 }
-Write-Host "  ✓ Signiertes Zertifikat importiert" -ForegroundColor Green
+Write-Host "  ✓ Signed certificate imported" -ForegroundColor Green
 
 # CA URLs
 Invoke-BaoCmd "Configuring CA URLs..." `
@@ -172,7 +172,7 @@ if ("HTTP" -in $roles) {
          "allowed_domains='$Domain' allow_subdomains=true allow_bare_domains=true allow_any_name=false " +
          "require_cn=false max_ttl=720h ttl=720h key_type=rsa key_bits=2048 " +
          "key_usage='DigitalSignature,KeyEncipherment' ext_key_usage='ServerAuth'")
-    Write-Host "  ✓ Rolle 'http' (ServerAuth)" -ForegroundColor Green
+    Write-Host "  ✓ Role 'http' (ServerAuth)" -ForegroundColor Green
 }
 
 if ("mTLS" -in $roles) {
@@ -182,7 +182,7 @@ if ("mTLS" -in $roles) {
          "allow_any_name=true enforce_hostnames=false require_cn=true " +
          "max_ttl=${ttlH}h ttl=${ttlH}h key_type=rsa key_bits=2048 " +
          "key_usage='DigitalSignature' ext_key_usage='ClientAuth' no_store=false")
-    Write-Host "  ✓ Rolle 'mtls' (ClientAuth, ${ttlH}h)" -ForegroundColor Green
+    Write-Host "  ✓ Role 'mtls' (ClientAuth, ${ttlH}h)" -ForegroundColor Green
 }
 
 # ── cert-manager ClusterIssuer ─────────────────────────────────────
@@ -216,9 +216,9 @@ spec:
 "@
     $clusterIssuerYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✓ ClusterIssuer '$issuerName' bereit" -ForegroundColor Green
+        Write-Host "  ✓ ClusterIssuer '$issuerName' ready" -ForegroundColor Green
     } else {
-        Write-Warning "  ClusterIssuer '$issuerName' konnte nicht angelegt werden"
+        Write-Warning "  ClusterIssuer '$issuerName' could not be created"
     }
 }
 
@@ -232,9 +232,9 @@ $updatedPkis = @($allPkis | ForEach-Object {
 Save-OpenBaoPkis -PKIs $updatedPkis -BaseDir $BaseDir -Platform $Platform
 
 Write-Host ""
-Write-Host "  ✓ PKI '$selectedName' ist jetzt aktiv" -ForegroundColor Green
+Write-Host "  ✓ PKI '$selectedName' is now active" -ForegroundColor Green
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Intermediate CA abgeschlossen" -ForegroundColor Cyan
+Write-Host "  Intermediate CA complete" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
