@@ -215,6 +215,81 @@ grafana.ini:
 "@
 }
 
+# Grafana's backend performs the OIDC token/userinfo exchange with Authelia server-side,
+# which must trust the OpenBao root CA — same trust-store gap Rancher and ArgoCD already
+# work around (see 51-rancher and 91-argocd). Grafana has no per-provider TLS-CA setting,
+# so an init container appends the CA to the pod's system bundle instead: the grafana/grafana
+# image already ships a flat /etc/ssl/certs/ca-certificates.crt (standard Alpine layout),
+# which Go's x509 package reads directly — no update-ca-certificates or root needed.
+$caTrustViaSet = $false
+if ($oidcConfig) {
+    $baoStateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+    if (Test-Path $baoStateFile) {
+        $baoRootToken = (Get-Content $baoStateFile | ConvertFrom-Json).RootToken
+        $defaultPkis  = Get-OpenBaoPkis -BaseDir $BaseDir -Platform $Platform
+        $defaultPki   = $defaultPkis | Where-Object { $_['IsDefault'] } | Select-Object -First 1
+        if (-not $defaultPki) { $defaultPki = $defaultPkis | Select-Object -First 1 }
+        $caMount      = if ($defaultPki) { $defaultPki['MountPath'] } else { "pki" }
+
+        $caCert = & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$baoRootToken bao read -field=certificate $caMount/cert/ca" 2>$null
+        if ($caCert) {
+            # kubectl's stdout is captured by PowerShell as a string array (one element
+            # per line). Set-Content -NoNewline with an array input concatenates elements
+            # with NO separator at all (not just no *trailing* newline) — this previously
+            # collapsed the multi-line PEM into one unparseable line, silently defeating
+            # Go's encoding/pem line-based parser (bytes present, but never actually
+            # loaded into the trust store). Re-join with real newlines first.
+            $caCertText = ($caCert -join "`n") + "`n"
+            $caCertFile = New-TemporaryFile
+            Set-Content -Path $caCertFile.FullName -Value $caCertText -Encoding UTF8 -NoNewline
+            & kubectl create secret generic tls-ca-additional -n $Namespace `
+                --from-file="ca-additional.pem=$($caCertFile.FullName)" `
+                --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
+            Remove-Item $caCertFile.FullName -Force -ErrorAction SilentlyContinue
+
+            # extraVolumeMounts[0] is already claimed by New-CsiSecretMount's --set flags
+            # (vault-secrets, see $mount.HelmArgs below). --set is applied by Helm after all
+            # -f/--values files, and merges into an existing array *by index*, field-by-field
+            # — it does not append. Putting our own entry at index 0 here previously got
+            # silently field-merged with the vault-secrets mount (name/mountPath overwritten
+            # by --set, our subPath surviving), which mounted neither correctly and broke
+            # OIDC token exchange (unknown-authority TLS error). When CSI is active, our
+            # mount is added as index [1] via --set instead (see below); the YAML form here
+            # is only safe to use in the no-CSI fallback, where nothing else claims index 0.
+            $caTrustExtraVolumeMountsYaml = if (-not $mount.Installed) { @"
+extraVolumeMounts:
+  - name: ca-bundle
+    mountPath: /etc/ssl/certs/ca-certificates.crt
+    subPath: ca-certificates.crt
+    readOnly: true
+"@ } else { "" }
+
+            $oidcIniBlock += @"
+
+extraContainerVolumes:
+  - name: ca-additional
+    secret:
+      secretName: tls-ca-additional
+  - name: ca-bundle
+    emptyDir: {}
+extraInitContainers:
+  - name: trust-openbao-ca
+    image: "{{ .Values.global.imageRegistry | default .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+    command: ["sh", "-c", "cp /etc/ssl/certs/ca-certificates.crt /ca-bundle/ca-certificates.crt && cat /extra-ca/ca-additional.pem >> /ca-bundle/ca-certificates.crt"]
+    volumeMounts:
+      - name: ca-additional
+        mountPath: /extra-ca
+        readOnly: true
+      - name: ca-bundle
+        mountPath: /ca-bundle
+$caTrustExtraVolumeMountsYaml
+"@
+            $caTrustViaSet = $mount.Installed
+            Write-Host "  ✓ OpenBao root CA trusted by Grafana OIDC ($caMount, tls-ca-additional)" -ForegroundColor Green
+        }
+    }
+}
+
 $valuesYaml = if ($mount.Installed) { @"
 datasources:
   datasources.yaml:
@@ -278,6 +353,13 @@ if ($mount.Installed) {
     $HelmArgs += $mount.HelmArgs
     $HelmArgs += "--set", "adminUser=$($UserConfig.AdminUser)"
     $HelmArgs += "--set-string", "adminPassword=managed-by-vault"
+    if ($caTrustViaSet) {
+        # index [1] — [0] is vault-secrets, set by $mount.HelmArgs above.
+        $HelmArgs += "--set", "extraVolumeMounts[1].name=ca-bundle"
+        $HelmArgs += "--set", "extraVolumeMounts[1].mountPath=/etc/ssl/certs/ca-certificates.crt"
+        $HelmArgs += "--set", "extraVolumeMounts[1].subPath=ca-certificates.crt"
+        $HelmArgs += "--set", "extraVolumeMounts[1].readOnly=true"
+    }
 } else {
     $HelmArgs += "--set", "adminUser=$($UserConfig.AdminUser)"
     $HelmArgs += "--set-string", "adminPassword=$AdminPassword"
@@ -348,7 +430,24 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 80
+# NetworkPolicy ports match the pod's actual container port, not the Service
+# port (80) that fronts it via kube-proxy DNAT — Grafana's container listens
+# on 3000, so the policy must allow 3000 or ingress traffic is silently dropped.
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 3000
+# The provider-ingress rule above only matches traffic from namespaces carrying
+# network.k8s/allow-$Namespace — but the ingress controller has no per-backend
+# Install.ps1 hook to label itself as a consumer. Grafana, as the exposed
+# provider, labels the ingress controller's namespace directly instead. This
+# is a plain label add — deliberately NOT Set-NetworkPolicyConsumerEgress,
+# which would also install ingress-nginx's first-ever NetworkPolicy object
+# and flip it into default-deny egress for every namespace it fronts.
+$ingressCtrlNamespace = "ingress-nginx"
+& kubectl get namespace $ingressCtrlNamespace 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { $ingressCtrlNamespace = "traefik" }
+& kubectl get namespace $ingressCtrlNamespace 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    & kubectl label namespace $ingressCtrlNamespace "network.k8s/allow-$Namespace=true" --overwrite 2>&1 | Out-Null
+}
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "prometheus" -Port 9090
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port 3100
 if ($tracingNamespace -eq "jaeger") {
@@ -360,7 +459,9 @@ if ($oidcConfig) {
     $ingressNamespace = "ingress-nginx"
     & kubectl get namespace ingress-nginx 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { $ingressNamespace = "traefik" }
-    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $ingressNamespace -Port 80
+    # auth_url/token_url/api_url are all https://$autheliaHost/... (public ingress
+    # hostname, TLS-terminated at the ingress controller) — port 443, not 80.
+    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $ingressNamespace -Port 443
 }
 
 Write-Host ""
