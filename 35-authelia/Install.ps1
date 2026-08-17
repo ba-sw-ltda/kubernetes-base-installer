@@ -102,80 +102,19 @@ $mount = New-CsiSecretMount `
     -Namespace $Namespace -ServiceAccount "authelia" `
     -BaseDir $BaseDir -Platform $Platform
 
-# A successful CSI-mount setup doesn't guarantee the credential write above
-# also succeeded (e.g. a transient OpenBao hiccup right when this ran) —
-# treat that mismatch the same as "Vault unavailable" rather than letting
-# Sync-AutheliaConfiguration fail confusingly a few lines down.
-if ($mount.Installed -and -not $adminCredWritten) {
-    Write-Host "  ⚠ Admin credential could not be written to Vault — falling back to a generated K8s Secret (no CSI mount)" -ForegroundColor Yellow
-    $mount.Installed = $false
+# Authelia has no local fallback — OIDC needs Vault to persist
+# machine-to-machine secrets (hmac/jwks/per-client secrets), and the admin
+# credential itself is Vault-only, so a partial/failed Vault write is a hard
+# error rather than a silently-degraded K8s Secret.
+if (-not $mount.Installed) { Write-Error "CSI Secret Store mount could not be set up — Authelia requires Vault, there is no local fallback"; exit 1 }
+if (-not $adminCredWritten) { Write-Error "Admin credential could not be written to Vault — Authelia requires Vault, there is no local fallback"; exit 1 }
+if (-not (Sync-AutheliaConfiguration -BaseDir $BaseDir -Platform $Platform)) {
+    Write-Error "Sync-AutheliaConfiguration failed — Authelia requires Vault, there is no local fallback"
+    exit 1
 }
-
-if ($mount.Installed) {
-    if (Sync-AutheliaConfiguration -BaseDir $BaseDir -Platform $Platform) {
-        $mount.SpcYaml | & kubectl apply -f - 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { Write-Error "SecretProviderClass could not be applied — check CSI driver installation"; exit 1 }
-        Write-Host "  ✓ Rendered config written to vault + SecretProviderClass created" -ForegroundColor Green
-    } else {
-        Write-Host "  ⚠ Vault not available — falling back to a generated K8s Secret (no CSI mount)" -ForegroundColor Yellow
-        $mount.Installed = $false
-    }
-}
-
-if (-not $mount.Installed) {
-    # No vault at all — OIDC needs Vault to persist machine-to-machine secrets
-    # (hmac/jwks/per-client secrets), so this fallback covers the basic
-    # forward-auth gateway only, same as before OIDC support existed.
-    $adminHash = Get-HtpasswdHash -Username "admin" -Password $AdminPassword
-    if (-not $adminHash) { Write-Error "Could not generate password hash for the admin user"; exit 1 }
-    $adminHashOnly = ($adminHash -split ":", 2)[1]
-
-    $usersYaml = @"
-users:
-  admin:
-    displayname: "Admin"
-    password: "$adminHashOnly"
-    groups:
-      - "admins"
-"@
-
-    $configYaml = @"
----
-server:
-  address: 'tcp://0.0.0.0:9091'
-
-log:
-  level: info
-
-authentication_backend:
-  file:
-    path: /mnt/secrets/users_database.yml
-    password:
-      algorithm: bcrypt
-
-access_control:
-  default_policy: deny
-  rules:
-    - domain: "*.$clusterDomain"
-      subject: "user:admin"
-      policy: one_factor
-
-session:
-  cookies:
-    - domain: $clusterDomain
-      authelia_url: https://$Hostname
-      default_redirection_url: https://$Hostname/
-      remember_me: 1d
-
-storage:
-  local:
-    path: /config/db.sqlite3
-
-notifier:
-  filesystem:
-    filename: /config/notification.txt
-"@
-}
+$mount.SpcYaml | & kubectl apply -f - 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Error "SecretProviderClass could not be applied — check CSI driver installation"; exit 1 }
+Write-Host "  ✓ Rendered config written to vault + SecretProviderClass created" -ForegroundColor Green
 
 # NOTE: this chart nests resources/extraVolumes/extraVolumeMounts under a
 # top-level "pod:" key (confirmed against the chart's values.yaml — most
@@ -212,29 +151,9 @@ if ($UserConfig.StorageClass) {
     $HelmArgs += "--set", "persistence.storageClass=$($UserConfig.StorageClass)"
 }
 
-if ($mount.Installed) {
-    # New-CsiSecretMount's HelmArgs use bare top-level keys (matches charts
-    # like Grafana) — re-prefix with "pod." for this chart's nesting.
-    $HelmArgs += ($mount.HelmArgs | ForEach-Object { if ($_ -like "--set*") { $_ } else { "pod.$_" } })
-} else {
-    # No vault/CSI available — write the rendered config straight into a K8s
-    # Secret and mount that at the same path instead, so the command/args
-    # override above stays identical either way.
-    $cm1 = Join-Path $env:TEMP "authelia-configuration.yaml"
-    $cm2 = Join-Path $env:TEMP "authelia-users_database.yml"
-    Set-Content -Path $cm1 -Value $configYaml -Encoding UTF8 -NoNewline
-    Set-Content -Path $cm2 -Value $usersYaml -Encoding UTF8 -NoNewline
-    & kubectl create secret generic authelia-config -n $Namespace `
-        --from-file=configuration.yaml=$cm1 --from-file=users_database.yml=$cm2 `
-        --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
-    Remove-Item $cm1, $cm2 -Force -ErrorAction SilentlyContinue
-
-    $HelmArgs += "--set", "pod.extraVolumes[0].name=vault-secrets"
-    $HelmArgs += "--set", "pod.extraVolumes[0].secret.secretName=authelia-config"
-    $HelmArgs += "--set", "pod.extraVolumeMounts[0].name=vault-secrets"
-    $HelmArgs += "--set", "pod.extraVolumeMounts[0].mountPath=/mnt/secrets"
-    $HelmArgs += "--set", "pod.extraVolumeMounts[0].readOnly=true"
-}
+# New-CsiSecretMount's HelmArgs use bare top-level keys (matches charts
+# like Grafana) — re-prefix with "pod." for this chart's nesting.
+$HelmArgs += ($mount.HelmArgs | ForEach-Object { if ($_ -like "--set*") { $_ } else { "pod.$_" } })
 
 # Annotate an existing PVC before upgrade so Helm skips it — PVC spec is
 # immutable after binding and --force would otherwise try to delete/recreate it.
