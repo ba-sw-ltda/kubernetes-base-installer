@@ -115,6 +115,18 @@ if ($Platform -eq "Azure AKS" -or $Platform -eq "Google GKE") {
     } else {
         Write-Warning "  ⚠ Could not resolve external IP — update hosts file manually"
     }
+} elseif ($Platform -eq "Magalu Cloud") {
+    # Magalu's managed LoadBalancer exposes a raw IP on the Service status
+    # (like AKS/GKE, not a hostname like EKS's ELB) — same polling shape as
+    # Get-AksIngressIp despite the name.
+    Write-Host "`n  Waiting for LoadBalancer external IP..." -ForegroundColor Cyan
+    $externalIp = Get-AksIngressIp -Namespace $Namespace
+    if ($externalIp) {
+        Set-Content -Path $ipStateFile -Value $externalIp -Encoding UTF8
+        Write-Host "  ✓ External IP: $externalIp" -ForegroundColor Green
+    } else {
+        Write-Warning "  ⚠ Could not resolve external IP — update hosts file manually"
+    }
 }
 
 if ($verbose) {
