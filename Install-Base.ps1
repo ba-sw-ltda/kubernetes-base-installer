@@ -287,7 +287,7 @@ function Start-Installation {
         # ── 1. Azure Login ──────────────────────────────────────────
         Clear-Host
         Write-Context -Title "Step 2: Initializing Cluster Environment — $platform" -Current ([ordered]@{})
-        $exitCode = Invoke-WithSpinner -Message "Prüfe Azure Login..." -Executable "az" `
+        $exitCode = Invoke-WithSpinner -Message "Checking Azure login..." -Executable "az" `
             -Arguments @("account", "show")
         if ($exitCode -ne 0) {
             do {
@@ -319,8 +319,8 @@ function Start-Installation {
 
         $selectedCluster = Read-SelectValue `
             -Title "Select AKS cluster" `
-            -Message "Bestehenden Cluster verwenden oder neuen erstellen" `
-            -Options @(@{ Label = "[ Neuen AKS-Cluster erstellen ]"; Value = "__new__" }) `
+            -Message "Use an existing cluster or create a new one" `
+            -Options @(@{ Label = "[ Create new AKS cluster ]"; Value = "__new__" }) `
             -Default 0 `
             -DefaultValue $preselectedCluster `
             -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
@@ -329,13 +329,13 @@ function Start-Installation {
                 param($path); $env:PATH = $path
                 $raw = & az aks list --query "[].{name:name, rg:resourceGroup, location:location}" --output json 2>$null
                 $clusters = try { $raw | ConvertFrom-Json } catch { @() }
-                $opts = @(@{ Label = "[ Neuen AKS-Cluster erstellen ]"; Value = "__new__" })
+                $opts = @(@{ Label = "[ Create new AKS cluster ]"; Value = "__new__" })
                 foreach ($c in $clusters) {
                     $opts += @{ Label = "$($c.name)  ($($c.rg) · $($c.location))"; Value = "$($c.name)|$($c.rg)|$($c.location)" }
                 }
                 return $opts
             } `
-            -LoadingMessage "Lade AKS-Cluster..."
+            -LoadingMessage "Loading AKS clusters..."
 
         if (-not $selectedCluster) { Write-Host "Aborted." -ForegroundColor Red; exit 1 }
 
@@ -409,7 +409,7 @@ function Start-Installation {
         # ── 1. AWS Credentials ──────────────────────────────────────
         Clear-Host
         Write-Context -Title "Step 2: Initializing Cluster Environment — $platform" -Current ([ordered]@{})
-        $exitCode = Invoke-WithSpinner -Message "Prüfe AWS Credentials..." -Executable "aws" `
+        $exitCode = Invoke-WithSpinner -Message "Checking AWS credentials..." -Executable "aws" `
             -Arguments @("sts", "get-caller-identity")
         if ($exitCode -ne 0) {
             $defaultKeyId = if ($eksExistingState.AccessKeyId) { $eksExistingState.AccessKeyId } else { "" }
@@ -461,7 +461,7 @@ function Start-Installation {
         if (-not $eksRegion) { Write-Host "  Region is required." -ForegroundColor Red; exit 1 }
         Clear-Host
         Write-Context -Title "Step 2: Initializing Cluster Environment — $platform" -Current ([ordered]@{})
-        Invoke-WithSpinner -Message "Setze Region '$eksRegion'..." -Executable "aws" `
+        Invoke-WithSpinner -Message "Setting region '$eksRegion'..." -Executable "aws" `
             -Arguments @("configure", "set", "default.region", $eksRegion) | Out-Null
 
         # ── 3. Select cluster ───────────────────────────────────────────
@@ -469,8 +469,8 @@ function Start-Installation {
 
         $selectedCluster = Read-SelectValue `
             -Title "Select EKS cluster" `
-            -Message "Bestehenden Cluster verwenden oder neuen erstellen" `
-            -Options @(@{ Label = "[ Neuen EKS-Cluster erstellen ]"; Value = "__new__" }) `
+            -Message "Use an existing cluster or create a new one" `
+            -Options @(@{ Label = "[ Create new EKS cluster ]"; Value = "__new__" }) `
             -Default 0 `
             -DefaultValue $preselectedCluster `
             -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
@@ -479,12 +479,12 @@ function Start-Installation {
                 param($path, $region); $env:PATH = $path
                 $raw = & aws eks list-clusters --region $region --query "clusters" --output json 2>$null
                 $clusters = try { $raw | ConvertFrom-Json } catch { @() }
-                $opts = @(@{ Label = "[ Neuen EKS-Cluster erstellen ]"; Value = "__new__" })
+                $opts = @(@{ Label = "[ Create new EKS cluster ]"; Value = "__new__" })
                 foreach ($c in $clusters) { $opts += @{ Label = $c; Value = $c } }
                 return $opts
             } `
             -LoaderArgs @($eksRegion) `
-            -LoadingMessage "Lade EKS-Cluster..."
+            -LoadingMessage "Loading EKS clusters..."
 
         if (-not $selectedCluster) { Write-Host "Aborted." -ForegroundColor Red; exit 1 }
 
@@ -504,14 +504,14 @@ function Start-Installation {
 
             $eksNodeType = Read-SelectValue `
                 -Title "Instance Type" `
-                -Message "Wähle einen Instance-Typ — bei Capacity-Problemen t3a oder m5 probieren" `
+                -Message "Choose an instance type — try t3a or m5 if you hit capacity issues" `
                 -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
                 -Options @(
                     @{ Label = "t3.medium   (2 vCPU / 4 GB  — Standard)";            Value = "t3.medium" }
-                    @{ Label = "t3a.medium  (2 vCPU / 4 GB  — AMD, oft verfügbar)";  Value = "t3a.medium" }
+                    @{ Label = "t3a.medium  (2 vCPU / 4 GB  — AMD, often available)";  Value = "t3a.medium" }
                     @{ Label = "t3.large    (2 vCPU / 8 GB)";                         Value = "t3.large" }
                     @{ Label = "t3a.large   (2 vCPU / 8 GB  — AMD)";                 Value = "t3a.large" }
-                    @{ Label = "m5.large    (2 vCPU / 8 GB  — breite Verfügbarkeit)"; Value = "m5.large" }
+                    @{ Label = "m5.large    (2 vCPU / 8 GB  — wide availability)"; Value = "m5.large" }
                     @{ Label = "m5a.large   (2 vCPU / 8 GB  — AMD)";                 Value = "m5a.large" }
                     @{ Label = "t3.micro    (2 vCPU / 1 GB  — Free Tier, nur zum Testen)"; Value = "t3.micro" }
                     @{ Label = "t2.micro    (1 vCPU / 1 GB  — Free Tier, nur zum Testen)"; Value = "t2.micro" }
@@ -543,13 +543,13 @@ function Start-Installation {
         Clear-Host
         Write-Context -Title "Step 2: Initializing Cluster Environment — $platform" -Current ([ordered]@{})
         $accountRef = [ref]$null
-        Invoke-WithSpinner -Message "Prüfe Google Login..." -Executable "gcloud" `
+        Invoke-WithSpinner -Message "Checking Google login..." -Executable "gcloud" `
             -Arguments @("config", "get-value", "account") -OutputVariable $accountRef | Out-Null
         $gcloudAccount = ($accountRef.Value -join "").Trim()
         $notLoggedIn = [string]::IsNullOrWhiteSpace($gcloudAccount) -or $gcloudAccount -eq "(unset)"
         if ($notLoggedIn) {
             do {
-                Write-Host "`n  Google login erforderlich..." -ForegroundColor Cyan
+                Write-Host "`n  Google login required..." -ForegroundColor Cyan
                 & gcloud auth login --no-launch-browser
             } while ($LASTEXITCODE -ne 0 -and (Confirm-RetryOrExit -Reason "Google login failed"))
         }
@@ -565,7 +565,7 @@ function Start-Installation {
         if ([string]::IsNullOrWhiteSpace($gkeProjectId)) { Write-Host "  Project ID is required." -ForegroundColor Red; exit 1 }
         Clear-Host
         Write-Context -Title "Step 2: Initializing Cluster Environment — $platform" -Current ([ordered]@{})
-        Invoke-WithSpinner -Message "Setze Projekt '$gkeProjectId'..." -Executable "gcloud" `
+        Invoke-WithSpinner -Message "Setting project '$gkeProjectId'..." -Executable "gcloud" `
             -Arguments @("config", "set", "project", $gkeProjectId) | Out-Null
 
         # ── 3. Select cluster ───────────────────────────────────────────
@@ -575,8 +575,8 @@ function Start-Installation {
 
         $selectedCluster = Read-SelectValue `
             -Title "Select GKE cluster" `
-            -Message "Bestehenden Cluster verwenden oder neuen erstellen" `
-            -Options @(@{ Label = "[ Neuen GKE-Cluster erstellen ]"; Value = "__new__" }) `
+            -Message "Use an existing cluster or create a new one" `
+            -Options @(@{ Label = "[ Create new GKE cluster ]"; Value = "__new__" }) `
             -Default 0 `
             -DefaultValue $preselectedCluster `
             -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
@@ -586,14 +586,14 @@ function Start-Installation {
                 $raw = & gcloud container clusters list --project $projectId `
                     --format "json(name,zone,status)" 2>$null
                 $clusters = try { $raw | ConvertFrom-Json } catch { @() }
-                $opts = @(@{ Label = "[ Neuen GKE-Cluster erstellen ]"; Value = "__new__" })
+                $opts = @(@{ Label = "[ Create new GKE cluster ]"; Value = "__new__" })
                 foreach ($c in $clusters) {
                     $opts += @{ Label = "$($c.name)  ($($c.zone))  [$($c.status)]"; Value = "$($c.name)|$($c.zone)" }
                 }
                 return $opts
             } `
             -LoaderArgs @($gkeProjectId) `
-            -LoadingMessage "Lade GKE-Cluster..."
+            -LoadingMessage "Loading GKE clusters..."
 
         if (-not $selectedCluster) { Write-Host "Aborted." -ForegroundColor Red; exit 1 }
 
@@ -655,7 +655,7 @@ function Start-Installation {
         # ── 1. Magalu Cloud Login ────────────────────────────────────
         Clear-Host
         Write-Context -Title "Step 2: Initializing Cluster Environment — $platform" -Current ([ordered]@{})
-        $exitCode = Invoke-WithSpinner -Message "Prüfe Magalu Cloud Login..." -Executable "mgc" `
+        $exitCode = Invoke-WithSpinner -Message "Checking Magalu Cloud login..." -Executable "mgc" `
             -Arguments @("auth", "access-token", "-r")
         if ($exitCode -ne 0) {
             do {
@@ -686,8 +686,8 @@ function Start-Installation {
 
         $selectedCluster = Read-SelectValue `
             -Title "Select Magalu Kubernetes cluster" `
-            -Message "Bestehenden Cluster verwenden oder neuen erstellen" `
-            -Options @(@{ Label = "[ Neuen Magalu-Cluster erstellen ]"; Value = "__new__" }) `
+            -Message "Use an existing cluster or create a new one" `
+            -Options @(@{ Label = "[ Create new Magalu cluster ]"; Value = "__new__" }) `
             -Default 0 `
             -DefaultValue $preselectedCluster `
             -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
@@ -706,12 +706,12 @@ function Start-Installation {
                     if ($i -ge 0 -and ($jsonStart -lt 0 -or $i -lt $jsonStart)) { $jsonStart = $i }
                 }
                 $parsed = if ($jsonStart -ge 0) { try { $joined.Substring($jsonStart) | ConvertFrom-Json -ErrorAction Stop } catch { $null } } else { $null }
-                $opts = @(@{ Label = "[ Neuen Magalu-Cluster erstellen ]"; Value = "__new__" })
+                $opts = @(@{ Label = "[ Create new Magalu cluster ]"; Value = "__new__" })
                 foreach ($c in $parsed.results) { $opts += @{ Label = "$($c.name)  [$($c.status)]"; Value = $c.name } }
                 return $opts
             } `
             -LoaderArgs @($mgcRegion) `
-            -LoadingMessage "Lade Magalu-Cluster..."
+            -LoadingMessage "Loading Magalu clusters..."
 
         if (-not $selectedCluster) { Write-Host "Aborted." -ForegroundColor Red; exit 1 }
 
@@ -754,7 +754,7 @@ function Start-Installation {
                     }
                     return $opts
                 } `
-                -LoadingMessage "Lade Kubernetes-Versionen..."
+                -LoadingMessage "Loading Kubernetes versions..."
 
             # ── Node pool flavor ─────────────────────────────────────
             $mgcNodePoolFlavor = Read-SelectValue `
@@ -778,7 +778,7 @@ function Start-Installation {
                     }
                     return $opts
                 } `
-                -LoadingMessage "Lade Node-Pool-Flavors..."
+                -LoadingMessage "Loading node pool flavors..."
             if (-not $mgcNodePoolFlavor) { Write-Host "  Node pool flavor is required." -ForegroundColor Red; exit 1 }
 
             $nodeCountStr = Read-SelectValue `
@@ -936,7 +936,7 @@ function Start-Installation {
     $k8sMinor = [int]($serverVersion -split '\.')[1]
     if ($k8sMajor -lt 1 -or ($k8sMajor -eq 1 -and $k8sMinor -lt 30)) {
         Write-Host "  ✗ Kubernetes $serverVersion detected — OpenBao (mandatory) requires >= 1.30." -ForegroundColor Red
-        Write-Host "  Bitte den Cluster auf 1.30+ upgraden." -ForegroundColor Red
+        Write-Host "  Please upgrade the cluster to 1.30+." -ForegroundColor Red
         Write-Host ""
         Write-Host "Press any key to abort..." -ForegroundColor DarkGray
         while ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null }
