@@ -775,34 +775,44 @@ function Start-Installation {
     }
     Write-Host "  ✓ Kubernetes $serverVersion detected" -ForegroundColor Green
 
-    # Step 2b: RKE2 secrets-at-rest encryption (Finding #8). Only ever
-    # populated when this run's Initialize-ClusterEnvironment call did a
-    # fresh SSH fetch (see $rke2SshServerArg above) — on the common
-    # repeat-run path (existing kubeconfig reused) this is $null and nothing
-    # here runs at all: no warning, no prompt, no state read/write. Rests on
-    # the assumption that encryption, once enabled, is never disabled
-    # out-of-band, so it only needs to be caught whenever a fresh fetch
-    # happens to occur.
-    if ($platform -eq "RKE2 (On-Premise)" -and $clusterInitResult.SecretsEncryptionEnabled -eq $false) {
-        Write-Warning "  ⚠ RKE2 secrets-at-rest encryption is disabled — Kubernetes Secrets are stored in etcd as plaintext."
-        $enableEncryption = Read-YesNo -Title "Enable secrets-at-rest encryption now?" -DefaultYes $true
-        if ($enableEncryption) {
-            $rke2ServerNodes = Get-Rke2ServerNodes
-            Enable-Rke2SecretsEncryption -ServerNodes $rke2ServerNodes `
-                -SshUser $rke2SshUser -SshKeyPath $rke2SshKeyPath -SshPassword $rke2SshPassword | Out-Null
+    # Step 2b/2c: RKE2 compliance checks. Only run when this
+    # run's Initialize-ClusterEnvironment call did a fresh SSH fetch (see
+    # $rke2SshServerArg above) — on the common repeat-run path (existing
+    # kubeconfig reused) no SSH round-trip happens at all, so nothing here
+    # runs: no warning, no prompt, no state read/write. Rests on the
+    # assumption that encryption/audit logging, once enabled, are never
+    # disabled out-of-band, so they only need to be caught whenever a fresh
+    # fetch happens to occur. Deliberately run *after* connectivity and the
+    # version check above, not piggybacked onto the kubeconfig fetch inside
+    # Initialize-Rke2Cluster — so a reachable-but-too-old cluster fails fast
+    # on the version check instead of first spending two more SSH round-trips
+    # on compliance state nobody can act on yet.
+    #
+    # Deliberately just the two status checks here, on this same page as the
+    # connectivity/version checks above — no remediation prompt yet. Enabling
+    # either finding is its own dedicated page below (own Write-Section, own
+    # "press any key"), never sprung on the user mid-check via Read-YesNo's
+    # own Clear-Host, which previously made it look like the installer had
+    # silently jumped past this whole page straight to an unrelated screen.
+    $rke2SecretsStatus = $null
+    $rke2AuditStatus    = $null
+    if ($platform -eq "RKE2 (On-Premise)" -and $rke2SshServerArg) {
+        $rke2SecretsStatus = Test-Rke2SecretsEncryptionStatus -SshServer $rke2SshServerArg `
+            -SshUser $rke2SshUser -SshKeyPath $rke2SshKeyPath -SshPassword $rke2SshPassword `
+            -ContextTitle "Step 2: Initializing Cluster Environment — $platform"
+        if ($rke2SecretsStatus.Enabled) {
+            Write-Host "  ✓ Secrets-at-rest encryption is enabled" -ForegroundColor Green
+        } else {
+            Write-Host "  ⚠ Secrets-at-rest encryption is disabled — Kubernetes Secrets are stored in etcd as plaintext." -ForegroundColor Yellow
         }
-    }
 
-    # Step 2c: RKE2 API audit logging (Finding #9). Same piggyback shape as
-    # Step 2b above — only populated on a fresh SSH fetch, $null (and
-    # skipped entirely) on the common repeat-run path.
-    if ($platform -eq "RKE2 (On-Premise)" -and $clusterInitResult.AuditLoggingEnabled -eq $false) {
-        Write-Warning "  ⚠ RKE2 API audit logging is disabled — no record of who accessed or changed cluster resources."
-        $enableAuditLogging = Read-YesNo -Title "Enable API audit logging now?" -DefaultYes $true
-        if ($enableAuditLogging) {
-            $rke2ServerNodes = Get-Rke2ServerNodes
-            Enable-Rke2AuditLogging -ServerNodes $rke2ServerNodes `
-                -SshUser $rke2SshUser -SshKeyPath $rke2SshKeyPath -SshPassword $rke2SshPassword | Out-Null
+        $rke2AuditStatus = Test-Rke2AuditLoggingStatus -SshServer $rke2SshServerArg `
+            -SshUser $rke2SshUser -SshKeyPath $rke2SshKeyPath -SshPassword $rke2SshPassword `
+            -ContextTitle "Step 2: Initializing Cluster Environment — $platform"
+        if ($rke2AuditStatus.Enabled) {
+            Write-Host "  ✓ API audit logging is enabled" -ForegroundColor Green
+        } else {
+            Write-Host "  ⚠ API audit logging is disabled — no record of who accessed or changed cluster resources." -ForegroundColor Yellow
         }
     }
 
@@ -820,6 +830,52 @@ function Start-Installation {
     Write-Host "Press any key to continue..." -ForegroundColor DarkGray
     while ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null }
     [Console]::ReadKey($true) | Out-Null
+
+    # Step 2b: RKE2 secrets-at-rest encryption remediation — own page, only
+    # shown when the check above found it disabled.
+    if ($rke2SecretsStatus -and -not $rke2SecretsStatus.Enabled) {
+        $step2bTitle = "Step 2b: RKE2 Secrets-at-Rest Encryption"
+        $step2bHint  = "Kubernetes Secrets are currently stored in etcd as plaintext"
+        Write-Section -Title $step2bTitle -Hint $step2bHint -Current $clusterContext
+        Write-Host ""
+        $enableEncryption = Read-YesNo -Title "Enable secrets-at-rest encryption now?" -DefaultYes $true `
+            -ContextTitle $step2bTitle -ContextHint $step2bHint -ContextCurrent $clusterContext
+        if ($enableEncryption) {
+            $rke2ServerNodes = Get-Rke2ServerNodes
+            $rke2SecretsStatus = Enable-Rke2SecretsEncryption -ServerNodes $rke2ServerNodes `
+                -SshUser $rke2SshUser -SshKeyPath $rke2SshKeyPath -SshPassword $rke2SshPassword `
+                -ContextTitle $step2bTitle
+        } else {
+            Write-Host "  ⚠ Skipped — secrets-at-rest encryption remains disabled" -ForegroundColor Yellow
+        }
+        Write-Host ""
+        Write-Host "Press any key to continue..." -ForegroundColor DarkGray
+        while ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null }
+        [Console]::ReadKey($true) | Out-Null
+    }
+
+    # Step 2c: RKE2 API audit logging remediation — own page, only shown
+    # when the check above found it disabled.
+    if ($rke2AuditStatus -and -not $rke2AuditStatus.Enabled) {
+        $step2cTitle = "Step 2c: RKE2 API Audit Logging"
+        $step2cHint  = "No record currently kept of who accessed or changed cluster resources"
+        Write-Section -Title $step2cTitle -Hint $step2cHint -Current $clusterContext
+        Write-Host ""
+        $enableAuditLogging = Read-YesNo -Title "Enable API audit logging now?" -DefaultYes $true `
+            -ContextTitle $step2cTitle -ContextHint $step2cHint -ContextCurrent $clusterContext
+        if ($enableAuditLogging) {
+            $rke2ServerNodes = Get-Rke2ServerNodes
+            $rke2AuditStatus = Enable-Rke2AuditLogging -ServerNodes $rke2ServerNodes `
+                -SshUser $rke2SshUser -SshKeyPath $rke2SshKeyPath -SshPassword $rke2SshPassword `
+                -ContextTitle $step2cTitle
+        } else {
+            Write-Host "  ⚠ Skipped — API audit logging remains disabled" -ForegroundColor Yellow
+        }
+        Write-Host ""
+        Write-Host "Press any key to continue..." -ForegroundColor DarkGray
+        while ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null }
+        [Console]::ReadKey($true) | Out-Null
+    }
 
     # Build component options based on platform
     # Numbering follows actual install order ($installOrder below), not the

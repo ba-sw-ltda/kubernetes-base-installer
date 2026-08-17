@@ -123,4 +123,4 @@ function Get-PreinstalledGroups {
     return ,$installed
 }
 
-Export-ModuleMember -Function Test-CommandExists, Install-Kubectl, Install-Helm, Install-RancherCli, Install-PlatformTools, Initialize-Rke2Cluster, Initialize-ClusterEnvironment, Update-HostsFile, Get-AksIngressIp, Get-EksIngressIp, Confirm-KubectlContext, Reset-StuckHelmRelease, Get-IngressClass, Set-RancherProjectAssignment, Get-PreinstalledGroups, Get-PortalIconDataUri
+Export-ModuleMember -Function Test-CommandExists, Install-Kubectl, Install-Helm, Install-RancherCli, Install-PlatformTools, Initialize-Rke2Cluster, Initialize-ClusterEnvironment, Update-HostsFile, Get-AksIngressIp, Get-EksIngressIp, Confirm-KubectlContext, Reset-StuckHelmRelease, Get-IngressClass, Set-RancherProjectAssignment, Get-PreinstalledGroups, Get-PortalIconDataUri, Test-Rke2SecretsEncryptionStatus, Test-Rke2AuditLoggingStatus, Get-Rke2ServerNodes, Enable-Rke2SecretsEncryption, Enable-Rke2AuditLogging
