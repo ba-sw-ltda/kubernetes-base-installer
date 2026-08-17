@@ -233,7 +233,7 @@ $exitCode = Invoke-WithSpinner -Message "Restarting to pick up rendered config..
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout of Authelia did not complete after the post-deploy restart"; exit 1 }
 
-$issuerName = Get-ClusterIssuerName -Platform $Platform
+$issuerName = Get-ClusterIssuerName -Platform $Platform -BaseDir $BaseDir
 $tlsSecretName = "$($Hostname -replace '\.', '-')-tls"
 $issuerAnnotationLine = if ($issuerName) { "    cert-manager.io/cluster-issuer: $issuerName" } else { "" }
 $sslRedirect = if ($issuerName) { "true" } else { "false" }

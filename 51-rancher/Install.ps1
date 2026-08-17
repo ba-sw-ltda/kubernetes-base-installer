@@ -109,7 +109,7 @@ $secretsBackendInstalled = Write-ClusterSecret -Path "rancher" -BaseDir $BaseDir
     bootstrapPassword = $BootstrapPassword
 }
 
-$issuerName = Get-ClusterIssuerName -Platform $Platform
+$issuerName = Get-ClusterIssuerName -Platform $Platform -BaseDir $BaseDir
 
 $HelmArgs = @(
     "upgrade", "--install", "--force", "rancher", "rancher-stable/$ChartName",

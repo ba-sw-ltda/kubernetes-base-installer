@@ -78,7 +78,7 @@ type: Opaque
     }
 }
 
-$issuerName    = Get-ClusterIssuerName -Platform $Platform
+$issuerName    = Get-ClusterIssuerName -Platform $Platform -BaseDir $BaseDir
 $tlsSecretName = if ($Hostname) { "argocd-$($Hostname -replace '\.', '-')-tls" } else { "" }
 $sslRedirect   = if ($issuerName) { "true" } else { "false" }
 $argoScheme    = if ($issuerName) { "https" } else { "http" }

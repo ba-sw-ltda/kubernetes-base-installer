@@ -122,7 +122,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 # ── TLS issuer + OIDC (Authelia) ─────────────────────────────────────────────
-$issuerName    = Get-ClusterIssuerName -Platform $Platform
+$issuerName    = Get-ClusterIssuerName -Platform $Platform -BaseDir $BaseDir
 $tlsSecretName = if ($Hostname) { "$($Hostname -replace '\.', '-')-tls" } else { "" }
 $sslRedirect   = if ($issuerName) { "true" } else { "false" }
 $tlsBlock      = if ($issuerName -and $Hostname) {
