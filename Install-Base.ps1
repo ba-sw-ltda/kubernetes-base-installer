@@ -29,7 +29,7 @@ function Start-Installation {
     Write-Host "          Kubernetes Base Installer                       " -NoNewline -ForegroundColor Cyan
     Write-Host "║" -ForegroundColor Cyan
     Write-Host "  ║" -NoNewline -ForegroundColor Cyan
-    Write-Host "          AKS · EKS · GKE · RKE2 · Kind                   " -NoNewline -ForegroundColor Cyan
+    Write-Host "          AKS · EKS · GKE · RKE2 · Kind · Magalu          " -NoNewline -ForegroundColor Cyan
     Write-Host "║" -ForegroundColor Cyan
     Write-Host "  ╠══════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
     Write-Host "  ║" -NoNewline -ForegroundColor Cyan
@@ -68,6 +68,7 @@ function Start-Installation {
             @{ Label = "Google GKE"; Value = "Google GKE" }
             @{ Label = "RKE2 (On-Premise)"; Value = "RKE2 (On-Premise)" }
             @{ Label = "Kind (Local)"; Value = "Kind (Local)" }
+            @{ Label = "Magalu Cloud"; Value = "Magalu Cloud" }
         ) `
         -Default 0
     
@@ -90,6 +91,22 @@ function Start-Installation {
     Install-PlatformTools -Platform $platform
     Write-Host "`nTools ready." -ForegroundColor Green
     Start-Sleep -Seconds 1
+
+    # Magalu Cloud has no automated cluster-creation path yet — Install-PlatformTools
+    # above already downloaded the mgc CLI, but there is no Initialize-ClusterEnvironment
+    # (or any downstream) case for this platform. Stop here rather than falling through
+    # into AKS/EKS/GKE/RKE2/Kind-specific prompts that don't apply and would eventually
+    # fail against a cluster context that was never created.
+    if ($platform -eq "Magalu Cloud") {
+        Write-Host ""
+        Write-Host "  mgc (Magalu Cloud CLI) is installed and ready." -ForegroundColor Green
+        Write-Host "  Automated cluster creation for Magalu Cloud isn't wired up yet — " -ForegroundColor Yellow
+        Write-Host "  for now, create/connect the cluster manually with mgc, then re-run" -ForegroundColor Yellow
+        Write-Host "  this installer against a platform once that support lands." -ForegroundColor Yellow
+        Write-Host ""
+        exit 0
+    }
+
     Write-Host "Press any key to continue..." -ForegroundColor DarkGray
     while ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null }
     [Console]::ReadKey($true) | Out-Null
