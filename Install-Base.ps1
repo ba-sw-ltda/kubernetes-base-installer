@@ -1514,8 +1514,8 @@ function Start-Installation {
                     }
                 }
 
-                # Cloud platforms: nginx Install.ps1 wrote the external IP to .ingress-ip — update hosts file
-                if ($group -eq "Ingress & Load Balancing" -and $platform -in @("Azure AKS", "AWS EKS", "Google GKE")) {
+                # Cloud platforms: 11-ingress-traefik/Install.ps1 wrote the external IP to .ingress-ip — update hosts file
+                if ($group -eq "Ingress & Load Balancing" -and $platform -in @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")) {
                     $ipStateFile = Join-Path $PSScriptRoot ".ingress-ip"
                     if (Test-Path $ipStateFile) {
                         $externalIp = (Get-Content $ipStateFile -Raw).Trim()
