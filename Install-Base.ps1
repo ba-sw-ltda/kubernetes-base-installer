@@ -513,8 +513,8 @@ function Start-Installation {
                     @{ Label = "t3a.large   (2 vCPU / 8 GB  — AMD)";                 Value = "t3a.large" }
                     @{ Label = "m5.large    (2 vCPU / 8 GB  — wide availability)"; Value = "m5.large" }
                     @{ Label = "m5a.large   (2 vCPU / 8 GB  — AMD)";                 Value = "m5a.large" }
-                    @{ Label = "t3.micro    (2 vCPU / 1 GB  — Free Tier, nur zum Testen)"; Value = "t3.micro" }
-                    @{ Label = "t2.micro    (1 vCPU / 1 GB  — Free Tier, nur zum Testen)"; Value = "t2.micro" }
+                    @{ Label = "t3.micro    (2 vCPU / 1 GB  — Free Tier, testing only)"; Value = "t3.micro" }
+                    @{ Label = "t2.micro    (1 vCPU / 1 GB  — Free Tier, testing only)"; Value = "t2.micro" }
                 ) `
                 -Default 0 `
                 -ContextCurrent ([ordered]@{ Cluster = $eksClusterName; Region = $eksRegion })
@@ -668,7 +668,7 @@ function Start-Installation {
         # ── 2. Region ────────────────────────────────────────────────
         $defaultRegion = if ($mgcExistingState.Region) { $mgcExistingState.Region } else { "br-se1" }
         $mgcRegion = Read-SelectValue `
-            -Title "Select Magalu Cloud Region" `
+            -Title "Select Magalu Region" `
             -Message "Region where the Kubernetes cluster will be deployed" `
             -Options @(
                 @{ Label = "br-se1   (São Paulo)";        Value = "br-se1" }
@@ -685,7 +685,7 @@ function Start-Installation {
         $preselectedCluster = if ($mgcExistingState) { $mgcExistingState.ClusterName } else { "" }
 
         $selectedCluster = Read-SelectValue `
-            -Title "Select Magalu Kubernetes cluster" `
+            -Title "Select Magalu cluster" `
             -Message "Use an existing cluster or create a new one" `
             -Options @(@{ Label = "[ Create new Magalu cluster ]"; Value = "__new__" }) `
             -Default 0 `
