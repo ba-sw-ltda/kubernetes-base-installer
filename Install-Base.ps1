@@ -719,7 +719,28 @@ function Start-Installation {
         -GkeReplaceCluster $gkeReplaceCluster -GkeUseExisting $gkeUseExisting `
         -Rke2KubeconfigPath $rke2KubeconfigPath `
         -Rke2SshServer $rke2SshServerArg -Rke2SshUser $rke2SshUser `
-        -Rke2SshKeyPath $rke2SshKeyPath -Rke2SshPassword $rke2SshPassword
+        -Rke2SshKeyPath $rke2SshKeyPath -Rke2SshPassword $rke2SshPassword `
+        -Rke2ContextTitle "Step 2: Initializing Cluster Environment — $platform"
+
+    # If the SSH connect above needed a retry with re-entered credentials (e.g. a
+    # mistyped password), Initialize-Rke2Cluster returns the corrected values here —
+    # refresh our own copies so the RKE2 compliance checks and remediation calls
+    # further down reuse them instead of silently retrying with the original
+    # wrong ones. .rke2-state.json was already written above with the pre-correction
+    # values (before the connection was even attempted), so it's re-saved too.
+    if ($platform -eq "RKE2 (On-Premise)" -and $clusterInitResult -and $rke2SshServerArg) {
+        $rke2SshServer   = $clusterInitResult.SshServer
+        $rke2SshUser     = $clusterInitResult.SshUser
+        $rke2SshKeyPath  = $clusterInitResult.SshKeyPath
+        $rke2SshPassword = $clusterInitResult.SshPassword
+
+        if (-not $rke2UseExisting) {
+            @{ SshServer = $rke2SshServer; SshUser = $rke2SshUser; SshKeyPath = $rke2SshKeyPath
+               Domain = $rke2Domain; KubeconfigPath = $rke2KubeconfigPath
+               ConnectedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+            } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.rke2-state.json" -Encoding UTF8
+        }
+    }
 
     # Kubernetes version check — components like OpenBao require >= 1.30.
     # Retried up to 3x — a kubeconfig that was just written/re-pointed a few
