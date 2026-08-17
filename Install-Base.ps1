@@ -92,21 +92,6 @@ function Start-Installation {
     Write-Host "`nTools ready." -ForegroundColor Green
     Start-Sleep -Seconds 1
 
-    # Magalu Cloud has no automated cluster-creation path yet — Install-PlatformTools
-    # above already downloaded the mgc CLI, but there is no Initialize-ClusterEnvironment
-    # (or any downstream) case for this platform. Stop here rather than falling through
-    # into AKS/EKS/GKE/RKE2/Kind-specific prompts that don't apply and would eventually
-    # fail against a cluster context that was never created.
-    if ($platform -eq "Magalu Cloud") {
-        Write-Host ""
-        Write-Host "  mgc (Magalu Cloud CLI) is installed and ready." -ForegroundColor Green
-        Write-Host "  Automated cluster creation for Magalu Cloud isn't wired up yet — " -ForegroundColor Yellow
-        Write-Host "  for now, create/connect the cluster manually with mgc, then re-run" -ForegroundColor Yellow
-        Write-Host "  this installer against a platform once that support lands." -ForegroundColor Yellow
-        Write-Host ""
-        exit 0
-    }
-
     Write-Host "Press any key to continue..." -ForegroundColor DarkGray
     while ([Console]::KeyAvailable) { [Console]::ReadKey($true) | Out-Null }
     [Console]::ReadKey($true) | Out-Null
@@ -152,6 +137,16 @@ function Start-Installation {
     $rke2SshUser        = $null
     $rke2SshKeyPath     = $null
     $rke2SshPassword    = $null
+
+    # Magalu Cloud variables
+    $mgcRegion         = $null
+    $mgcClusterName    = $null
+    $mgcVersion        = $null
+    $mgcNodePoolFlavor = $null
+    $mgcNodeCount      = 1
+    $mgcDomain         = $null
+    $mgcReplaceCluster = $false
+    $mgcUseExisting    = $false
 
     if ($platform -eq "RKE2 (On-Premise)") {
         $rke2StateFile = Join-Path $PSScriptRoot ".rke2-state.json"
@@ -653,6 +648,154 @@ function Start-Installation {
         }
     }
 
+    if ($platform -eq "Magalu Cloud") {
+        $mgcStateFile     = Join-Path $PSScriptRoot ".magalu-state.json"
+        $mgcExistingState = if (Test-Path $mgcStateFile) { Get-Content $mgcStateFile | ConvertFrom-Json } else { $null }
+
+        # ── 1. Magalu Cloud Login ────────────────────────────────────
+        Clear-Host
+        Write-Context -Title "Step 2: Initializing Cluster Environment — $platform" -Current ([ordered]@{})
+        $exitCode = Invoke-WithSpinner -Message "Prüfe Magalu Cloud Login..." -Executable "mgc" `
+            -Arguments @("auth", "access-token", "-r")
+        if ($exitCode -ne 0) {
+            do {
+                Write-Host "`n  Magalu Cloud login required — a browser window will open." -ForegroundColor Cyan
+                Write-Host ""
+                & mgc auth login
+            } while ($LASTEXITCODE -ne 0 -and (Confirm-RetryOrExit -Reason "Magalu Cloud login failed"))
+        }
+
+        # ── 2. Region ────────────────────────────────────────────────
+        $defaultRegion = if ($mgcExistingState.Region) { $mgcExistingState.Region } else { "br-se1" }
+        $mgcRegion = Read-SelectValue `
+            -Title "Select Magalu Cloud Region" `
+            -Message "Region where the Kubernetes cluster will be deployed" `
+            -Options @(
+                @{ Label = "br-se1   (São Paulo)";        Value = "br-se1" }
+                @{ Label = "br-ne1   (Fortaleza)";        Value = "br-ne1" }
+                @{ Label = "br-mgl1  (Belo Horizonte)";   Value = "br-mgl1" }
+            ) `
+            -Default 0 `
+            -DefaultValue $defaultRegion `
+            -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+            -ContextCurrent ([ordered]@{})
+        if (-not $mgcRegion) { Write-Host "  Region is required." -ForegroundColor Red; exit 1 }
+
+        # ── 3. Select cluster ───────────────────────────────────────────
+        $preselectedCluster = if ($mgcExistingState) { $mgcExistingState.ClusterName } else { "" }
+
+        $selectedCluster = Read-SelectValue `
+            -Title "Select Magalu Kubernetes cluster" `
+            -Message "Bestehenden Cluster verwenden oder neuen erstellen" `
+            -Options @(@{ Label = "[ Neuen Magalu-Cluster erstellen ]"; Value = "__new__" }) `
+            -Default 0 `
+            -DefaultValue $preselectedCluster `
+            -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+            -ContextCurrent ([ordered]@{ Region = $mgcRegion }) `
+            -Loader {
+                param($path, $region); $env:PATH = $path
+                # mgc still emits ANSI escapes and spinner frames under -o json — same
+                # ANSI-strip / first-brace technique as ConvertFrom-MgcJson in
+                # powershell-cluster-bootstrap, inlined here because Start-Job can't see
+                # functions from imported modules.
+                $raw = & mgc kubernetes cluster list --region $region -o json 2>&1
+                $joined = (($raw -join "`n") -replace "`e\[[0-9;]*m", "")
+                $jsonStart = -1
+                foreach ($ch in @('{', '[')) {
+                    $i = $joined.IndexOf($ch)
+                    if ($i -ge 0 -and ($jsonStart -lt 0 -or $i -lt $jsonStart)) { $jsonStart = $i }
+                }
+                $parsed = if ($jsonStart -ge 0) { try { $joined.Substring($jsonStart) | ConvertFrom-Json -ErrorAction Stop } catch { $null } } else { $null }
+                $opts = @(@{ Label = "[ Neuen Magalu-Cluster erstellen ]"; Value = "__new__" })
+                foreach ($c in $parsed.results) { $opts += @{ Label = "$($c.name)  [$($c.status)]"; Value = $c.name } }
+                return $opts
+            } `
+            -LoaderArgs @($mgcRegion) `
+            -LoadingMessage "Lade Magalu-Cluster..."
+
+        if (-not $selectedCluster) { Write-Host "Aborted." -ForegroundColor Red; exit 1 }
+
+        if ($selectedCluster -ne "__new__") {
+            $mgcUseExisting = $true
+            $mgcClusterName = $selectedCluster
+            $mgcDomain      = "$mgcClusterName.mgc.local"
+        }
+
+        if (-not $mgcUseExisting) {
+            $mgcClusterName = Read-Plain `
+                -Prompt "Magalu cluster name (default: my-magalu-cluster)" `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+                -ContextHint "Lowercase letters, numbers, hyphens — must start with a letter" `
+                -ContextCurrent ([ordered]@{ Region = $mgcRegion })
+            if ([string]::IsNullOrWhiteSpace($mgcClusterName)) { $mgcClusterName = "my-magalu-cluster" }
+
+            # ── K8s version ──────────────────────────────────────────
+            $mgcVersion = Read-SelectValue `
+                -Title "Kubernetes Version" `
+                -Message "Leave on default to use Magalu's current recommended version" `
+                -Options @(@{ Label = "[ Default (latest recommended) ]"; Value = "" }) `
+                -Default 0 `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+                -ContextCurrent ([ordered]@{ Cluster = $mgcClusterName }) `
+                -Loader {
+                    param($path); $env:PATH = $path
+                    $raw = & mgc kubernetes version list -o json 2>&1
+                    $joined = (($raw -join "`n") -replace "`e\[[0-9;]*m", "")
+                    $jsonStart = -1
+                    foreach ($ch in @('{', '[')) {
+                        $i = $joined.IndexOf($ch)
+                        if ($i -ge 0 -and ($jsonStart -lt 0 -or $i -lt $jsonStart)) { $jsonStart = $i }
+                    }
+                    $parsed = if ($jsonStart -ge 0) { try { $joined.Substring($jsonStart) | ConvertFrom-Json -ErrorAction Stop } catch { $null } } else { $null }
+                    $opts = @(@{ Label = "[ Default (latest recommended) ]"; Value = "" })
+                    foreach ($v in $parsed.results) {
+                        if ($v.deprecated) { continue }
+                        $opts += @{ Label = "$($v.version)"; Value = "$($v.version)" }
+                    }
+                    return $opts
+                } `
+                -LoadingMessage "Lade Kubernetes-Versionen..."
+
+            # ── Node pool flavor ─────────────────────────────────────
+            $mgcNodePoolFlavor = Read-SelectValue `
+                -Title "Node Pool Flavor" `
+                -Message "Machine type for the worker nodes" `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+                -ContextCurrent ([ordered]@{ Cluster = $mgcClusterName }) `
+                -Loader {
+                    param($path); $env:PATH = $path
+                    $raw = & mgc kubernetes flavor list -o json 2>&1
+                    $joined = (($raw -join "`n") -replace "`e\[[0-9;]*m", "")
+                    $jsonStart = -1
+                    foreach ($ch in @('{', '[')) {
+                        $i = $joined.IndexOf($ch)
+                        if ($i -ge 0 -and ($jsonStart -lt 0 -or $i -lt $jsonStart)) { $jsonStart = $i }
+                    }
+                    $parsed = if ($jsonStart -ge 0) { try { $joined.Substring($jsonStart) | ConvertFrom-Json -ErrorAction Stop } catch { $null } } else { $null }
+                    $opts = @()
+                    foreach ($f in $parsed.results[0].nodepool) {
+                        $opts += @{ Label = "$($f.name)  ($($f.vcpu) vCPU / $($f.ram) GB RAM)"; Value = $f.name }
+                    }
+                    return $opts
+                } `
+                -LoadingMessage "Lade Node-Pool-Flavors..."
+            if (-not $mgcNodePoolFlavor) { Write-Host "  Node pool flavor is required." -ForegroundColor Red; exit 1 }
+
+            $nodeCountStr = Read-SelectValue `
+                -Title "Number of nodes" `
+                -Options @(
+                    @{ Label = "1 node";  Value = "1" }
+                    @{ Label = "2 nodes"; Value = "2" }
+                    @{ Label = "3 nodes"; Value = "3" }
+                ) `
+                -Default 0 `
+                -ContextTitle "Step 2: Initializing Cluster Environment — $platform" `
+                -ContextCurrent ([ordered]@{ Cluster = $mgcClusterName; Flavor = $mgcNodePoolFlavor })
+            $mgcNodeCount = [int]$nodeCountStr
+            $mgcDomain    = "$mgcClusterName.mgc.local"
+        }
+    }
+
     # Context shown on Step 2's page below — same info the old plain-text
     # summary used to print, just rendered through the shared context panel.
     # Platform is the ContextTitle everywhere it's used, not an entry here.
@@ -661,6 +804,7 @@ function Start-Installation {
     if ($aksDomain)       { $clusterContext["Cluster"] = "$aksClusterName ($aksLocation)"; $clusterContext["Domain"] = "*.$aksDomain" }
     if ($eksDomain)       { $clusterContext["Cluster"] = "$eksClusterName ($eksRegion)"; $clusterContext["Domain"] = "*.$eksDomain" }
     if ($gkeDomain)       { $clusterContext["Cluster"] = "$gkeClusterName ($gkeZone)"; $clusterContext["Domain"] = "*.$gkeDomain" }
+    if ($mgcDomain)       { $clusterContext["Cluster"] = "$mgcClusterName ($mgcRegion)"; $clusterContext["Domain"] = "*.$mgcDomain" }
     if ($platform -eq "RKE2 (On-Premise)") {
         $clusterContext["Kubeconfig"] = $rke2KubeconfigPath
         $clusterContext["Domain"]     = "*.$rke2Domain"
@@ -696,6 +840,11 @@ function Start-Installation {
            CreatedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
         } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.kind-state.json" -Encoding UTF8
     }
+    if ($platform -eq "Magalu Cloud" -and -not $mgcUseExisting) {
+        @{ Region = $mgcRegion; ClusterName = $mgcClusterName; Domain = $mgcDomain
+           CreatedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        } | ConvertTo-Json | Set-Content -Path "$PSScriptRoot/.magalu-state.json" -Encoding UTF8
+    }
 
     # Step 2: Configure Kubectl
     # RKE2 never creates anything here (it's pre-existing on-prem infra) —
@@ -708,6 +857,7 @@ function Start-Installation {
         "AWS EKS"           { $eksUseExisting }
         "Google GKE"        { $gkeUseExisting }
         "Kind (Local)"      { $kindClusterExisted -and -not $kindReplaceCluster }
+        "Magalu Cloud"      { $mgcUseExisting }
         default             { $false }
     }
     $step2Hint   = if ($usingExistingCluster) { "Connects to the cluster and configures kubectl" } else { "Creates the cluster and configures kubectl" }
@@ -734,6 +884,9 @@ function Start-Installation {
         -GkeProjectId $gkeProjectId -GkeZone $gkeZone -GkeClusterName $gkeClusterName `
         -GkeNodeCount $gkeNodeCount -GkeMachineType $gkeMachineType `
         -GkeReplaceCluster $gkeReplaceCluster -GkeUseExisting $gkeUseExisting `
+        -MgcRegion $mgcRegion -MgcClusterName $mgcClusterName -MgcVersion $mgcVersion `
+        -MgcNodePoolFlavor $mgcNodePoolFlavor -MgcNodeCount $mgcNodeCount `
+        -MgcReplaceCluster $mgcReplaceCluster -MgcUseExisting $mgcUseExisting `
         -Rke2KubeconfigPath $rke2KubeconfigPath `
         -Rke2SshServer $rke2SshServerArg -Rke2SshUser $rke2SshUser `
         -Rke2SshKeyPath $rke2SshKeyPath -Rke2SshPassword $rke2SshPassword `
