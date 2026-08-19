@@ -937,6 +937,24 @@ function Start-Installation {
         }
     }
 
+    # Re-save .magalu-state.json now that Initialize-ClusterEnvironment has
+    # returned the cluster's UUID (unknown at the earlier defensive save
+    # above, before the cluster existed). Reset-Magalu.ps1 uses ClusterId
+    # directly instead of resolving it by listing clusters and matching on
+    # name — avoids an extra API round-trip and, more importantly, the
+    # ambiguity/race of name-based lookup (mgc's delete only accepts
+    # --cluster-id, unlike AKS/EKS/GKE which delete by --name).
+    if ($platform -eq "Magalu Cloud" -and $clusterInitResult) {
+        $mgcStateFile  = "$PSScriptRoot/.magalu-state.json"
+        $mgcCreatedAt  = if ($mgcUseExisting -and (Test-Path $mgcStateFile)) {
+            (Get-Content $mgcStateFile | ConvertFrom-Json).CreatedAt
+        } else { Get-Date -Format "yyyy-MM-dd HH:mm:ss" }
+        @{ Region = $mgcRegion; ClusterName = $mgcClusterName; ClusterId = $clusterInitResult
+           Domain = $mgcDomain
+           CreatedAt = $mgcCreatedAt
+        } | ConvertTo-Json | Set-Content -Path $mgcStateFile -Encoding UTF8
+    }
+
     # Kubernetes version check — components like OpenBao require >= 1.30.
     # Retried up to 3x — a kubeconfig that was just written/re-pointed a few
     # lines above can hit a momentary connection blip on the very first call
