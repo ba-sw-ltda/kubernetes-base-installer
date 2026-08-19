@@ -96,6 +96,39 @@ if (-not $clusterId) {
     exit 0
 }
 
+# ── 2b. Capture orphan-risk PV volume IDs before the cluster dies ────────
+# Deleting the whole cluster (including its API server) means the CSI driver
+# (block.csi.magalu.cloud) never gets a chance to react to PVC deletion — the
+# underlying block-storage volumes are simply abandoned and keep billing
+# forever unless deleted explicitly. So: read every PV's volumeHandle now,
+# while the API server (and thus kubectl) is still alive, and delete those
+# volumes ourselves after the cluster is confirmed gone. Best-effort — if
+# kubectl can't reach the cluster (already half-dead, credentials stale,
+# etc.) this just warns and skips, rather than aborting the whole teardown;
+# the volumes will still show up in `mgc block-storage volumes list` for
+# manual cleanup.
+$orphanVolumeIds = @()
+try {
+    Set-ClusterContext -BaseDir $BaseDir -Platform "Magalu Cloud"
+    $pvOutput = Invoke-ScriptBlockWithSpinner -Message "Checking for PersistentVolumes to clean up..." -ScriptBlock {
+        param($path, $kubeconfig)
+        $env:PATH = $path
+        if ($kubeconfig) { $env:KUBECONFIG = $kubeconfig }
+        & kubectl get pv -o json 2>$null
+    } -ArgumentList @($env:PATH, $env:KUBECONFIG)
+    $pvJson = ($pvOutput | Select-Object -SkipLast 1) -join "`n"
+    $pvs    = try { $pvJson | ConvertFrom-Json -ErrorAction Stop } catch { $null }
+    $orphanVolumeIds = @($pvs.items |
+        Where-Object { $_.spec.csi.driver -eq "block.csi.magalu.cloud" } |
+        ForEach-Object { $_.spec.csi.volumeHandle } |
+        Where-Object { $_ })
+    if ($orphanVolumeIds.Count -gt 0) {
+        Write-Host "  Found $($orphanVolumeIds.Count) block-storage volume(s) backing this cluster's PVCs — will delete after cluster teardown." -ForegroundColor Gray
+    }
+} catch {
+    Write-Warning "  ⚠ Could not read PersistentVolumes before teardown ($_) — check 'mgc block-storage volumes list --region $($state.Region)' manually afterwards for orphaned volumes."
+}
+
 # ── 3. Delete cluster ────────────────────────────────────────────
 # `mgc kubernetes cluster delete` returns as soon as the API *accepts* the
 # request, not when the cluster is actually gone — Magalu tears it down
@@ -113,6 +146,23 @@ if (Wait-MagaluClusterDeleted -Region $state.Region -ClusterName $state.ClusterN
     Write-Host "  ✓ Magalu cluster deleted" -ForegroundColor Green
 } else {
     Write-Warning "  ⚠ Cluster '$($state.ClusterName)' still shows up in 'cluster list' after the wait timeout — it may still be tearing down in the background. Check the Magalu console."
+}
+
+# ── 3b. Delete orphaned block-storage volumes ─────────────────────
+# Tolerate individual failures (a volume may already be gone, still
+# mid-detach, etc.) — report and move on rather than aborting, since the
+# cluster itself is already gone at this point.
+if ($orphanVolumeIds.Count -gt 0) {
+    Write-Host ""
+    foreach ($volId in $orphanVolumeIds) {
+        $exitCode = Invoke-WithSpinner -Message "Deleting orphaned volume $volId..." -Executable "mgc" `
+            -Arguments @("block-storage", "volumes", "delete", "--id", $volId, "--region", $state.Region, "--no-confirm")
+        if ($exitCode -eq 0) {
+            Write-Host "  ✓ Volume $volId deleted" -ForegroundColor Green
+        } else {
+            Write-Warning "  ⚠ Could not delete volume $volId — check 'mgc block-storage volumes list --region $($state.Region)' manually."
+        }
+    }
 }
 
 # ── 4. Remove state file ─────────────────────────────────────────
