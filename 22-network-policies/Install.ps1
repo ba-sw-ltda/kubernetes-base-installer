@@ -127,6 +127,22 @@ if ($LASTEXITCODE -eq 0) {
 # is trusted, platform-managed infrastructure, not a general app namespace, so
 # an unscoped outbound-443 allowance here doesn't undermine the opt-in
 # label-contract pattern used everywhere else.
+#
+# Same CSI drivers also need the instance metadata service on startup — e.g.
+# Magalu's mgc-csi-node/mgc-csi-controller call
+# http://169.254.169.254/openstack/latest/meta_data.json (port 80, not 443)
+# to resolve their own region before they can serve any volume request. That
+# port-80 call gets silently dropped by the same default-deny-all, which
+# crash-loops both pods (liveness probe never comes up) and, transitively,
+# hangs every PVC-mounting pod's pending-mount forever — including CSI mounts
+# that have nothing to do with block storage themselves, since kubelet still
+# has to wait for *all* volumes on the pod spec to mount. Confirmed live
+# 2026-08-19: metadata endpoint answered instantly from an unprotected
+# namespace, timed out identically from kube-system. Unlike the 443 rule
+# above, this is scoped to the metadata service's own well-known link-local
+# IP rather than 0.0.0.0/0 — no legitimate reason for kube-system pods to
+# reach arbitrary hosts on port 80, and that address is a classic SSRF
+# target, so there's no reason to open it wider than the one IP that needs it.
 $httpsEgressYaml = @"
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -143,6 +159,12 @@ spec:
     ports:
     - protocol: TCP
       port: 443
+  - to:
+    - ipBlock:
+        cidr: 169.254.169.254/32
+    ports:
+    - protocol: TCP
+      port: 80
 "@
 $httpsEgressYaml | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) {
