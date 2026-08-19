@@ -69,16 +69,23 @@ function Get-PreinstalledGroups {
         }
         # Cloud-native Vault (Azure Key Vault / AWS Secrets Manager / GCP
         # Secret Manager) isn't a Helm release — no reliable single check, so
-        # Security & Certificates only ever unlocks on RKE2/Kind (OpenBao).
+        # Security & Certificates only unlocks on platforms that actually run
+        # OpenBao (RKE2/Kind, and Magalu Cloud — Magalu has no native vault
+        # equivalent of its own, so it uses OpenBao same as on-prem/Kind).
+        # $onPremOrKind is reused across the other checks above for the
+        # MetalLB/proxy-config gate, which is a different question (does this
+        # platform lack a native LoadBalancer/proxy) — Magalu has its own
+        # managed LB, so it must NOT be folded into $onPremOrKind itself.
         "Security & Certificates" = {
-            param($path, $kubeconfig, $onPremOrKind)
+            param($path, $kubeconfig, $onPremOrKind, $platform)
             $env:PATH = $path
             if ($kubeconfig) { $env:KUBECONFIG = $kubeconfig }
             function Test-ReleasePresent($Name, $Namespace) {
                 & helm status $Name --namespace $Namespace 2>&1 | Out-Null
                 return $LASTEXITCODE -eq 0
             }
-            $vaultOk = $onPremOrKind -and (Test-ReleasePresent "openbao" "openbao")
+            $usesOpenBao = $onPremOrKind -or $platform -eq "Magalu Cloud"
+            $vaultOk = $usesOpenBao -and (Test-ReleasePresent "openbao" "openbao")
             $found = $vaultOk -and (Test-ReleasePresent "cert-manager" "cert-manager") -and
                 (Test-ReleasePresent "secrets-store-csi-driver" "kube-system") -and
                 (Test-ReleasePresent "authelia" "authelia")
@@ -113,7 +120,7 @@ function Get-PreinstalledGroups {
         if ($groupName -eq "Storage (Longhorn)" -and $Platform -ne "RKE2 (On-Premise)") { continue }
 
         $result = Invoke-ScriptBlockWithSpinner -Message "Checking $groupName..." `
-            -ScriptBlock $groupChecks[$groupName] -ArgumentList @($env:PATH, $env:KUBECONFIG, $onPremOrKind) |
+            -ScriptBlock $groupChecks[$groupName] -ArgumentList @($env:PATH, $env:KUBECONFIG, $onPremOrKind, $Platform) |
             Select-Object -Last 1
         $found = $result.Found
         if ($found) { [void]$installed.Add($groupName) }
