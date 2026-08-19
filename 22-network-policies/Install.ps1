@@ -91,6 +91,18 @@ $podSelectorYaml
   ingress:
   - from:
     - namespaceSelector: {}
+    # node-local-dns runs with hostNetwork: true, forwarding queries to
+    # CoreDNS from the node's own network namespace rather than a pod IP.
+    # NetworkPolicy peer matching (namespaceSelector/podSelector above)
+    # never covers hostNetwork traffic — standard Kubernetes/CNI behavior,
+    # not platform-specific — so without this, default-deny-all silently
+    # blocks node-local-dns's own upstream queries to CoreDNS, causing DNS
+    # timeouts cluster-wide. Confirmed and reproduced by Magalu support
+    # (ticket re: [[project_magalu_dns_resolver_issue]], 2026-08-19); their
+    # own fix used the same unscoped 0.0.0.0/0 ipBlock, so matching that
+    # here rather than trying to guess/scope to the node CIDR.
+    - ipBlock:
+        cidr: 0.0.0.0/0
     ports:
     - protocol: UDP
       port: 53
