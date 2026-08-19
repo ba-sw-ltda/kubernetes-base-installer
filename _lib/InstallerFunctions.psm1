@@ -96,8 +96,14 @@ function Get-PreinstalledGroups {
                 & kubectl get namespace $Name 2>&1 | Out-Null
                 return $LASTEXITCODE -eq 0
             }
+            # Registry (43-proget-registry) is optional — Prompt.ps1 defaults
+            # to "no" and Install.ps1 never creates the "registry" namespace
+            # when declined. Checking for it here made this group permanently
+            # report "not installed" for anyone who legitimately skipped it,
+            # even with reflector genuinely deployed. Only the two mandatory
+            # members (reflector, and proxy-config on RKE2/Kind) count.
             $proxyConfigOk = -not $onPremOrKind -or (Test-NamespacePresent "proxy-config")
-            $found = (Test-ReleasePresent "reflector" "kube-system") -and (Test-NamespacePresent "registry") -and $proxyConfigOk
+            $found = (Test-ReleasePresent "reflector" "kube-system") -and $proxyConfigOk
             [PSCustomObject]@{ Found = $found }
         }
     }
