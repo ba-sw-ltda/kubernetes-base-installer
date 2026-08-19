@@ -22,6 +22,25 @@ if (-not (Test-Path $stateFile)) {
 $state = Get-Content $stateFile | ConvertFrom-Json
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
 
+# Removes .magalu-state.json only if it still describes the cluster this
+# script tore down. Guards against a race with a concurrent Install-Base.ps1
+# run: both scripts read/write the same fixed-path state file with no
+# cluster-identity check, so if a new cluster was created (and its state
+# written) while this teardown was in flight, an unconditional Remove-Item
+# here would wipe out live state for a cluster that's still running — this
+# actually happened (2026-08-17). Only delete the file if nothing else has
+# claimed it since.
+function Remove-StateFileIfUnchanged {
+    param([string]$StateFile, [string]$ExpectedClusterName)
+    $current = if (Test-Path $StateFile) { try { Get-Content $StateFile -Raw | ConvertFrom-Json -ErrorAction Stop } catch { $null } } else { $null }
+    if (-not $current -or $current.ClusterName -eq $ExpectedClusterName) {
+        Remove-Item $StateFile -Force -ErrorAction SilentlyContinue
+        Write-Host "  ✓ State file removed" -ForegroundColor Green
+    } else {
+        Write-Host "  ⚠ State file now describes a different cluster ('$($current.ClusterName)') — left untouched (a new cluster was likely created while this teardown was running)." -ForegroundColor Yellow
+    }
+}
+
 Write-Host "`n========================================" -ForegroundColor Yellow
 Write-Host "  Magalu Cloud Teardown" -ForegroundColor Yellow
 Write-Host "========================================`n" -ForegroundColor Yellow
@@ -64,8 +83,7 @@ $cluster = $parsed.results | Where-Object { $_.name -eq $state.ClusterName } | S
 
 if (-not $cluster) {
     Write-Host "  Cluster '$($state.ClusterName)' not found in region '$($state.Region)' — already deleted?" -ForegroundColor Yellow
-    Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
-    Write-Host "  ✓ State file removed" -ForegroundColor Green
+    Remove-StateFileIfUnchanged -StateFile $stateFile -ExpectedClusterName $state.ClusterName
     exit 0
 }
 
@@ -89,9 +107,8 @@ if (Wait-MagaluClusterDeleted -Region $state.Region -ClusterName $state.ClusterN
 }
 
 # ── 4. Remove state file ─────────────────────────────────────────
-Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
 Write-Host ""
-Write-Host "  ✓ State file removed" -ForegroundColor Green
+Remove-StateFileIfUnchanged -StateFile $stateFile -ExpectedClusterName $state.ClusterName
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Yellow
 Write-Host "  Magalu Cloud Teardown Complete" -ForegroundColor Yellow
