@@ -98,32 +98,30 @@ Write-Host "  ✓ Rollout complete" -ForegroundColor Green
 $ipStateFile = Join-Path $BaseDir ".ingress-ip"
 Remove-Item $ipStateFile -Force -ErrorAction SilentlyContinue
 if ($Platform -eq "Azure AKS" -or $Platform -eq "Google GKE") {
-    Write-Host "`n  Waiting for LoadBalancer external IP..." -ForegroundColor Cyan
+    # Get-AksIngressIp already prints its own "Waiting for ingress LoadBalancer
+    # IP..." spinner (with live elapsed time) and its own "✓ External IP: ..."
+    # line on success — don't duplicate either message here.
     $externalIp = Get-AksIngressIp -Namespace $Namespace
     if ($externalIp) {
         Set-Content -Path $ipStateFile -Value $externalIp -Encoding UTF8
-        Write-Host "  ✓ External IP: $externalIp" -ForegroundColor Green
     } else {
         Write-Warning "  ⚠ Could not resolve external IP — update hosts file manually"
     }
 } elseif ($Platform -eq "AWS EKS") {
-    Write-Host "`n  Waiting for LoadBalancer external IP..." -ForegroundColor Cyan
+    # Get-EksIngressIp likewise prints its own waiting/success messages.
     $externalIp = Get-EksIngressIp -Namespace $Namespace
     if ($externalIp) {
         Set-Content -Path $ipStateFile -Value $externalIp -Encoding UTF8
-        Write-Host "  ✓ External IP: $externalIp" -ForegroundColor Green
     } else {
         Write-Warning "  ⚠ Could not resolve external IP — update hosts file manually"
     }
 } elseif ($Platform -eq "Magalu Cloud") {
     # Magalu's managed LoadBalancer exposes a raw IP on the Service status
     # (like AKS/GKE, not a hostname like EKS's ELB) — same polling shape as
-    # Get-AksIngressIp despite the name.
-    Write-Host "`n  Waiting for LoadBalancer external IP..." -ForegroundColor Cyan
+    # Get-AksIngressIp despite the name. Same duplicate-message caveat as above.
     $externalIp = Get-AksIngressIp -Namespace $Namespace
     if ($externalIp) {
         Set-Content -Path $ipStateFile -Value $externalIp -Encoding UTF8
-        Write-Host "  ✓ External IP: $externalIp" -ForegroundColor Green
     } else {
         Write-Warning "  ⚠ Could not resolve external IP — update hosts file manually"
     }
