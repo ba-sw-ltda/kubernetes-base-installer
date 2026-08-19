@@ -37,6 +37,48 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 # it's the one place the opt-in label-contract pattern doesn't apply. This is
 # a one-off unique to kube-system/CoreDNS, so it's not part of the generic
 # Install-NetworkPolicyBaseline helper.
+#
+# The podSelector below has to match CoreDNS's own pods, and the label used
+# for that isn't uniform across platforms: RKE2's rke2-coredns chart (and
+# AKS/EKS/GKE's built-in addons) label pods "k8s-app: kube-dns" for legacy
+# kube-dns compatibility, but Magalu Cloud's managed-Kubernetes CoreDNS
+# chart uses "k8s-app: coredns" instead. Hardcoding either one silently
+# matches zero pods on whatever platform doesn't use it — the policy still
+# applies (so it looks fine), it just protects nothing, leaving CoreDNS
+# reachable only from within kube-system itself (default-deny-all +
+# allow-intra-namespace) and unreachable from every other namespace.
+# Instead of guessing, read the real selector straight off whichever
+# Service actually fronts DNS in this namespace — every platform we
+# support publishes it under one of the two conventional names
+# ("kube-dns" or "coredns"), so its .spec.selector is always the ground
+# truth for whatever labels that platform's CoreDNS pods actually carry.
+$dnsSvcJson = & kubectl get svc -n $Namespace -o json 2>$null
+$dnsPodSelector = $null
+if ($LASTEXITCODE -eq 0 -and $dnsSvcJson) {
+    $dnsSvc = ($dnsSvcJson | ConvertFrom-Json).items |
+        Where-Object { $_.metadata.name -in @('kube-dns', 'coredns') } |
+        Select-Object -First 1
+    if ($dnsSvc -and $dnsSvc.spec.selector) {
+        $dnsPodSelector = $dnsSvc.spec.selector
+    }
+}
+
+if ($dnsPodSelector) {
+    $matchLabelsYaml = ($dnsPodSelector.PSObject.Properties | ForEach-Object {
+        "      $($_.Name): $($_.Value)"
+    }) -join "`n"
+    $podSelectorYaml = "  podSelector:`n    matchLabels:`n$matchLabelsYaml"
+} else {
+    Write-Warning "Could not discover the DNS Service's selector in '$Namespace' (no 'kube-dns' or 'coredns' Service found) — falling back to known label conventions."
+    $podSelectorYaml = @"
+  podSelector:
+    matchExpressions:
+    - key: k8s-app
+      operator: In
+      values: ["kube-dns", "coredns"]
+"@
+}
+
 $dnsIngressYaml = @"
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -44,9 +86,7 @@ metadata:
   name: allow-dns-ingress-from-anywhere
   namespace: $Namespace
 spec:
-  podSelector:
-    matchLabels:
-      k8s-app: kube-dns
+$podSelectorYaml
   policyTypes: ["Ingress"]
   ingress:
   - from:
