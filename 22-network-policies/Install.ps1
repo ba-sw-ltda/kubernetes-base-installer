@@ -105,6 +105,41 @@ if ($LASTEXITCODE -eq 0) {
     exit 1
 }
 
+# On managed-cloud platforms, kube-system also hosts the cloud provider's own
+# infra pods (CSI controllers, cloud-controller-manager, ...) that phone home
+# to that provider's HTTPS management API — e.g. Magalu's block-storage CSI
+# (block.csi.magalu.cloud) calls https://api.magalu.cloud to list/create
+# volumes. The generic Install-NetworkPolicyBaseline default-deny-all above
+# has no rule for that, so every such call times out and PVC provisioning
+# never completes. Same reasoning as the DNS external-egress rule: kube-system
+# is trusted, platform-managed infrastructure, not a general app namespace, so
+# an unscoped outbound-443 allowance here doesn't undermine the opt-in
+# label-contract pattern used everywhere else.
+$httpsEgressYaml = @"
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cloud-api-egress
+  namespace: $Namespace
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: TCP
+      port: 443
+"@
+$httpsEgressYaml | & kubectl apply -f - 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "  ✓ Cloud-provider API egress rule applied" -ForegroundColor Green
+} else {
+    Write-Error "Failed to apply cloud-provider API egress rule in '$Namespace'"
+    exit 1
+}
+
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "  Installation Complete" -ForegroundColor Cyan
 Write-Host "========================================`n" -ForegroundColor Cyan
