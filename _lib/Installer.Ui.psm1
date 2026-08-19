@@ -641,6 +641,7 @@ $__exportFunctions = @(
   'Install-NetworkPolicyBaseline'
   'Set-NetworkPolicyProviderIngress'
   'Set-NetworkPolicyConsumerEgress'
+  'Wait-MagaluClusterDeleted'
 )
 
 Export-ModuleMember -Function $__exportFunctions
