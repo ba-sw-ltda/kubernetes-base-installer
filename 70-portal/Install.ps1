@@ -326,7 +326,7 @@ if ($exitCode -ne 0) { Write-Error "Homer rollout did not complete — check clu
 Write-Host "  ✓ Homer ready" -ForegroundColor Green
 
 # ── 7. Ingress ────────────────────────────────────────────────────────────────
-$protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform
+$protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform -BaseDir $BaseDir
 $authAnnotations = ($protect.Annotations.GetEnumerator() | ForEach-Object { "    $($_.Key): `"$($_.Value)`"" }) -join "`n"
 
 $ingressYaml = @"

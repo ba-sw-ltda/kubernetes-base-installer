@@ -587,7 +587,7 @@ if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Auto-unsealer deployed" -Foreground
 # humans use this public hostname — internal consumers (cert-manager, etc.)
 # reach OpenBao via openbao.openbao.svc.cluster.local instead.
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
-    $protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform
+    $protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform -BaseDir $BaseDir
     $authAnnotations = ($protect.Annotations.GetEnumerator() | ForEach-Object { "    $($_.Key): `"$($_.Value)`"" }) -join "`n"
 
     $ingressYaml = @"

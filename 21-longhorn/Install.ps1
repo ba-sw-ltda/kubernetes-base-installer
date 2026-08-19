@@ -155,7 +155,7 @@ if ($lpExists) {
 
 # Ingress for Longhorn UI
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
-    $protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform
+    $protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform -BaseDir $BaseDir
     $authAnnotations = ($protect.Annotations.GetEnumerator() | ForEach-Object { "    $($_.Key): `"$($_.Value)`"" }) -join "`n"
 
     $ingressYaml = @"
