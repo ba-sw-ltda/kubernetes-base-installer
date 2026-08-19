@@ -66,11 +66,14 @@ if ($exitCode -ne 0) {
 
 # ── 2. Resolve cluster UUID ──────────────────────────────────────
 # `mgc kubernetes cluster delete` only accepts --cluster-id (a UUID), not the
-# cluster name, so the name from the state file has to be resolved via
-# `cluster list` first. Same ANSI-strip / first-brace JSON technique as the
-# Install-Base.ps1 Magalu Loaders and Get-MagaluClusterId in
-# powershell-cluster-bootstrap (mgc still emits ANSI escapes and spinner
-# frames under -o json).
+# cluster name. Newer state files capture ClusterId directly at creation
+# time (Install-Base.ps1) — use it straight away, no lookup or name-matching
+# needed. Older state files (written before this field existed) fall back to
+# resolving it by listing clusters and matching on name, same ANSI-strip /
+# first-brace JSON technique as the Install-Base.ps1 Magalu Loaders and
+# Get-MagaluClusterId in powershell-cluster-bootstrap (mgc still emits ANSI
+# escapes and spinner frames under -o json). Either way, `cluster list` is
+# still fetched to confirm the cluster (by ID or name) actually still exists.
 $raw = & mgc kubernetes cluster list --region $state.Region -o json 2>&1
 $joined = (($raw -join "`n") -replace "`e\[[0-9;]*m", "")
 $jsonStart = -1
@@ -78,10 +81,16 @@ foreach ($ch in @('{', '[')) {
     $i = $joined.IndexOf($ch)
     if ($i -ge 0 -and ($jsonStart -lt 0 -or $i -lt $jsonStart)) { $jsonStart = $i }
 }
-$parsed  = if ($jsonStart -ge 0) { try { $joined.Substring($jsonStart) | ConvertFrom-Json -ErrorAction Stop } catch { $null } } else { $null }
-$cluster = $parsed.results | Where-Object { $_.name -eq $state.ClusterName } | Select-Object -First 1
+$parsed = if ($jsonStart -ge 0) { try { $joined.Substring($jsonStart) | ConvertFrom-Json -ErrorAction Stop } catch { $null } } else { $null }
 
-if (-not $cluster) {
+$clusterId = $state.ClusterId
+if ($clusterId) {
+    if (-not ($parsed.results | Where-Object { $_.id -eq $clusterId })) { $clusterId = $null }
+} else {
+    $clusterId = ($parsed.results | Where-Object { $_.name -eq $state.ClusterName } | Select-Object -First 1).id
+}
+
+if (-not $clusterId) {
     Write-Host "  Cluster '$($state.ClusterName)' not found in region '$($state.Region)' — already deleted?" -ForegroundColor Yellow
     Remove-StateFileIfUnchanged -StateFile $stateFile -ExpectedClusterName $state.ClusterName
     exit 0
@@ -97,7 +106,7 @@ if (-not $cluster) {
 $exitCode = Invoke-WithSpinner `
     -Message "Deleting Magalu cluster '$($state.ClusterName)'..." `
     -Executable "mgc" `
-    -Arguments @("kubernetes", "cluster", "delete", "--cluster-id", $cluster.id, "--region", $state.Region, "--no-confirm")
+    -Arguments @("kubernetes", "cluster", "delete", "--cluster-id", $clusterId, "--region", $state.Region, "--no-confirm")
 if ($exitCode -ne 0) { Write-Error "Failed to delete Magalu cluster '$($state.ClusterName)'"; exit 1 }
 
 if (Wait-MagaluClusterDeleted -Region $state.Region -ClusterName $state.ClusterName) {
