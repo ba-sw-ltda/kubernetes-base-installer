@@ -376,7 +376,7 @@ Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for grafana (up to 10m)..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/grafana", "-n", $Namespace, "--timeout=10m") `
-    -ShowOutput:$verbose
+    -ShowOutput:$verbose -ShowElapsed
 if ($exitCode -ne 0) {
     Write-Host ""
     Write-Host "  ── Pod status ──────────────────────────────" -ForegroundColor DarkGray

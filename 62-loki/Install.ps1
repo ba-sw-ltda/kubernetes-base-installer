@@ -177,7 +177,7 @@ Write-Host "  ✓ Deployed" -ForegroundColor Green
 if ($isSingleBinary) {
     $exitCode = Invoke-WithSpinner -Message "Waiting for loki (up to 10m)..." -Executable "kubectl" `
         -Arguments @("rollout", "status", "statefulset/loki", "-n", $Namespace, "--timeout=10m") `
-        -ShowOutput:$verbose
+        -ShowOutput:$verbose -ShowElapsed
     if ($exitCode -ne 0) {
         Write-Host ""
         Write-Host "  ── Pod status ──────────────────────────────" -ForegroundColor DarkGray

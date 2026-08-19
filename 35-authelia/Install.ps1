@@ -200,7 +200,7 @@ if ($exitCode -ne 0) { Write-Error "Failed to deploy Authelia (exit code $exitCo
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for authelia (up to 5m)..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/authelia", "-n", $Namespace, "--timeout=5m") `
-    -ShowOutput:$verbose
+    -ShowOutput:$verbose -ShowElapsed
 if ($exitCode -ne 0) {
     Write-Host ""
     Write-Host "  ── Pod status ──────────────────────────────" -ForegroundColor DarkGray
