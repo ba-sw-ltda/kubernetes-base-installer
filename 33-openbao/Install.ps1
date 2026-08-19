@@ -511,11 +511,25 @@ spec:
         serviceAccountRef:
           name: cert-manager
 "@
-        $clusterIssuerYaml | & kubectl apply -f - 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
+        # cert-manager's rollout-status wait (31-cert-manager/Install.ps1) only
+        # confirms the webhook Deployment's pods are Ready — it doesn't confirm
+        # cainjector has finished injecting the webhook's caBundle into the
+        # ValidatingWebhookConfiguration yet. Applying a ClusterIssuer in that
+        # short gap fails admission with a webhook-connection error, easily
+        # mistaken for "CRDs missing" since kubectl's stderr is swallowed above.
+        # Same transient-miss-right-after-another-component's-Helm-deploy
+        # reasoning as Write-OpenBaoSecret's pod-status retry — retry briefly
+        # instead of failing PKI setup over what's normally a ~10-20s window.
+        $issuerApplied = $false
+        for ($i = 0; $i -lt 6; $i++) {
+            $applyOutput = $clusterIssuerYaml | & kubectl apply -f - 2>&1
+            if ($LASTEXITCODE -eq 0) { $issuerApplied = $true; break }
+            Start-Sleep -Seconds 5
+        }
+        if ($issuerApplied) {
             Write-Host "  ✓ ClusterIssuer '$issuerName' ready" -ForegroundColor Green
         } else {
-            Write-Warning "  ClusterIssuer '$issuerName' could not be created — cert-manager CRDs missing?"
+            Write-Warning "  ClusterIssuer '$issuerName' could not be created after retries: $applyOutput"
         }
     }
 
