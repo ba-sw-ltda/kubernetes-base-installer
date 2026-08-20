@@ -141,6 +141,94 @@ if ($FullConfig.RancherProject) {
 # This namespace only sets up its own baseline; it doesn't know or care who's behind it.
 Install-NetworkPolicyBaseline -Namespace $Namespace
 
+# Install-NetworkPolicyBaseline's default-deny-all has no concept of "this
+# namespace is a public entrypoint" — it treats every namespace the same.
+# Traefik is the one namespace in the whole platform that genuinely needs to
+# accept ingress from literally anywhere (the cloud LoadBalancer / the
+# on-prem VIP forward traffic in from outside the cluster entirely, not from
+# another labeled namespace), so — same special-case reasoning as CoreDNS's
+# unscoped ipBlock 0.0.0.0/0 rule in 22-network-policies/Install.ps1 — this
+# doesn't fit the opt-in label-contract pattern used for app-to-app traffic
+# and needs its own unscoped rule here. Without it, default-deny-all silently
+# blocks every external connection to Traefik on 80/443, which is
+# indistinguishable from the outside from a dead ingress controller (TCP
+# connects, then resets/closes — confirmed live 2026-08-19 on Magalu:
+# ERR_CONNECTION_CLOSED in-browser, curl showed "Recv failure: Connection
+# was reset" on port 80 and a failed TLS handshake on 443).
+#
+# Selector is read straight off Traefik's own Service (same defensive
+# pattern as the DNS block in 22-network-policies/Install.ps1) rather than
+# hardcoded, so a future chart bump that changes the pod labels can't
+# silently make this rule match zero pods.
+$traefikSvcJson = & kubectl get svc traefik -n $Namespace -o json 2>$null
+$traefikPodSelector = $null
+if ($LASTEXITCODE -eq 0 -and $traefikSvcJson) {
+    $traefikSvc = $traefikSvcJson | ConvertFrom-Json
+    if ($traefikSvc.spec.selector) {
+        $traefikPodSelector = $traefikSvc.spec.selector
+    }
+}
+
+if ($traefikPodSelector) {
+    $matchLabelsYaml = ($traefikPodSelector.PSObject.Properties | ForEach-Object {
+        "      $($_.Name): $($_.Value)"
+    }) -join "`n"
+    $podSelectorYaml = "  podSelector:`n    matchLabels:`n$matchLabelsYaml"
+} else {
+    Write-Warning "Could not discover the Traefik Service's selector in '$Namespace' — falling back to known chart label convention."
+    $podSelectorYaml = @"
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+"@
+}
+
+# A NetworkPolicy's `ports` list matches the pod's real destination port
+# after the Service's DNAT rewrites it — i.e. Traefik's actual container
+# ports (8000/8443 in this chart), not the Service's externally-advertised
+# port (80/443). Hardcoding 80/443 here silently matched zero real traffic:
+# default-deny-all then ate every external/NodePort/LoadBalancer request to
+# Traefik, while requests from another pod inside this same namespace kept
+# working (allow-intra-namespace has no port restriction), which is exactly
+# why this went undetected through multiple rounds of "the cluster is
+# broken" diagnosis — confirmed live 2026-08-20 on Magalu: this bug alone
+# fully explained a 100%-timeout ClusterIP/external-LB path that looked
+# identical to a platform-level connectivity defect. Resolve-ServiceRealPorts
+# resolves the Service's targetPort(s) — numeric or named — against the live
+# pod's actual containerPort list instead of assuming any specific numbers,
+# so a future chart bump can't silently reintroduce the same mismatch.
+$resolvedPorts = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "traefik"
+if ($resolvedPorts.Count -gt 0) {
+    $portsYaml = ($resolvedPorts | ForEach-Object { "    - protocol: TCP`n      port: $_" }) -join "`n"
+} else {
+    Write-Warning "Could not resolve Traefik's real container ports from its Service — falling back to 80/443, which will NOT match actual traffic if the chart's targetPorts differ (as they do by default: 8000/8443)."
+    $portsYaml = "    - protocol: TCP`n      port: 80`n    - protocol: TCP`n      port: 443"
+}
+
+$publicIngressYaml = @"
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-public-web-ingress
+  namespace: $Namespace
+spec:
+$podSelectorYaml
+  policyTypes: ["Ingress"]
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+$portsYaml
+"@
+$publicIngressYaml | & kubectl apply -f - 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "  ✓ Public web ingress rule applied (container ports: $($resolvedPorts -join ', '))" -ForegroundColor Green
+} else {
+    Write-Error "Failed to apply public web ingress rule in '$Namespace'"
+    exit 1
+}
+
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 Write-Host "  Quick Reference" -ForegroundColor White

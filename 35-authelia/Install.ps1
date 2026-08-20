@@ -365,9 +365,21 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+# A NetworkPolicy's `ports` matches the pod's real destination port after the
+# Service's DNAT rewrites it, not the Service's externally-advertised port —
+# Authelia's Service exposes 80, but the chart's container actually listens
+# on 9091. Confirmed live 2026-08-20 on Magalu: hardcoding 80 here silently
+# matched zero real traffic, so default-deny-all blocked every forward-auth
+# call from Traefik ("Error calling http://authelia.authelia.svc.cluster.local
+# /api/verify: context canceled"), while portal/grafana/auth/vault/prometheus
+# (all routed through the authelia-forward-auth Middleware) failed the TLS
+# handshake entirely, and rancher (no forward-auth) worked fine — exactly the
+# same port-mismatch bug class already found and fixed in
+# 11-ingress-traefik/Install.ps1's allow-public-web-ingress rule.
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 80
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port 80
+$autheliaPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "authelia"
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $autheliaPort
+Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $autheliaPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

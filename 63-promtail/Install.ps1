@@ -92,6 +92,26 @@ $HelmArgs = @(
     "--values", $tempValues
 )
 
+if ($Platform -in @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")) {
+    # The chart ships a default toleration for node-role.kubernetes.io/master
+    # and node-role.kubernetes.io/control-plane (NoSchedule) so Promtail also
+    # runs on control-plane nodes — that only matters for our on-prem/local
+    # topology (RKE2 (On-Premise) and Kind (Local)), where the recommended
+    # 3-node layout makes every node both worker AND control-plane, so
+    # Promtail would otherwise silently skip the control-plane taint and miss
+    # 1/3 of the cluster's logs. On every managed cloud platform (AKS/EKS/GKE/
+    # Magalu) the control plane is either fully hidden (AKS/EKS/GKE — this
+    # toleration is then just a no-op) or an explicitly protected system node
+    # whose admission controller denies it outright, exactly as it did for
+    # prometheus-node-exporter on Magalu (see 61-prometheus/Install.ps1), so
+    # strip it there instead of relying on it doing nothing everywhere but
+    # Magalu. Replace it with an empty list so Promtail only targets ordinary
+    # schedulable worker nodes. --set-json (not --set=null, which unsets
+    # rather than overrides) actually replaces the chart default instead of
+    # falling back to it.
+    $HelmArgs += @("--set-json", "tolerations=[]")
+}
+
 Reset-StuckHelmRelease -ReleaseName "promtail" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying Promtail..." -Executable "helm" `
@@ -116,7 +136,8 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port 3100
+$lokiPort = Resolve-ServiceRealPorts -Namespace "loki" -ServiceName "loki" -ServicePortName "http-metrics"
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port $lokiPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

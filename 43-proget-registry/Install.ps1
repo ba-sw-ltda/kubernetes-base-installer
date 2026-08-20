@@ -26,14 +26,10 @@ Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
 Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
-# Standalone: prompt if not provided
-if ([string]::IsNullOrWhiteSpace($RegistryUrl)) {
-    $inputs = & "$ScriptRoot\Prompt.ps1" -Platform $Platform
-    if (-not $inputs -or -not $inputs.RegistryUrl) { Write-Host "  Skipped — no registry configured." -ForegroundColor Gray; exit 0 }
-    $RegistryUrl = $inputs.RegistryUrl
-    $Feeds       = $inputs.Feeds
-}
-
+# RegistryUrl/Feeds are collected upfront by Install-Base.ps1 via Prompt.ps1;
+# an empty $Feeds is the legitimate "no registry configured" answer (see
+# 43-proget-registry/Prompt.ps1's `return @{}`), not a signal to re-prompt
+# here — prompting mid-install breaks the "all prompts upfront" contract.
 if ($Feeds.Count -eq 0) { Write-Host "  Skipped — no feeds configured." -ForegroundColor Gray; exit 0 }
 
 $FullConfig = Get-ComponentConfig -ScriptRoot $ScriptRoot -Platform $Platform

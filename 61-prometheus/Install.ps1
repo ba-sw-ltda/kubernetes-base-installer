@@ -90,6 +90,33 @@ $HelmArgs = @(
     "--set", "prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.resources.requests.storage=$($UserConfig.StorageSize)"
 )
 
+if ($Platform -in @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")) {
+    # The node-exporter subchart ships a default toleration (effect:
+    # NoSchedule, operator: Exists) specifically so it also runs on tainted
+    # control-plane nodes — that only matters for our on-prem/local topology
+    # (RKE2 (On-Premise) and Kind (Local)), where the recommended 3-node
+    # layout makes every node both worker AND control-plane, so node-exporter
+    # would otherwise silently skip the control-plane taint and miss 1/3 of
+    # the cluster. On every managed cloud platform (AKS/EKS/GKE/Magalu) the
+    # control plane is either fully hidden (AKS/EKS/GKE — this toleration is
+    # then just a no-op) or an explicitly protected system node whose
+    # admission controller denies it outright (Magalu — see below), so strip
+    # it there instead of relying on it doing nothing everywhere but Magalu.
+    # Replace it with an empty list so node-exporter only targets ordinary
+    # schedulable worker nodes. --set-json (not --set=null, which unsets
+    # rather than overrides) actually replaces the chart default instead of
+    # falling back to it.
+    #
+    # Magalu specifically: its managed control plane runs a
+    # ValidatingAdmissionPolicy ("protectsystemnodesfromworkloaddeploymentsbinding")
+    # that denies any DaemonSet/workload carrying a toleration for
+    # control-plane or generic NoSchedule taints on its protected system
+    # nodes — confirmed live 2026-08-20: "daemonsets.apps
+    # 'prometheus-prometheus-node-exporter' is forbidden ... ValidatingAdmissionPolicy
+    # 'protectsystemnodesfromworkloaddeployments' ... This action is not allowed."
+    $HelmArgs += @("--set-json", "prometheus-node-exporter.tolerations=[]")
+}
+
 Reset-StuckHelmRelease -ReleaseName "prometheus" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying kube-prometheus-stack..." -Executable "helm" `
@@ -183,8 +210,9 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 9090
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port 9090
+$prometheusPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "prometheus-kube-prometheus-prometheus" -ServicePortName "http-web"
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $prometheusPort
+Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $prometheusPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

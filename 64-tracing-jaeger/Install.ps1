@@ -161,8 +161,17 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 16686,4317
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port 16686
+# Jaeger isn't deployed on any cluster this was verified against yet — resolved
+# dynamically (with graceful fallback to these same hardcoded numbers via
+# Resolve-ServiceRealPorts's own warning path if the Service/pod can't be
+# found) so this self-corrects the first time Jaeger actually goes live,
+# instead of silently trusting an unverified number forever.
+$jaegerQueryPort     = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "jaeger-query"
+if (-not $jaegerQueryPort) { $jaegerQueryPort = @(16686) }
+$jaegerCollectorPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "jaeger-collector" -ServicePortName "grpc-otlp"
+if (-not $jaegerCollectorPort) { $jaegerCollectorPort = @(4317) }
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port ($jaegerQueryPort + $jaegerCollectorPort)
+Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $jaegerQueryPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

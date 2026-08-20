@@ -642,7 +642,11 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 8200
+# Only the external-facing "http" port (8200) — 8201 is OpenBao's internal
+# cluster/Raft-replication port between its own pods, not something other
+# namespaces need to reach.
+$openbaoIngressPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "openbao" -ServicePortName "http"
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $openbaoIngressPort
 
 # ── Summary ───────────────────────────────────────────────────────
 Write-Host ""

@@ -212,7 +212,8 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 3100
+$lokiIngressPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "loki" -ServicePortName "http-metrics"
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $lokiIngressPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

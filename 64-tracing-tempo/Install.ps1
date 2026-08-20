@@ -124,7 +124,20 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 4317,3200
+# This provider-ingress rule covers the whole tempo namespace (podSelector:
+# {}), which fronts several distinct Services with different real listen
+# ports depending on who's talking to what: Grafana's Tempo datasource hits
+# tempo-query-frontend:3200 (see 66-grafana/Config.psd1's TempoUrl), while
+# opentelemetry-collector's trace-export egress targets tempo-distributor.
+# NOTE: as of 2026-08-20 on Magalu, tempo-distributor's live pod does NOT
+# expose 4317 (OTLP gRPC) at all — only http-metrics/3200 and grpc/9095 —
+# meaning this chart's OTLP receiver isn't enabled, a separate Helm-values
+# gap unrelated to NetworkPolicy ports; Resolve-ServiceRealPorts intentionally
+# won't invent a phantom 4317 entry the way the old hardcoded list did.
+$tempoQueryFrontendPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "tempo-query-frontend" -ServicePortName "http-metrics"
+$tempoDistributorPorts  = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "tempo-distributor"
+$tempoPorts = @($tempoQueryFrontendPort + $tempoDistributorPorts | Select-Object -Unique)
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $tempoPorts
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

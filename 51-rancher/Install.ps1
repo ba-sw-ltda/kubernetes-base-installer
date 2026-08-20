@@ -262,11 +262,21 @@ groupPrincipalName: "oidc_group://admins"
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 80
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port 80
+$rancherPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "rancher" -ServicePortName "http"
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $rancherPort
+Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $rancherPort
 if ($oidc) {
     # Rancher itself calls out to Authelia's OIDC endpoints via the ingress hostname.
-    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "ingress" -Port 80
+    # -Port is a mandatory int[] — an empty array is a terminating parameter-
+    # binding error, not a graceful no-op, so an unresolved Traefik Service
+    # (e.g. a cluster still running the pre-migration ingress-nginx controller)
+    # must not be allowed to abort the whole install here.
+    $ingressWebsecurePort = Resolve-ServiceRealPorts -Namespace "ingress" -ServiceName "traefik" -ServicePortName "websecure"
+    if ($ingressWebsecurePort) {
+        Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "ingress" -Port $ingressWebsecurePort
+    } else {
+        Write-Warning "Could not resolve Traefik's websecure port in the 'ingress' namespace — skipping Rancher's OIDC egress NetworkPolicy rule. If this cluster's ingress controller isn't Traefik yet, Rancher's OIDC calls to Authelia will be blocked until this is fixed manually or the ingress layer is migrated."
+    }
 }
 
 # Rancher v2.14 creates these system namespaces itself (CAPI/turtles/UI-plugin

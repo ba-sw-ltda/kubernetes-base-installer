@@ -362,8 +362,9 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 8080
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port 8080
+$portalPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "homer"
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $portalPort
+Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $portalPort
 
 $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
 

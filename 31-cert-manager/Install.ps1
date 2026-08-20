@@ -98,7 +98,12 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "openbao" -Port 8200
+# Resolved dynamically against OpenBao's real container port rather than
+# hardcoded — see Resolve-ServiceRealPorts for why (NetworkPolicy `ports`
+# matches the pod's real destination port after Service DNAT, not the
+# Service's advertised port).
+$openbaoPort = Resolve-ServiceRealPorts -Namespace "openbao" -ServiceName "openbao" -ServicePortName "http"
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "openbao" -Port $openbaoPort
 
 # The default-deny above also blocks the kube-apiserver's admission-webhook
 # calls into this namespace (every Certificate/ClusterIssuer create or update,
@@ -110,6 +115,48 @@ $controlPlaneIps = (& kubectl get nodes -l "node-role.kubernetes.io/control-plan
 if (-not $controlPlaneIps) {
     $controlPlaneIps = (& kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>$null) -split '\s+' | Where-Object { $_ }
 }
+
+# Magalu's managed control plane binds a second NIC (an internal management
+# network) that Kubernetes never reports via Node.status.addresses — only the
+# "user project network" IP above gets published. The apiserver's outbound
+# webhook call sometimes egresses from that unpublished NIC instead, a purely
+# platform-specific routing quirk: confirmed live 2026-08-20 with only the
+# InternalIP allow-listed, cert-manager's webhook calls intermittently timed
+# out ("failed calling webhook ... Client.Timeout exceeded while awaiting
+# headers"), leaving Certificates permanently stuck un-Ready — including the
+# portal's, which is why the portal was unreachable. calico-node runs
+# hostNetwork on every node and can see every real interface on its host, so
+# where it's present (Magalu; this repo never installs Calico itself, so the
+# calico-system namespace is simply absent everywhere else — RKE2/Kind/AKS/
+# EKS/GKE use their own CNI and don't hit this at all) pull every extra
+# global-scope IPv4 address it reports per control-plane node and fold it
+# into the same allow-list, rather than guessing which interface is "the"
+# one.
+$calicoNodesByHost = @{}
+(& kubectl get pods -n calico-system -l k8s-app=calico-node -o jsonpath='{range .items[*]}{.spec.nodeName}{" "}{.metadata.name}{"\n"}{end}' 2>$null) -split "`n" | Where-Object { $_ } | ForEach-Object {
+    $parts = $_ -split '\s+'
+    if ($parts.Count -eq 2) { $calicoNodesByHost[$parts[0]] = $parts[1] }
+}
+if ($calicoNodesByHost.Count -gt 0) {
+    $cpNodeNames = (& kubectl get nodes -l "node-role.kubernetes.io/control-plane" -o jsonpath='{.items[*].metadata.name}' 2>$null) -split '\s+' | Where-Object { $_ }
+    if (-not $cpNodeNames) {
+        $cpNodeNames = (& kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>$null) -split '\s+' | Where-Object { $_ }
+    }
+    foreach ($nodeName in $cpNodeNames) {
+        $calicoPod = $calicoNodesByHost[$nodeName]
+        if (-not $calicoPod) { continue }
+        $addrLines = (& kubectl exec -n calico-system $calicoPod -c calico-node -- ip -4 -o addr show scope global 2>$null) -split "`n"
+        foreach ($line in $addrLines) {
+            if ($line -match '\s(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)/') {
+                $ifName = $Matches[1]
+                $ip     = $Matches[2]
+                if ($ifName -in @('vxlan.calico', 'tunl0', 'nodelocaldns')) { continue }
+                if ($ip -notin $controlPlaneIps) { $controlPlaneIps += $ip }
+            }
+        }
+    }
+}
+
 if ($controlPlaneIps) {
     $ipBlockYaml = ($controlPlaneIps | ForEach-Object { "    - ipBlock:`n        cidr: $_/32" }) -join "`n"
     $webhookYaml = @"

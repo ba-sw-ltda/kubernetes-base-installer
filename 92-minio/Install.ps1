@@ -216,7 +216,8 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 9000
+$minioPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "minio"
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $minioPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

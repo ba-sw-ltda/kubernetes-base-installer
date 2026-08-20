@@ -639,6 +639,7 @@ $__exportFunctions = @(
   'Unregister-PortalEntry'
   'Read-ComponentSelectionScreen'
   'Install-NetworkPolicyBaseline'
+  'Resolve-ServiceRealPorts'
   'Set-NetworkPolicyProviderIngress'
   'Set-NetworkPolicyConsumerEgress'
   'Wait-MagaluClusterDeleted'

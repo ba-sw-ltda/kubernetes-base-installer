@@ -432,24 +432,50 @@ if ($FullConfig.RancherProject) {
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # NetworkPolicy ports match the pod's actual container port, not the Service
 # port (80) that fronts it via kube-proxy DNAT — Grafana's container listens
-# on 3000, so the policy must allow 3000 or ingress traffic is silently dropped.
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 3000
-# Register grafana as an egress target inside the shared "ingress" namespace
-# (Service port 80, not the container port above — this rule lives on the
-# pre-DNAT/egress side). Safe because 11-ingress-* always applies its own
-# baseline before any later component (numeric order 11 < 66) gets here.
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port 80
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "prometheus" -Port 9090
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port 3100
+# on 3000, so the policy must allow 3000 or ingress traffic is silently
+# dropped. Resolved dynamically so a future chart bump can't silently
+# reintroduce the mismatch (confirmed live 2026-08-20 on Magalu — this exact
+# rule was still hardcoded to 80 and silently dropped every Traefik ->
+# Grafana request while every other app on the same ingress path had already
+# been fixed).
+$grafanaPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "grafana"
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $grafanaPort
+# Register grafana as an egress target inside the shared "ingress" namespace.
+# Must match the SAME real container port as the provider-ingress rule above.
+# Safe because 11-ingress-* always applies its own baseline before any later
+# component (numeric order 11 < 66) gets here.
+Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $grafanaPort
+$prometheusPort = Resolve-ServiceRealPorts -Namespace "prometheus" -ServiceName "prometheus-kube-prometheus-prometheus" -ServicePortName "http-web"
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "prometheus" -Port $prometheusPort
+$lokiPort = Resolve-ServiceRealPorts -Namespace "loki" -ServiceName "loki" -ServicePortName "http-metrics"
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port $lokiPort
 if ($tracingNamespace -eq "jaeger") {
-    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "jaeger" -Port 16686
+    $jaegerQueryPort = Resolve-ServiceRealPorts -Namespace "jaeger" -ServiceName "jaeger-query"
+    if (-not $jaegerQueryPort) { $jaegerQueryPort = @(16686) }
+    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "jaeger" -Port $jaegerQueryPort
 } elseif ($tracingNamespace -eq "tempo") {
-    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "tempo" -Port 3200
+    $tempoQueryFrontendPort = Resolve-ServiceRealPorts -Namespace "tempo" -ServiceName "tempo-query-frontend" -ServicePortName "http-metrics"
+    if (-not $tempoQueryFrontendPort) { $tempoQueryFrontendPort = @(3200) }
+    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "tempo" -Port $tempoQueryFrontendPort
 }
 if ($oidcConfig) {
-    # auth_url/token_url/api_url are all https://$autheliaHost/... (public ingress
-    # hostname, TLS-terminated at the ingress controller) — port 443, not 80.
-    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "ingress" -Port 443
+    # auth_url/token_url/api_url are all https://$autheliaHost/... (public
+    # ingress hostname, TLS-terminated at the ingress controller). NetworkPolicy
+    # `ports` always matches the pod's real destination port after the
+    # Service's DNAT rewrites it — standard Kubernetes NetworkPolicy semantics,
+    # true for every CNI that implements the API (Calico, Cilium, Azure NPM,
+    # ...), not a platform quirk — so this must be Traefik's actual websecure
+    # container port, not the Service's externally-advertised 443.
+    # -Port is a mandatory int[] — PowerShell rejects an *empty* array at
+    # parameter binding (a terminating error, not a graceful no-op), so an
+    # unresolved Traefik Service (e.g. a cluster still running the
+    # pre-migration ingress-nginx controller) must not abort this whole install.
+    $ingressWebsecurePort = Resolve-ServiceRealPorts -Namespace "ingress" -ServiceName "traefik" -ServicePortName "websecure"
+    if ($ingressWebsecurePort) {
+        Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "ingress" -Port $ingressWebsecurePort
+    } else {
+        Write-Warning "Could not resolve Traefik's websecure port in the 'ingress' namespace — skipping Grafana's OIDC egress NetworkPolicy rule. If this cluster's ingress controller isn't Traefik yet, Grafana's OIDC login via Authelia will be blocked until this is fixed manually or the ingress layer is migrated."
+    }
 }
 
 Write-Host ""

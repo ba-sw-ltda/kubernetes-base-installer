@@ -207,8 +207,15 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 80
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port 80
+# NetworkPolicy `ports` matches the pod's real destination port after the
+# Service's DNAT rewrite, not the Service's externally-advertised port — the
+# longhorn-frontend Service exposes 80 but its container listens on 8000
+# (confirmed 2026-08-20 against the RKE2 cluster; same bug class already
+# found and fixed on 11-ingress-traefik/35-authelia/66-grafana). Resolved
+# dynamically so a future chart bump can't silently reintroduce the mismatch.
+$longhornPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "longhorn-frontend"
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $longhornPort
+Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $longhornPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

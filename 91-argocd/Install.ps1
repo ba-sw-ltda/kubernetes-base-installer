@@ -231,11 +231,30 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 80
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port 80
+# NetworkPolicy `ports` matches the pod's real destination port after the
+# Service's DNAT rewrite, not the Service's externally-advertised port —
+# argocd-server's Service exposes 80/443 but its container listens on 8080
+# (confirmed 2026-08-20 against the RKE2 cluster; same bug class already
+# found and fixed on 11-ingress-traefik/35-authelia/66-grafana/21-longhorn).
+# Resolved dynamically so a future chart bump can't silently reintroduce it.
+$argocdPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "argocd-server" -ServicePortName "http"
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $argocdPort
+Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $argocdPort
 if ($oidcConfig) {
-    # ArgoCD itself calls out to Authelia's OIDC endpoints via the ingress hostname.
-    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "ingress" -Port 80
+    # ArgoCD itself calls out to Authelia's OIDC endpoints via the ingress hostname (HTTPS).
+    # Set-NetworkPolicyConsumerEgress's -Port is a mandatory int[] — PowerShell
+    # rejects an *empty* array at parameter binding (a terminating error, not a
+    # graceful no-op), so an unresolved Traefik Service would abort this whole
+    # install rather than just skip the rule. Confirmed live 2026-08-20: the
+    # RKE2 cluster still runs the pre-migration ingress-nginx controller (not
+    # yet rebuilt onto the Traefik-default baseline), so "traefik" doesn't
+    # exist there and this must degrade gracefully, not crash.
+    $ingressWebsecurePort = Resolve-ServiceRealPorts -Namespace "ingress" -ServiceName "traefik" -ServicePortName "websecure"
+    if ($ingressWebsecurePort) {
+        Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "ingress" -Port $ingressWebsecurePort
+    } else {
+        Write-Warning "Could not resolve Traefik's websecure port in the 'ingress' namespace — skipping ArgoCD's OIDC egress NetworkPolicy rule. If this cluster's ingress controller isn't Traefik yet, ArgoCD's OIDC calls to Authelia will be blocked until this is fixed manually or the ingress layer is migrated."
+    }
 }
 
 $scheme = if ($issuerName -and $Hostname) { "https" } else { "http" }

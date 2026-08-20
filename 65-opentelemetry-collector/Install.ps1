@@ -168,10 +168,34 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 4317,4318
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $tracingNamespace -Port 4317
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "prometheus" -Port 9090
-Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port 3100
+# Only the OTLP gRPC/HTTP receiver ports (4317/4318) — the collector's Service
+# also exposes legacy jaeger-*/zipkin receiver ports this platform doesn't use.
+$otelCollectorPorts = @(
+    (Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "opentelemetry-collector" -ServicePortName "otlp") +
+    (Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "opentelemetry-collector" -ServicePortName "otlp-http") |
+    Select-Object -Unique
+)
+if (-not $otelCollectorPorts) { $otelCollectorPorts = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "opentelemetry-collector" }
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $otelCollectorPorts
+# Trace-export egress target depends on the tracing backend: tempo's real
+# receiving Service is tempo-distributor, jaeger's is jaeger-collector. NOTE:
+# as of 2026-08-20 on Magalu, tempo-distributor doesn't expose 4317 (OTLP)
+# at all — its chart's OTLP receiver isn't enabled — a separate config gap,
+# not a NetworkPolicy port issue; Resolve-ServiceRealPorts won't invent a
+# phantom port the way the old hardcoded 4317 did.
+if ($tracingNamespace -eq "jaeger") {
+    $tracingIngestPort = Resolve-ServiceRealPorts -Namespace $tracingNamespace -ServiceName "jaeger-collector" -ServicePortName "grpc-otlp"
+    if (-not $tracingIngestPort) { $tracingIngestPort = @(4317) }
+} else {
+    $tracingIngestPort = Resolve-ServiceRealPorts -Namespace $tracingNamespace -ServiceName "tempo-distributor"
+}
+if ($tracingIngestPort) {
+    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $tracingNamespace -Port $tracingIngestPort
+}
+$prometheusPort = Resolve-ServiceRealPorts -Namespace "prometheus" -ServiceName "prometheus-kube-prometheus-prometheus" -ServicePortName "http-web"
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "prometheus" -Port $prometheusPort
+$lokiPort = Resolve-ServiceRealPorts -Namespace "loki" -ServiceName "loki" -ServicePortName "http-metrics"
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port $lokiPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
