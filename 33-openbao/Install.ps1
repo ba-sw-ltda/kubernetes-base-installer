@@ -647,6 +647,17 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 # namespaces need to reach.
 $openbaoIngressPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "openbao" -ServicePortName "http"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $openbaoIngressPort
+# Consumer-side counterpart, missing until 2026-08-20 (confirmed live on
+# Magalu: vault.<hostname> gave a Traefik Gateway Timeout — "ingress" never
+# had the "network.k8s/allow-openbao" label, so default-deny-all silently
+# dropped every Traefik->openbao packet). Every other public-Ingress
+# component (35-authelia, 51-rancher, 66-grafana, ...) already pairs its
+# provider-ingress rule with this call; OpenBao's Vault-UI route just never
+# got it. Gated on Hostname like the Ingress block above — no route, nothing
+# to register as a consumer of.
+if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
+    Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $openbaoIngressPort
+}
 
 # ── Summary ───────────────────────────────────────────────────────
 Write-Host ""
