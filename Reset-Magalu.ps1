@@ -165,7 +165,67 @@ if ($orphanVolumeIds.Count -gt 0) {
     }
 }
 
-# ── 4. Remove state file ─────────────────────────────────────────
+# ── 4. Remove OpenBao unseal/root-token state ──────────────────────
+# A recreated cluster gets a brand-new OpenBao instance — these unseal keys
+# and root token describe the one that just got deleted. Leaving this file
+# behind makes 33-openbao/Install.ps1 think the new instance is already
+# initialized and try to unseal it with credentials that no longer apply to
+# anything. Same reasoning/pattern as Reset-RKE2.ps1's equivalent cleanup.
+Write-Host ""
+Write-Host "--- OpenBao state ---" -ForegroundColor Magenta
+Remove-Item (Get-OpenBaoStateFile -BaseDir $BaseDir -Platform "Magalu Cloud") -Force -ErrorAction SilentlyContinue
+Write-Host "  ✓ OpenBao state file removed" -ForegroundColor Green
+
+# ── 5. Clean up hosts file entries for this cluster's domain ────────
+# Update-HostsFile (used by Install-Base.ps1) rewrites existing hostname
+# lines in place, so this isn't strictly required for a same-named recreate
+# — but until that next run happens, these entries point at a LoadBalancer
+# IP that's now gone, and if the recreated cluster ever gets a different
+# domain/hostnames, these would otherwise sit here orphaned forever. Same
+# domain-match approach as Reset-Local.ps1, but scoped to just the hosts
+# file (no DNS-adapter reset — that's an Acrylic/Kind-local concern only).
+Write-Host "`n--- Hosts file ---" -ForegroundColor Magenta
+$hostsFile     = "C:\Windows\System32\drivers\etc\hosts"
+$hostsLines    = if (Test-Path $hostsFile) { Get-Content $hostsFile -Encoding UTF8 } else { @() }
+$hostsFiltered = $hostsLines | Where-Object { $_ -notmatch [regex]::Escape($state.Domain) }
+$hostsChanged  = $hostsFiltered.Count -lt $hostsLines.Count
+
+if ($hostsChanged) {
+    $tempFile   = Join-Path $env:TEMP "magalu-hosts-clean.txt"
+    $tempScript = Join-Path $env:TEMP "magalu-hosts-reset-elevated.ps1"
+    $tempLog    = Join-Path $env:TEMP "magalu-hosts-reset-elevated.log"
+    Set-Content -Path $tempFile -Value $hostsFiltered -Encoding UTF8
+
+    $scriptLines = @(
+        "`$ErrorActionPreference = 'Stop'"
+        "try {"
+        "  Copy-Item -Path '$tempFile' -Destination '$hostsFile' -Force"
+        "  exit 0"
+        "} catch {"
+        "  `$_ | Out-File '$tempLog' -Encoding UTF8"
+        "  exit 1"
+        "}"
+    )
+    Set-Content -Path $tempScript -Value ($scriptLines -join "`n") -Encoding UTF8
+
+    $proc = Start-Process pwsh -Verb RunAs `
+        -ArgumentList "-NonInteractive", "-File", "`"$tempScript`"" `
+        -Wait -PassThru
+    Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
+    Remove-Item $tempFile   -Force -ErrorAction SilentlyContinue
+
+    if ($proc.ExitCode -eq 0) {
+        Remove-Item $tempLog -Force -ErrorAction SilentlyContinue
+        Write-Host "  ✓ Removed $($hostsLines.Count - $hostsFiltered.Count) line(s) containing '$($state.Domain)' from hosts" -ForegroundColor Green
+    } else {
+        $errMsg = if (Test-Path $tempLog) { Get-Content $tempLog -Raw; Remove-Item $tempLog -Force } else { "(no details)" }
+        Write-Warning "  Elevated hosts-file update failed: $errMsg"
+    }
+} else {
+    Write-Host "  ✓ hosts file unchanged (no entries for '$($state.Domain)')" -ForegroundColor Green
+}
+
+# ── 6. Remove state file ─────────────────────────────────────────
 Write-Host ""
 Remove-StateFileIfUnchanged -StateFile $stateFile -ExpectedClusterName $state.ClusterName
 Write-Host ""
