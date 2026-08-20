@@ -1531,28 +1531,54 @@ function Start-Installation {
                         Write-Warning "  ⚠ Installation script not found: $installScript"
                     }
                 }
+            }
+        }
 
-                # Cloud platforms: 11-ingress-traefik/Install.ps1 wrote the external IP to .ingress-ip — update hosts file
-                if ($group -eq "Ingress & Load Balancing" -and $platform -in @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")) {
-                    $ipStateFile = Join-Path $PSScriptRoot ".ingress-ip"
-                    if (Test-Path $ipStateFile) {
-                        $externalIp = (Get-Content $ipStateFile -Raw).Trim()
-                        Remove-Item $ipStateFile -Force -ErrorAction SilentlyContinue
-                        if ($externalIp) {
-                            $hostnames = @()
-                            foreach ($inputs in $componentInputs.Values) {
-                                if ($inputs -is [hashtable] -and $inputs.ContainsKey('Hostname') -and -not [string]::IsNullOrWhiteSpace($inputs['Hostname'])) {
-                                    $hostnames += $inputs['Hostname']
-                                }
-                            }
-                            if ($hostnames.Count -gt 0) {
-                                Write-Host "`n--- Updating local hosts file ---" -ForegroundColor Magenta
-                                Update-HostsFile -Hostnames $hostnames -IpAddress $externalIp
-                            }
-                        }
+        # Cloud platforms: update the local hosts file with the ingress LoadBalancer
+        # IP for every hostname collected this run. Deliberately NOT gated on
+        # "did the Ingress group run this session" — a later, partial run (e.g.
+        # only Rancher + Portal reselected on an already-provisioned cluster)
+        # never touches the Ingress group and would otherwise silently skip this
+        # entirely, leaving new hostnames unresolvable. So this runs once, after
+        # ALL groups have installed, driven purely by whether any selected
+        # component collected a Hostname this run.
+        #
+        # Kind already got its hosts-file update upfront (127.0.0.1, no IP to
+        # resolve) — skip it here to avoid a second, redundant pass.
+        # RKE2 (On-Premise) is deliberately excluded from this mechanism
+        # entirely: it's the one persistent, long-lived cluster and is meant to
+        # be resolved via real DNS, not a workstation-local hosts-file hack.
+        if ($platform -in @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")) {
+            $hostnames = @()
+            foreach ($inputs in $componentInputs.Values) {
+                if ($inputs -is [hashtable] -and $inputs.ContainsKey('Hostname') -and -not [string]::IsNullOrWhiteSpace($inputs['Hostname'])) {
+                    $hostnames += $inputs['Hostname']
+                }
+            }
+            if ($hostnames.Count -gt 0) {
+                # Fast path: 11-ingress-traefik/Install.ps1 already resolved the IP
+                # this run and left it in .ingress-ip. Fall back to a live query
+                # against the ingress Service when it didn't run this session —
+                # the LoadBalancer still exists from a prior run, we just didn't
+                # (re)provision it just now.
+                $ipStateFile = Join-Path $PSScriptRoot ".ingress-ip"
+                $externalIp = $null
+                if (Test-Path $ipStateFile) {
+                    $externalIp = (Get-Content $ipStateFile -Raw).Trim()
+                    Remove-Item $ipStateFile -Force -ErrorAction SilentlyContinue
+                }
+                if (-not $externalIp) {
+                    $externalIp = if ($platform -eq "AWS EKS") {
+                        Get-EksIngressIp -Namespace "ingress"
                     } else {
-                        Write-Warning "  ⚠ Could not get external IP — update hosts file manually with the ingress LoadBalancer IP"
+                        Get-AksIngressIp -Namespace "ingress"
                     }
+                }
+                if ($externalIp) {
+                    Write-Host "`n--- Updating local hosts file ---" -ForegroundColor Magenta
+                    Update-HostsFile -Hostnames $hostnames -IpAddress $externalIp
+                } else {
+                    Write-Warning "  ⚠ Could not get external IP — update hosts file manually with the ingress LoadBalancer IP"
                 }
             }
         }
