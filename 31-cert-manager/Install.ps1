@@ -101,8 +101,22 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 # Resolved dynamically against OpenBao's real container port rather than
 # hardcoded — see Resolve-ServiceRealPorts for why (NetworkPolicy `ports`
 # matches the pod's real destination port after Service DNAT, not the
-# Service's advertised port).
+# Service's advertised port). cert-manager (31) always installs before
+# OpenBao (33) in the fixed component order, so OpenBao's Service doesn't
+# exist yet on a fresh install — Resolve-ServiceRealPorts then returns an
+# empty array by design (see its own doc comment) rather than throwing.
+# Falling back to 8200 (OpenBao's fixed HTTP port, hardcoded the same way
+# throughout 33-openbao/Install.ps1, e.g. its own ClusterIssuer `server:`
+# field and Ingress backend) still gets the egress rule right on a fresh
+# install instead of silently omitting it forever — 33-openbao only ever
+# creates the *provider*-side (ingress) half via Set-NetworkPolicyProviderIngress,
+# never a consumer egress rule for cert-manager, so this call is cert-manager's
+# only chance to open its own egress.
 $openbaoPort = Resolve-ServiceRealPorts -Namespace "openbao" -ServiceName "openbao" -ServicePortName "http"
+if ($openbaoPort.Count -eq 0) {
+    Write-Warning "Could not resolve OpenBao's real container port (Service not deployed yet — expected on a fresh install, since cert-manager installs before OpenBao) — falling back to 8200."
+    $openbaoPort = @(8200)
+}
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "openbao" -Port $openbaoPort
 
 # The default-deny above also blocks the kube-apiserver's admission-webhook
