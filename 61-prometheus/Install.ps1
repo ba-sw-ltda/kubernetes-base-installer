@@ -181,7 +181,7 @@ $($protect.TlsBlock)
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
     Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
-        -Category "Observability" -Subtitle $FullConfig.PortalSubtitle -Order 61 `
+        -Category "Observability" -Namespace $Namespace -Subtitle $FullConfig.PortalSubtitle -Order 61 `
         -InternalUrl "http://prometheus-kube-prometheus-prometheus.prometheus.svc.cluster.local:9090" `
         -LogoUrl $portalIcon
 }

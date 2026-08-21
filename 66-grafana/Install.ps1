@@ -472,7 +472,7 @@ $tlsBlock
     $scheme = if ($issuerName) { "https" } else { "http" }
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
     Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
-        -Category "Observability" -Subtitle $FullConfig.PortalSubtitle -Order 66 `
+        -Category "Observability" -Namespace $Namespace -Subtitle $FullConfig.PortalSubtitle -Order 66 `
         -InternalUrl "http://grafana.grafana.svc.cluster.local" `
         -LogoUrl $portalIcon
 }

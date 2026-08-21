@@ -190,7 +190,7 @@ $($protect.TlsBlock)
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
     Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
-        -Category "Storage" -Subtitle $FullConfig.PortalSubtitle -Order 21 `
+        -Category "Storage" -Namespace $Namespace -Subtitle $FullConfig.PortalSubtitle -Order 21 `
         -InternalUrl "http://longhorn-frontend.longhorn-system.svc.cluster.local" `
         -LogoUrl $portalIcon
 }

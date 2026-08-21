@@ -355,7 +355,7 @@ Resolve-PendingRancherProjectAssignments
 
 $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
 Register-PortalEntry -Name $FullConfig.PortalTitle -Url "https://$Hostname" `
-    -Category "Management" -Subtitle $FullConfig.PortalSubtitle -Order 51 `
+    -Category "Management" -Namespace $Namespace -Subtitle $FullConfig.PortalSubtitle -Order 51 `
     -InternalUrl "http://rancher.cattle-system.svc.cluster.local" `
     -LogoUrl $portalIcon
 

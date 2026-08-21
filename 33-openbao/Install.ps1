@@ -632,7 +632,7 @@ $($protect.TlsBlock)
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
     Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
-        -Category "Security" -Subtitle $FullConfig.PortalSubtitle -Order 33 `
+        -Category "Security" -Namespace $Namespace -Subtitle $FullConfig.PortalSubtitle -Order 33 `
         -InternalUrl "http://openbao.openbao.svc.cluster.local:8200" `
         -LogoUrl $portalIcon
 }

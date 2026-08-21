@@ -151,7 +151,7 @@ $($protect.TlsBlock)
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
     Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
-        -Category "Observability" -Subtitle $FullConfig.PortalSubtitle -Order 64 `
+        -Category "Observability" -Namespace $Namespace -Subtitle $FullConfig.PortalSubtitle -Order 64 `
         -InternalUrl "http://jaeger-query.jaeger.svc.cluster.local:16686" `
         -LogoUrl $portalIcon
 }

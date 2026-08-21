@@ -289,7 +289,7 @@ $scheme = if ($issuerName -and $Hostname) { "https" } else { "http" }
 if ($Hostname) {
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
     Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" -Category "Utilities" `
-        -Subtitle $FullConfig.PortalSubtitle -Order 91 `
+        -Namespace $Namespace -Subtitle $FullConfig.PortalSubtitle -Order 91 `
         -InternalUrl "http://argocd-server.argocd.svc.cluster.local" `
         -LogoUrl $portalIcon
 }
