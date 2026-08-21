@@ -642,6 +642,7 @@ $__exportFunctions = @(
   'Resolve-ServiceRealPorts'
   'Set-NetworkPolicyProviderIngress'
   'Set-NetworkPolicyConsumerEgress'
+  'Set-NetworkPolicyApiServerIngress'
   'Wait-MagaluClusterDeleted'
   'Remove-MagaluOrphanedVolumes'
 )
