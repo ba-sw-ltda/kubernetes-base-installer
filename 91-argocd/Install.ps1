@@ -143,22 +143,25 @@ if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
             # trust store, which does not include our custom root CA by default — the
             # OIDCConfig.RootCA field (embedded here as a YAML block scalar) is ArgoCD's
             # dedicated mechanism for this, separate from the argocd-tls-certs-cm
-            # ConfigMap used for Git-repo TLS. Same OpenBao CA lookup as Rancher's.
-            $rootCaYaml   = ""
-            $baoStateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
-            if (Test-Path $baoStateFile) {
-                $baoRootToken = (Get-Content $baoStateFile | ConvertFrom-Json).RootToken
-                $defaultPkis  = Get-OpenBaoPkis -BaseDir $BaseDir -Platform $Platform
-                $defaultPki   = $defaultPkis | Where-Object { $_['IsDefault'] } | Select-Object -First 1
-                if (-not $defaultPki) { $defaultPki = $defaultPkis | Select-Object -First 1 }
-                $caMount      = if ($defaultPki) { $defaultPki['MountPath'] } else { "pki" }
+            # ConfigMap used for Git-repo TLS. Same OpenBao CA lookup as Rancher's, only
+            # needed when the default PKI is a self-signed Root CA we minted ourselves.
+            $rootCaYaml = ""
+            $defaultPki = Get-OpenBaoDefaultRootPki -BaseDir $BaseDir -Platform $Platform
+            if ($defaultPki) {
+                $baoStateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+                if (Test-Path $baoStateFile) {
+                    $baoRootToken = (Get-Content $baoStateFile | ConvertFrom-Json).RootToken
+                    $caMount      = $defaultPki['MountPath']
 
-                $caCert = & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$baoRootToken bao read -field=certificate $caMount/cert/ca" 2>$null
-                if ($caCert) {
-                    $indentedCert = ($caCert -split "`r?`n" | Where-Object { $_ } | ForEach-Object { "    $_" }) -join "`n"
-                    $rootCaYaml   = "`nrootCA: |`n$indentedCert"
-                    Write-Host "  ✓ OpenBao root CA trusted by ArgoCD OIDC ($caMount)" -ForegroundColor Green
+                    $caCert = & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$baoRootToken bao read -field=certificate $caMount/cert/ca" 2>$null
+                    if ($caCert) {
+                        $indentedCert = ($caCert -split "`r?`n" | Where-Object { $_ } | ForEach-Object { "    $_" }) -join "`n"
+                        $rootCaYaml   = "`nrootCA: |`n$indentedCert"
+                        Write-Host "  ✓ OpenBao root CA trusted by ArgoCD OIDC ($caMount)" -ForegroundColor Green
+                    }
                 }
+            } else {
+                Write-Host "  · Default PKI isn't a self-signed Root CA — skipping CA-trust workaround" -ForegroundColor DarkGray
             }
 
             # $oidc.clientSecret is ArgoCD's own template reference to argocd-secret, not a PS variable
@@ -173,6 +176,31 @@ if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
             }} | ConvertTo-Json -Compress -Depth 5
             & kubectl patch configmap argocd-rbac-cm -n $Namespace --type merge -p $rbacPatch 2>&1 | Out-Null
             Write-Host "  ✓ Authelia OIDC registered" -ForegroundColor Green
+
+            # argocd-server itself calls Authelia's OIDC discovery/token endpoints over
+            # the same public hostname browsers use — cluster DNS must resolve it to
+            # Traefik. Same gap as 66-grafana/51-rancher; Test-HostnameNeedsClusterAlias
+            # checks it live rather than guessing from platform/hostname shape. The
+            # chart's global.hostAliases value applies to every component's pod, but
+            # only argocd-server actually calls out to Authelia, so this patches its
+            # Deployment directly instead (idempotent on re-install).
+            $autheliaHost = ([Uri]$oidcConfig.Issuer).Host
+            if (Test-HostnameNeedsClusterAlias -Hostname $autheliaHost -IngressNamespace "ingress" -IngressServiceName "traefik" -CheckNamespace $Namespace) {
+                $traefikClusterIp = (& kubectl get svc traefik -n ingress -o jsonpath='{.spec.clusterIP}' 2>$null)
+                if ($traefikClusterIp) {
+                    $hostAliasPatch = "{`"spec`":{`"template`":{`"spec`":{`"hostAliases`":[{`"ip`":`"$traefikClusterIp`",`"hostnames`":[`"$autheliaHost`"]}]}}}}"
+                    & kubectl patch deployment argocd-server -n $Namespace --type merge -p $hostAliasPatch 2>&1 | Out-Null
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Host "  ✓ argocd-server pod resolves $autheliaHost internally (hostAliases -> $traefikClusterIp)" -ForegroundColor Green
+                    } else {
+                        Write-Warning "Could not patch argocd-server's Deployment with a hostAliases entry for $autheliaHost — ArgoCD's OIDC calls to Authelia may fail with a DNS lookup error."
+                    }
+                } else {
+                    Write-Warning "Could not resolve Traefik's ClusterIP in the 'ingress' namespace — skipping the hostAliases entry for $autheliaHost. If the cluster's DNS can't resolve this hostname on its own (e.g. a synthetic domain that only exists in a client's hosts file), ArgoCD's OIDC calls to Authelia will fail with a DNS lookup error."
+                }
+            } else {
+                Write-Host "  · $autheliaHost already resolves correctly from inside the cluster — skipping hostAliases workaround" -ForegroundColor DarkGray
+            }
 
             $exitCode = Invoke-WithSpinner -Message "Restarting argocd-server for OIDC..." -Executable "kubectl" `
                 -Arguments @("rollout", "restart", "deployment/argocd-server", "-n", $Namespace) -ShowOutput:$verbose
