@@ -695,6 +695,7 @@ $__exportFunctions = @(
   'Test-AutheliaInstalled'
   'Register-PortalEntry'
   'Unregister-PortalEntry'
+  'Resolve-PendingPortalEntries'
   'Read-ComponentSelectionScreen'
   'Install-NetworkPolicyBaseline'
   'Resolve-ServiceRealPorts'
