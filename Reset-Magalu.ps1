@@ -165,6 +165,22 @@ if ($orphanVolumeIds.Count -gt 0) {
     }
 }
 
+# ── 3c. Sweep for any other orphaned volumes ──────────────────────
+# Step 2b/3b only catches volumes it managed to read from `kubectl get pv`
+# *before* the cluster died — if that read fails (kubectl already
+# unreachable, this script gets interrupted, a previous cluster was deleted
+# out-of-band via the Magalu console, etc.), those volumes are never
+# captured and are left behind permanently despite this script having run.
+# Confirmed live 2026-08-21: exactly this happened — 7 volumes (80GiB)
+# predating the current cluster were found still sitting in state
+# "available". This second, account-wide sweep is the general safety net:
+# it deletes every unattached volume in the region regardless of which
+# teardown (or lack of one) orphaned it, so drift never has to be found and
+# cleaned up by hand again — see [[feedback_no_manual_intervention]].
+Write-Host ""
+Write-Host "--- Orphaned-volume sweep ---" -ForegroundColor Magenta
+Remove-MagaluOrphanedVolumes -Region $state.Region | Out-Null
+
 # ── 4. Remove OpenBao unseal/root-token state ──────────────────────
 # A recreated cluster gets a brand-new OpenBao instance — these unseal keys
 # and root token describe the one that just got deleted. Leaving this file
