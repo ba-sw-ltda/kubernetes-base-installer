@@ -1490,6 +1490,82 @@ function Start-Installation {
             }
         }
 
+        # ── Cloud hosts-file sync ────────────────────────────────────────
+        # Written as early as the external LoadBalancer IP can possibly be
+        # known, not at the very end of the run — that used to mean every
+        # hostname sat unresolvable until every last component finished
+        # installing. The IP genuinely doesn't exist yet if "Ingress & Load
+        # Balancing" is being (re)provisioned this run, so for that case
+        # this fires right after that group installs, below — first thing
+        # in the install loop, not last. If Ingress ISN'T part of this run
+        # (already provisioned, unchecked-by-default on a later partial
+        # re-run), the IP already exists — synced right here, upfront,
+        # before anything else installs.
+        #
+        # Self-heals rather than relying solely on this run's prompts: also
+        # pulls hostnames from every live Ingress object already in the
+        # cluster, so an already-installed component that wasn't reselected
+        # this run (its hostname never entered $componentInputs) still gets
+        # its hosts-file entry verified/restored if it went missing. Found
+        # live on Magalu 2026-08-21: Authelia's "auth.*" entry was missing
+        # because "Security & Certificates" wasn't reselected on a later
+        # partial re-run, and nothing ever re-checked it.
+        #
+        # RKE2 (On-Premise) is deliberately excluded from this mechanism
+        # entirely: it's the one persistent, long-lived cluster and is meant
+        # to be resolved via real DNS, not a workstation-local hosts-file hack.
+        $cloudHostsPlatforms = @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")
+        $hostsFileSynced     = $false
+
+        function Sync-CloudHostsFile {
+            $hostnameSet = [System.Collections.Generic.List[string]]::new()
+            foreach ($inputs in $componentInputs.Values) {
+                if ($inputs -is [hashtable] -and $inputs.ContainsKey('Hostname') -and -not [string]::IsNullOrWhiteSpace($inputs['Hostname'])) {
+                    $hostnameSet.Add($inputs['Hostname'])
+                }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($domain)) {
+                $liveIngressJson = & kubectl get ingress -A -o json 2>$null
+                if ($LASTEXITCODE -eq 0 -and $liveIngressJson) {
+                    $liveHosts = @(($liveIngressJson | ConvertFrom-Json).items.spec.rules.host) |
+                        Where-Object { $_ -and $_.EndsWith(".$domain") }
+                    foreach ($h in $liveHosts) { $hostnameSet.Add($h) }
+                }
+            }
+            $hostnames = @($hostnameSet | Select-Object -Unique)
+            if ($hostnames.Count -eq 0) { return }
+
+            # Fast path: 11-ingress-traefik/Install.ps1 already resolved the IP
+            # this run and left it in .ingress-ip. Fall back to a live query
+            # against the ingress Service when it didn't run this session —
+            # the LoadBalancer still exists from a prior run, we just didn't
+            # (re)provision it just now.
+            $ipStateFile = Join-Path $PSScriptRoot ".ingress-ip"
+            $externalIp  = $null
+            if (Test-Path $ipStateFile) {
+                $externalIp = (Get-Content $ipStateFile -Raw).Trim()
+                Remove-Item $ipStateFile -Force -ErrorAction SilentlyContinue
+            }
+            if (-not $externalIp) {
+                $externalIp = if ($platform -eq "AWS EKS") {
+                    Get-EksIngressIp -Namespace "ingress"
+                } else {
+                    Get-AksIngressIp -Namespace "ingress"
+                }
+            }
+            if ($externalIp) {
+                Write-Host "`n--- Updating local hosts file ---" -ForegroundColor Magenta
+                Update-HostsFile -Hostnames $hostnames -IpAddress $externalIp
+            } else {
+                Write-Warning "  ⚠ Could not get external IP — update hosts file manually with the ingress LoadBalancer IP"
+            }
+        }
+
+        if ($platform -in $cloudHostsPlatforms -and "Ingress & Load Balancing" -notin $selectedComponentGroups) {
+            Sync-CloudHostsFile
+            $hostsFileSynced = $true
+        }
+
         # Fixed installation order — user selects WHAT, this defines WHEN.
         # Storage comes before Security so the Vault backend can use Longhorn as its storage class.
         $installOrder = @(
@@ -1532,54 +1608,12 @@ function Start-Installation {
                     }
                 }
             }
-        }
-
-        # Cloud platforms: update the local hosts file with the ingress LoadBalancer
-        # IP for every hostname collected this run. Deliberately NOT gated on
-        # "did the Ingress group run this session" — a later, partial run (e.g.
-        # only Rancher + Portal reselected on an already-provisioned cluster)
-        # never touches the Ingress group and would otherwise silently skip this
-        # entirely, leaving new hostnames unresolvable. So this runs once, after
-        # ALL groups have installed, driven purely by whether any selected
-        # component collected a Hostname this run.
-        #
-        # Kind already got its hosts-file update upfront (127.0.0.1, no IP to
-        # resolve) — skip it here to avoid a second, redundant pass.
-        # RKE2 (On-Premise) is deliberately excluded from this mechanism
-        # entirely: it's the one persistent, long-lived cluster and is meant to
-        # be resolved via real DNS, not a workstation-local hosts-file hack.
-        if ($platform -in @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")) {
-            $hostnames = @()
-            foreach ($inputs in $componentInputs.Values) {
-                if ($inputs -is [hashtable] -and $inputs.ContainsKey('Hostname') -and -not [string]::IsNullOrWhiteSpace($inputs['Hostname'])) {
-                    $hostnames += $inputs['Hostname']
-                }
-            }
-            if ($hostnames.Count -gt 0) {
-                # Fast path: 11-ingress-traefik/Install.ps1 already resolved the IP
-                # this run and left it in .ingress-ip. Fall back to a live query
-                # against the ingress Service when it didn't run this session —
-                # the LoadBalancer still exists from a prior run, we just didn't
-                # (re)provision it just now.
-                $ipStateFile = Join-Path $PSScriptRoot ".ingress-ip"
-                $externalIp = $null
-                if (Test-Path $ipStateFile) {
-                    $externalIp = (Get-Content $ipStateFile -Raw).Trim()
-                    Remove-Item $ipStateFile -Force -ErrorAction SilentlyContinue
-                }
-                if (-not $externalIp) {
-                    $externalIp = if ($platform -eq "AWS EKS") {
-                        Get-EksIngressIp -Namespace "ingress"
-                    } else {
-                        Get-AksIngressIp -Namespace "ingress"
-                    }
-                }
-                if ($externalIp) {
-                    Write-Host "`n--- Updating local hosts file ---" -ForegroundColor Magenta
-                    Update-HostsFile -Hostnames $hostnames -IpAddress $externalIp
-                } else {
-                    Write-Warning "  ⚠ Could not get external IP — update hosts file manually with the ingress LoadBalancer IP"
-                }
+            # As soon as Ingress finishes provisioning this run, the external
+            # IP is known for the first time — sync the hosts file right away
+            # instead of waiting for every other group to finish too.
+            if ($group -eq "Ingress & Load Balancing" -and $platform -in $cloudHostsPlatforms -and -not $hostsFileSynced) {
+                Sync-CloudHostsFile
+                $hostsFileSynced = $true
             }
         }
     }
