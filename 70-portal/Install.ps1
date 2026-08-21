@@ -325,6 +325,14 @@ $exitCode = Invoke-WithSpinner -Message "Waiting for rollout..." -Executable "ku
 if ($exitCode -ne 0) { Write-Error "Homer rollout did not complete — check cluster state"; exit 1 }
 Write-Host "  ✓ Homer ready" -ForegroundColor Green
 
+# Components installed before Portal existed on this cluster couldn't write
+# into a "portal" namespace they had no business creating, so their
+# Register-PortalEntry call parked the fully-resolved entry on themselves
+# instead. Now that Homer is up, relocate those — this reads markers each
+# component already wrote on its own ConfigMaps, not a list of components,
+# so nothing here needs updating as components are added.
+Resolve-PendingPortalEntries
+
 # ── 7. Ingress ────────────────────────────────────────────────────────────────
 $protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform -BaseDir $BaseDir
 $authAnnotations = ($protect.Annotations.GetEnumerator() | ForEach-Object { "    $($_.Key): `"$($_.Value)`"" }) -join "`n"
@@ -382,7 +390,8 @@ Write-Host "  Entries:   kubectl get configmap -n portal -l portal/entry=true" -
 Write-Host ""
 Write-Host "  The sidecar regenerates config.yml every 30 s from ConfigMaps" -ForegroundColor Gray
 Write-Host "  labelled portal/entry=true.  Components register automatically" -ForegroundColor Gray
-Write-Host "  via Register-PortalEntry whether or not the portal is installed." -ForegroundColor Gray
+Write-Host "  via Register-PortalEntry whether or not the portal is installed —" -ForegroundColor Gray
+Write-Host "  entries registered earlier are relocated here automatically." -ForegroundColor Gray
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 
 Write-Host "`n========================================" -ForegroundColor Cyan
