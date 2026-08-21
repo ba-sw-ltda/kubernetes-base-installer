@@ -223,71 +223,87 @@ grafana.ini:
 # matches the one baked into the authorization code). auth_url/token_url/api_url must all stay
 # on the public https://$autheliaHost/... hostname, routed through Traefik.
 #
-# On platforms with a real DNS domain (e.g. RKE2) the cluster's own resolver already reaches
-# that hostname via the public IP, same as any browser. On synthetic-domain platforms (e.g.
+# On platforms with a real DNS domain (e.g. RKE2, or a cloud provider's own DNS label like
+# *.cloudapp.azure.com) the cluster's own resolver already reaches that hostname via the
+# public IP, same as any browser — no workaround needed. On synthetic-domain platforms (e.g.
 # Magalu's *.mgc.local, which exists only in a client's hosts file) the cluster has no way to
 # resolve it — so we add a pod-scoped hostAliases entry mapping just this one hostname to
 # Traefik's internal ClusterIP. This is scoped to the Grafana pod only; no cluster-wide CoreDNS
-# change, no assumption baked in for any other component.
+# change. Test-HostnameNeedsClusterAlias asks the cluster directly (resolve the hostname,
+# compare against Traefik's real LoadBalancer IP) instead of hardcoding which platforms are
+# "real" vs "synthetic" — that hardcoded-platform-list pattern has bitten this codebase before
+# (see the Magalu OpenBao platform-gate history) and would need updating every time a new
+# platform or a real customer domain is added.
 if ($oidcConfig) {
     $autheliaHost = ([Uri]$oidcIssuer).Host
-    $traefikClusterIp = (& kubectl get svc traefik -n ingress -o jsonpath='{.spec.clusterIP}' 2>$null)
-    if ($traefikClusterIp) {
-        $oidcIniBlock += @"
+    if (Test-HostnameNeedsClusterAlias -Hostname $autheliaHost -IngressNamespace "ingress" -IngressServiceName "traefik" -CheckNamespace $Namespace) {
+        $traefikClusterIp = (& kubectl get svc traefik -n ingress -o jsonpath='{.spec.clusterIP}' 2>$null)
+        if ($traefikClusterIp) {
+            $oidcIniBlock += @"
 
 hostAliases:
   - ip: "$traefikClusterIp"
     hostnames:
       - "$autheliaHost"
 "@
-        Write-Host "  ✓ Grafana pod resolves $autheliaHost internally (hostAliases -> $traefikClusterIp)" -ForegroundColor Green
+            Write-Host "  ✓ Grafana pod resolves $autheliaHost internally (hostAliases -> $traefikClusterIp)" -ForegroundColor Green
+        } else {
+            Write-Warning "Could not resolve Traefik's ClusterIP in the 'ingress' namespace — skipping the hostAliases entry for $autheliaHost. If the cluster's DNS can't resolve this hostname on its own (e.g. a synthetic domain that only exists in a client's hosts file), Grafana's OIDC login will fail with a DNS lookup error."
+        }
     } else {
-        Write-Warning "Could not resolve Traefik's ClusterIP in the 'ingress' namespace — skipping the hostAliases entry for $autheliaHost. If the cluster's DNS can't resolve this hostname on its own (e.g. a synthetic domain that only exists in a client's hosts file), Grafana's OIDC login will fail with a DNS lookup error."
+        Write-Host "  · $autheliaHost already resolves correctly from inside the cluster — skipping hostAliases workaround" -ForegroundColor DarkGray
     }
 }
 
 # Grafana's backend performs the OIDC token/userinfo exchange with Authelia server-side,
-# which must trust the OpenBao root CA — same trust-store gap Rancher and ArgoCD already
-# work around (see 51-rancher and 91-argocd). Grafana has no per-provider TLS-CA setting,
-# so an init container appends the CA to the pod's system bundle instead: the grafana/grafana
-# image already ships a flat /etc/ssl/certs/ca-certificates.crt (standard Alpine layout),
-# which Go's x509 package reads directly — no update-ca-certificates or root needed.
+# which must trust whatever CA signed the ingress TLS cert. That's only a problem when the
+# ingress ClusterIssuer is backed by an OpenBao PKI of Type "Root" — a CA we minted ourselves,
+# which no image's default trust store knows about (same trust-store gap Rancher and ArgoCD
+# already work around, see 51-rancher and 91-argocd). A PKI of Type "Intermediate" (an
+# externally-signed Corporate CA already distributed to clients org-wide) or a future ACME/
+# Let's Encrypt PKI is already trusted without our help — patching it in would be redundant
+# and would leave a stale, unnecessary CA baked into the pod. Grafana has no per-provider
+# TLS-CA setting, so an init container appends the CA to the pod's system bundle instead: the
+# grafana/grafana image already ships a flat /etc/ssl/certs/ca-certificates.crt (standard
+# Alpine layout), which Go's x509 package reads directly — no update-ca-certificates needed.
 $caTrustViaSet = $false
 if ($oidcConfig) {
-    $baoStateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
-    if (Test-Path $baoStateFile) {
-        $baoRootToken = (Get-Content $baoStateFile | ConvertFrom-Json).RootToken
-        $defaultPkis  = Get-OpenBaoPkis -BaseDir $BaseDir -Platform $Platform
-        $defaultPki   = $defaultPkis | Where-Object { $_['IsDefault'] } | Select-Object -First 1
-        if (-not $defaultPki) { $defaultPki = $defaultPkis | Select-Object -First 1 }
-        $caMount      = if ($defaultPki) { $defaultPki['MountPath'] } else { "pki" }
+    $defaultPkis = Get-OpenBaoPkis -BaseDir $BaseDir -Platform $Platform
+    $defaultPki  = $defaultPkis | Where-Object { $_['IsDefault'] } | Select-Object -First 1
+    if (-not $defaultPki) { $defaultPki = $defaultPkis | Select-Object -First 1 }
 
-        $caCert = & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$baoRootToken bao read -field=certificate $caMount/cert/ca" 2>$null
-        if ($caCert) {
-            # kubectl's stdout is captured by PowerShell as a string array (one element
-            # per line). Set-Content -NoNewline with an array input concatenates elements
-            # with NO separator at all (not just no *trailing* newline) — this previously
-            # collapsed the multi-line PEM into one unparseable line, silently defeating
-            # Go's encoding/pem line-based parser (bytes present, but never actually
-            # loaded into the trust store). Re-join with real newlines first.
-            $caCertText = ($caCert -join "`n") + "`n"
-            $caCertFile = New-TemporaryFile
-            Set-Content -Path $caCertFile.FullName -Value $caCertText -Encoding UTF8 -NoNewline
-            & kubectl create secret generic tls-ca-additional -n $Namespace `
-                --from-file="ca-additional.pem=$($caCertFile.FullName)" `
-                --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
-            Remove-Item $caCertFile.FullName -Force -ErrorAction SilentlyContinue
+    if ($defaultPki -and $defaultPki['Type'] -eq 'Root') {
+        $baoStateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+        if (Test-Path $baoStateFile) {
+            $baoRootToken = (Get-Content $baoStateFile | ConvertFrom-Json).RootToken
+            $caMount      = $defaultPki['MountPath']
 
-            # extraVolumeMounts[0] is already claimed by New-CsiSecretMount's --set flags
-            # (vault-secrets, see $mount.HelmArgs below). --set is applied by Helm after all
-            # -f/--values files, and merges into an existing array *by index*, field-by-field
-            # — it does not append. Putting our own entry at index 0 here previously got
-            # silently field-merged with the vault-secrets mount (name/mountPath overwritten
-            # by --set, our subPath surviving), which mounted neither correctly and broke
-            # OIDC token exchange (unknown-authority TLS error). When CSI is active, our
-            # mount is added as index [1] via --set instead (see below); the YAML form here
-            # is only safe to use in the no-CSI fallback, where nothing else claims index 0.
-            $caTrustExtraVolumeMountsYaml = if (-not $mount.Installed) { @"
+            $caCert = & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$baoRootToken bao read -field=certificate $caMount/cert/ca" 2>$null
+            if ($caCert) {
+                # kubectl's stdout is captured by PowerShell as a string array (one element
+                # per line). Set-Content -NoNewline with an array input concatenates elements
+                # with NO separator at all (not just no *trailing* newline) — this previously
+                # collapsed the multi-line PEM into one unparseable line, silently defeating
+                # Go's encoding/pem line-based parser (bytes present, but never actually
+                # loaded into the trust store). Re-join with real newlines first.
+                $caCertText = ($caCert -join "`n") + "`n"
+                $caCertFile = New-TemporaryFile
+                Set-Content -Path $caCertFile.FullName -Value $caCertText -Encoding UTF8 -NoNewline
+                & kubectl create secret generic tls-ca-additional -n $Namespace `
+                    --from-file="ca-additional.pem=$($caCertFile.FullName)" `
+                    --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
+                Remove-Item $caCertFile.FullName -Force -ErrorAction SilentlyContinue
+
+                # extraVolumeMounts[0] is already claimed by New-CsiSecretMount's --set flags
+                # (vault-secrets, see $mount.HelmArgs below). --set is applied by Helm after all
+                # -f/--values files, and merges into an existing array *by index*, field-by-field
+                # — it does not append. Putting our own entry at index 0 here previously got
+                # silently field-merged with the vault-secrets mount (name/mountPath overwritten
+                # by --set, our subPath surviving), which mounted neither correctly and broke
+                # OIDC token exchange (unknown-authority TLS error). When CSI is active, our
+                # mount is added as index [1] via --set instead (see below); the YAML form here
+                # is only safe to use in the no-CSI fallback, where nothing else claims index 0.
+                $caTrustExtraVolumeMountsYaml = if (-not $mount.Installed) { @"
 extraVolumeMounts:
   - name: ca-bundle
     mountPath: /etc/ssl/certs/ca-certificates.crt
@@ -295,7 +311,7 @@ extraVolumeMounts:
     readOnly: true
 "@ } else { "" }
 
-            $oidcIniBlock += @"
+                $oidcIniBlock += @"
 
 extraContainerVolumes:
   - name: ca-additional
@@ -315,8 +331,9 @@ extraInitContainers:
         mountPath: /ca-bundle
 $caTrustExtraVolumeMountsYaml
 "@
-            $caTrustViaSet = $mount.Installed
-            Write-Host "  ✓ OpenBao root CA trusted by Grafana OIDC ($caMount, tls-ca-additional)" -ForegroundColor Green
+                $caTrustViaSet = $mount.Installed
+                Write-Host "  ✓ OpenBao root CA trusted by Grafana OIDC ($caMount, tls-ca-additional)" -ForegroundColor Green
+            }
         }
     }
 }
