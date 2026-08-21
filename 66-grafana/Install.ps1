@@ -203,8 +203,8 @@ grafana.ini:
     client_secret: "$clientSecretInIni"
     scopes: "openid profile email groups"
     auth_url: "$oidcIssuer/api/oidc/authorization"
-    token_url: "$oidcIssuer/api/oidc/token"
-    api_url: "$oidcIssuer/api/oidc/userinfo"
+    token_url: "http://authelia.authelia.svc.cluster.local/api/oidc/token"
+    api_url: "http://authelia.authelia.svc.cluster.local/api/oidc/userinfo"
     login_attribute_path: "preferred_username"
     name_attribute_path: "name"
     email_attribute_path: "email"
@@ -215,80 +215,11 @@ grafana.ini:
 "@
 }
 
-# Grafana's backend performs the OIDC token/userinfo exchange with Authelia server-side,
-# which must trust the OpenBao root CA — same trust-store gap Rancher and ArgoCD already
-# work around (see 51-rancher and 91-argocd). Grafana has no per-provider TLS-CA setting,
-# so an init container appends the CA to the pod's system bundle instead: the grafana/grafana
-# image already ships a flat /etc/ssl/certs/ca-certificates.crt (standard Alpine layout),
-# which Go's x509 package reads directly — no update-ca-certificates or root needed.
-$caTrustViaSet = $false
-if ($oidcConfig) {
-    $baoStateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
-    if (Test-Path $baoStateFile) {
-        $baoRootToken = (Get-Content $baoStateFile | ConvertFrom-Json).RootToken
-        $defaultPkis  = Get-OpenBaoPkis -BaseDir $BaseDir -Platform $Platform
-        $defaultPki   = $defaultPkis | Where-Object { $_['IsDefault'] } | Select-Object -First 1
-        if (-not $defaultPki) { $defaultPki = $defaultPkis | Select-Object -First 1 }
-        $caMount      = if ($defaultPki) { $defaultPki['MountPath'] } else { "pki" }
-
-        $caCert = & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$baoRootToken bao read -field=certificate $caMount/cert/ca" 2>$null
-        if ($caCert) {
-            # kubectl's stdout is captured by PowerShell as a string array (one element
-            # per line). Set-Content -NoNewline with an array input concatenates elements
-            # with NO separator at all (not just no *trailing* newline) — this previously
-            # collapsed the multi-line PEM into one unparseable line, silently defeating
-            # Go's encoding/pem line-based parser (bytes present, but never actually
-            # loaded into the trust store). Re-join with real newlines first.
-            $caCertText = ($caCert -join "`n") + "`n"
-            $caCertFile = New-TemporaryFile
-            Set-Content -Path $caCertFile.FullName -Value $caCertText -Encoding UTF8 -NoNewline
-            & kubectl create secret generic tls-ca-additional -n $Namespace `
-                --from-file="ca-additional.pem=$($caCertFile.FullName)" `
-                --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
-            Remove-Item $caCertFile.FullName -Force -ErrorAction SilentlyContinue
-
-            # extraVolumeMounts[0] is already claimed by New-CsiSecretMount's --set flags
-            # (vault-secrets, see $mount.HelmArgs below). --set is applied by Helm after all
-            # -f/--values files, and merges into an existing array *by index*, field-by-field
-            # — it does not append. Putting our own entry at index 0 here previously got
-            # silently field-merged with the vault-secrets mount (name/mountPath overwritten
-            # by --set, our subPath surviving), which mounted neither correctly and broke
-            # OIDC token exchange (unknown-authority TLS error). When CSI is active, our
-            # mount is added as index [1] via --set instead (see below); the YAML form here
-            # is only safe to use in the no-CSI fallback, where nothing else claims index 0.
-            $caTrustExtraVolumeMountsYaml = if (-not $mount.Installed) { @"
-extraVolumeMounts:
-  - name: ca-bundle
-    mountPath: /etc/ssl/certs/ca-certificates.crt
-    subPath: ca-certificates.crt
-    readOnly: true
-"@ } else { "" }
-
-            $oidcIniBlock += @"
-
-extraContainerVolumes:
-  - name: ca-additional
-    secret:
-      secretName: tls-ca-additional
-  - name: ca-bundle
-    emptyDir: {}
-extraInitContainers:
-  - name: trust-openbao-ca
-    image: "{{ .Values.global.imageRegistry | default .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-    command: ["sh", "-c", "cp /etc/ssl/certs/ca-certificates.crt /ca-bundle/ca-certificates.crt && cat /extra-ca/ca-additional.pem >> /ca-bundle/ca-certificates.crt"]
-    volumeMounts:
-      - name: ca-additional
-        mountPath: /extra-ca
-        readOnly: true
-      - name: ca-bundle
-        mountPath: /ca-bundle
-$caTrustExtraVolumeMountsYaml
-"@
-            $caTrustViaSet = $mount.Installed
-            Write-Host "  ✓ OpenBao root CA trusted by Grafana OIDC ($caMount, tls-ca-additional)" -ForegroundColor Green
-        }
-    }
-}
+# token_url/api_url point at Authelia's internal Service (plain HTTP, cluster-local DNS)
+# instead of the public ingress hostname. Only the browser needs auth_url to be public and
+# TLS-terminated; Grafana's backend does the token/userinfo exchange server-to-server, so it
+# talks to Authelia directly inside the cluster — no OpenBao root CA to trust, no dependency
+# on the cluster's DNS resolving a hostname that only exists in a client's hosts file.
 
 $valuesYaml = if ($mount.Installed) { @"
 datasources:
@@ -353,13 +284,6 @@ if ($mount.Installed) {
     $HelmArgs += $mount.HelmArgs
     $HelmArgs += "--set", "adminUser=$($UserConfig.AdminUser)"
     $HelmArgs += "--set-string", "adminPassword=managed-by-vault"
-    if ($caTrustViaSet) {
-        # index [1] — [0] is vault-secrets, set by $mount.HelmArgs above.
-        $HelmArgs += "--set", "extraVolumeMounts[1].name=ca-bundle"
-        $HelmArgs += "--set", "extraVolumeMounts[1].mountPath=/etc/ssl/certs/ca-certificates.crt"
-        $HelmArgs += "--set", "extraVolumeMounts[1].subPath=ca-certificates.crt"
-        $HelmArgs += "--set", "extraVolumeMounts[1].readOnly=true"
-    }
 } else {
     $HelmArgs += "--set", "adminUser=$($UserConfig.AdminUser)"
     $HelmArgs += "--set-string", "adminPassword=$AdminPassword"
@@ -459,22 +383,22 @@ if ($tracingNamespace -eq "jaeger") {
     Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "tempo" -Port $tempoQueryFrontendPort
 }
 if ($oidcConfig) {
-    # auth_url/token_url/api_url are all https://$autheliaHost/... (public
-    # ingress hostname, TLS-terminated at the ingress controller). NetworkPolicy
-    # `ports` always matches the pod's real destination port after the
-    # Service's DNAT rewrites it — standard Kubernetes NetworkPolicy semantics,
-    # true for every CNI that implements the API (Calico, Cilium, Azure NPM,
-    # ...), not a platform quirk — so this must be Traefik's actual websecure
-    # container port, not the Service's externally-advertised 443.
-    # -Port is a mandatory int[] — PowerShell rejects an *empty* array at
-    # parameter binding (a terminating error, not a graceful no-op), so an
-    # unresolved Traefik Service (e.g. a cluster still running the
-    # pre-migration ingress-nginx controller) must not abort this whole install.
-    $ingressWebsecurePort = Resolve-ServiceRealPorts -Namespace "ingress" -ServiceName "traefik" -ServicePortName "websecure"
-    if ($ingressWebsecurePort) {
-        Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "ingress" -Port $ingressWebsecurePort
+    # token_url/api_url point at Authelia's internal Service directly (see $oidcIniBlock
+    # above) — only the browser needs to reach the public ingress hostname for auth_url,
+    # so Grafana's backend only needs egress to the authelia namespace, not to ingress.
+    # NetworkPolicy `ports` always matches the pod's real destination port after the
+    # Service's DNAT rewrites it — standard Kubernetes NetworkPolicy semantics, true for
+    # every CNI that implements the API (Calico, Cilium, Azure NPM, ...), not a platform
+    # quirk — so this must be Authelia's actual container port (9091), not the Service's
+    # externally-advertised 80.
+    # -Port is a mandatory int[] — PowerShell rejects an *empty* array at parameter
+    # binding (a terminating error, not a graceful no-op), so an unresolved Authelia
+    # Service must not abort this whole install.
+    $autheliaPort = Resolve-ServiceRealPorts -Namespace "authelia" -ServiceName "authelia"
+    if ($autheliaPort) {
+        Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "authelia" -Port $autheliaPort
     } else {
-        Write-Warning "Could not resolve Traefik's websecure port in the 'ingress' namespace — skipping Grafana's OIDC egress NetworkPolicy rule. If this cluster's ingress controller isn't Traefik yet, Grafana's OIDC login via Authelia will be blocked until this is fixed manually or the ingress layer is migrated."
+        Write-Warning "Could not resolve Authelia's port in the 'authelia' namespace — skipping Grafana's OIDC egress NetworkPolicy rule. Grafana's OIDC login via Authelia will be blocked until this is fixed manually or Authelia is installed."
     }
 }
 
