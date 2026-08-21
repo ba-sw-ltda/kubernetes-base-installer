@@ -30,7 +30,7 @@ $result = Invoke-ScriptBlockWithSpinner -Message "Uninstalling Jaeger..." -Scrip
     [PSCustomObject]@{ ExitCode = $helmExit }
 } -ArgumentList @($env:PATH, $env:KUBECONFIG) | Select-Object -Last 1
 
-Unregister-PortalEntry -Name "Jaeger" -Order 64 *>$null
+Unregister-PortalEntry -Name "Jaeger" -Order 64 -Namespace "jaeger" *>$null
 
 if ($result.ExitCode -ne 0) {
     Write-Warning "Could not uninstall Jaeger — continuing"
