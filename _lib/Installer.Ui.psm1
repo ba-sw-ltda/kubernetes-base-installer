@@ -643,6 +643,7 @@ $__exportFunctions = @(
   'Set-NetworkPolicyProviderIngress'
   'Set-NetworkPolicyConsumerEgress'
   'Wait-MagaluClusterDeleted'
+  'Remove-MagaluOrphanedVolumes'
 )
 
 Export-ModuleMember -Function $__exportFunctions
