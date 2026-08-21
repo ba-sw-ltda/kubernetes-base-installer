@@ -353,7 +353,13 @@ function Sync-AutheliaConfiguration {
         $hashedSecret = Get-AutheliaSecretHash -Secret $client["secret"]
         if (-not $hashedSecret) { Write-Warning "  Sync-AutheliaConfiguration: could not hash secret for OIDC client '$id' — skipping it this round"; continue }
         $redirectUris = @($client["redirect_uris"] -split ',' | Where-Object { $_ })
-        $scopes       = if ($client["scopes"]) { @($client["scopes"] -split ',' | Where-Object { $_ }) } else { @("openid", "profile", "email", "groups") }
+        # NOTE: assigning directly from an if/else *expression* (`$x = if (...) {...} else {...}`)
+        # silently collapses a single-element array to a bare scalar even when the branch
+        # itself is wrapped in @() — confirmed the root cause of the oidc-clients-registry
+        # comma-loss bug in Register-AutheliaOidcClient below. Pre-declare + conditionally
+        # reassign instead; see the PowerShell array-collapse bug-class memory.
+        $scopes = @("openid", "profile", "email", "groups")
+        if ($client["scopes"]) { $scopes = @($client["scopes"] -split ',' | Where-Object { $_ }) }
         # offline_access is what makes Authelia issue a refresh_token at all —
         # without it (and without refresh_token below in grant_types), Rancher's
         # periodic group-membership refresh has nothing to call, and its OIDC
@@ -546,8 +552,15 @@ function Register-AutheliaOidcClient {
     }
 
     # Add this client to the registry Sync-AutheliaConfiguration reads, if not already there.
+    # NOTE: must NOT assign directly from an if/else *expression* here — that silently
+    # collapses a single-element array to a bare scalar even with @() around the branch,
+    # which turns the "$clientIds += $ClientId" below into string concatenation instead
+    # of an array append (confirmed root cause of the "ranchergrafanaargocd" comma-loss
+    # bug that broke Authelia's OIDC config entirely). Pre-declare + conditionally
+    # reassign instead; see the PowerShell array-collapse bug-class memory.
     $registry  = Get-ClusterSecret -Path "authelia/oidc-clients-registry" -Keys @("ids") -BaseDir $BaseDir -Platform $Platform
-    $clientIds = if ($registry -and $registry["ids"]) { @($registry["ids"] -split ',' | Where-Object { $_ }) } else { @() }
+    $clientIds = @()
+    if ($registry -and $registry["ids"]) { $clientIds = @($registry["ids"] -split ',' | Where-Object { $_ }) }
     if ($ClientId -notin $clientIds) {
         $clientIds += $ClientId
         Write-ClusterSecret -Path "authelia/oidc-clients-registry" -BaseDir $BaseDir -Platform $Platform -Data @{
