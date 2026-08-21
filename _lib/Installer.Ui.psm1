@@ -237,6 +237,50 @@ function Save-OpenBaoPkis {
     $state | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile -Encoding UTF8
 }
 
+<#
+.SYNOPSIS
+    Returns the platform's default OpenBao PKI mount, but only if it's a
+    self-signed Root CA (Type "Root") — $null for everything else.
+.DESCRIPTION
+    Backend server-to-server TLS calls (Grafana's OIDC token exchange,
+    Rancher's/ArgoCD's OIDC discovery call to Authelia) only need a CA
+    manually patched into the pod's trust store when the ingress cert chains
+    to a Root CA minted by OpenBao itself — no image ships that in its
+    default trust store. A PKI of Type "Intermediate" (an externally-signed
+    Corporate CA already distributed to clients org-wide) or a future
+    ACME/Let's Encrypt PKI is already trusted without any of this, so callers
+    should skip the whole CA-trust-via-init-container hack when this returns
+    $null — never gate on -Platform or any other hardcoded signal, since the
+    PKI Type is the one thing that actually determines whether the CA is
+    already trusted elsewhere. Centralized here (rather than duplicated per
+    component) so a future PKI Type — or a change in which types need this —
+    only has to be taught to one function.
+.PARAMETER BaseDir
+.PARAMETER Platform
+.OUTPUTS
+    hashtable — the default PKI entry (Name, MountPath, Type, Roles, IsDefault,
+    Status) when its Type is "Root"; $null when the default PKI is
+    Intermediate/ACME, or when no PKI is configured at all.
+.EXAMPLE
+    if ($rootPki = Get-OpenBaoDefaultRootPki -BaseDir $BaseDir -Platform $Platform) {
+        # trust $($rootPki['MountPath'])/cert/ca in the component's pod
+    } else {
+        Write-Host "  · Default PKI isn't a self-signed Root CA — skipping CA-trust workaround" -ForegroundColor DarkGray
+    }
+#>
+function Get-OpenBaoDefaultRootPki {
+    param(
+        [string]$BaseDir  = $script:InstallerBaseDir,
+        [string]$Platform = ""
+    )
+    if ([string]::IsNullOrWhiteSpace($Platform)) { $Platform = $script:InstallerPlatform }
+    $defaultPkis = Get-OpenBaoPkis -BaseDir $BaseDir -Platform $Platform
+    $defaultPki  = $defaultPkis | Where-Object { $_['IsDefault'] } | Select-Object -First 1
+    if (-not $defaultPki) { $defaultPki = $defaultPkis | Select-Object -First 1 }
+    if ($defaultPki -and $defaultPki['Type'] -eq 'Root') { return $defaultPki }
+    return $null
+}
+
 
 # -------------------------
 # Generates an htpasswd-format bcrypt hash via a throwaway pod (httpd:alpine
@@ -633,6 +677,7 @@ $__exportFunctions = @(
   'Get-OpenBaoStateFile'
   'Get-OpenBaoPkis'
   'Save-OpenBaoPkis'
+  'Get-OpenBaoDefaultRootPki'
   'Get-ClusterIssuerName'
   'Write-AzureKeyVaultSecret'
   'Write-AwsSecretsManagerSecret'

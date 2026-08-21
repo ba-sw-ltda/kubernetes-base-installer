@@ -268,11 +268,9 @@ hostAliases:
 # Alpine layout), which Go's x509 package reads directly — no update-ca-certificates needed.
 $caTrustViaSet = $false
 if ($oidcConfig) {
-    $defaultPkis = Get-OpenBaoPkis -BaseDir $BaseDir -Platform $Platform
-    $defaultPki  = $defaultPkis | Where-Object { $_['IsDefault'] } | Select-Object -First 1
-    if (-not $defaultPki) { $defaultPki = $defaultPkis | Select-Object -First 1 }
+    $defaultPki = Get-OpenBaoDefaultRootPki -BaseDir $BaseDir -Platform $Platform
 
-    if ($defaultPki -and $defaultPki['Type'] -eq 'Root') {
+    if ($defaultPki) {
         $baoStateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
         if (Test-Path $baoStateFile) {
             $baoRootToken = (Get-Content $baoStateFile | ConvertFrom-Json).RootToken
@@ -335,6 +333,8 @@ $caTrustExtraVolumeMountsYaml
                 Write-Host "  ✓ OpenBao root CA trusted by Grafana OIDC ($caMount, tls-ca-additional)" -ForegroundColor Green
             }
         }
+    } else {
+        Write-Host "  · Default PKI isn't a self-signed Root CA — skipping CA-trust workaround" -ForegroundColor DarkGray
     }
 }
 
