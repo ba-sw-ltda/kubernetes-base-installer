@@ -139,27 +139,30 @@ if ($issuerName) {
     # Rancher's backend validates certs against its own trust store, which does
     # not include our custom root CA by default — needed for the OIDC discovery
     # call to Authelia to succeed. `additionalTrustedCAs` mounts this secret.
-    # Read the CA cert from the default PKI's mount (multi-PKI aware); fall back
-    # to the legacy "pki" mount if the state file has no PKIs array yet.
-    $baoStateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
-    if (Test-Path $baoStateFile) {
-        $baoRootToken  = (Get-Content $baoStateFile | ConvertFrom-Json).RootToken
-        $defaultPkis   = Get-OpenBaoPkis -BaseDir $BaseDir -Platform $Platform
-        $defaultPki    = $defaultPkis | Where-Object { $_['IsDefault'] } | Select-Object -First 1
-        if (-not $defaultPki) { $defaultPki = $defaultPkis | Select-Object -First 1 }
-        $caMount       = if ($defaultPki) { $defaultPki['MountPath'] } else { "pki" }
+    # Only needed when the default PKI is a self-signed Root CA we minted
+    # ourselves — an Intermediate (externally-signed Corporate CA) or a future
+    # ACME/Let's Encrypt PKI is already trusted without our help.
+    $defaultPki = Get-OpenBaoDefaultRootPki -BaseDir $BaseDir -Platform $Platform
+    if ($defaultPki) {
+        $baoStateFile = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
+        if (Test-Path $baoStateFile) {
+            $baoRootToken = (Get-Content $baoStateFile | ConvertFrom-Json).RootToken
+            $caMount      = $defaultPki['MountPath']
 
-        $caCert = & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$baoRootToken bao read -field=certificate $caMount/cert/ca" 2>$null
-        if ($caCert) {
-            $caCertFile = New-TemporaryFile
-            Set-Content -Path $caCertFile.FullName -Value $caCert -Encoding UTF8 -NoNewline
-            & kubectl create secret generic tls-ca-additional -n $Namespace `
-                --from-file="ca-additional.pem=$($caCertFile.FullName)" `
-                --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
-            Remove-Item $caCertFile.FullName -Force -ErrorAction SilentlyContinue
-            $HelmArgs += "--set", "additionalTrustedCAs=true"
-            Write-Host "  ✓ OpenBao root CA trusted by Rancher ($caMount, tls-ca-additional)" -ForegroundColor Green
+            $caCert = & kubectl exec openbao-0 -n openbao -- sh -c "BAO_TOKEN=$baoRootToken bao read -field=certificate $caMount/cert/ca" 2>$null
+            if ($caCert) {
+                $caCertFile = New-TemporaryFile
+                Set-Content -Path $caCertFile.FullName -Value $caCert -Encoding UTF8 -NoNewline
+                & kubectl create secret generic tls-ca-additional -n $Namespace `
+                    --from-file="ca-additional.pem=$($caCertFile.FullName)" `
+                    --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
+                Remove-Item $caCertFile.FullName -Force -ErrorAction SilentlyContinue
+                $HelmArgs += "--set", "additionalTrustedCAs=true"
+                Write-Host "  ✓ OpenBao root CA trusted by Rancher ($caMount, tls-ca-additional)" -ForegroundColor Green
+            }
         }
+    } else {
+        Write-Host "  · Default PKI isn't a self-signed Root CA — skipping CA-trust workaround" -ForegroundColor DarkGray
     }
 } else {
     $HelmArgs += "--set", "ingress.tls.source=$($UserConfig.TlsSource)"
@@ -259,6 +262,42 @@ groupPrincipalName: "oidc_group://admins"
     }
 } else {
     Write-Warning "  Could not register Rancher as an Authelia OIDC client"
+}
+
+# Rancher's backend performs the OIDC discovery/token calls to Authelia over
+# the same public hostname browsers use — cluster DNS must resolve it to
+# Traefik. On a real domain this just works; on a synthetic hostname that
+# only exists in a client's hosts file (or an environment without a real
+# cluster-DNS entry at all), it doesn't, so the OIDC call fails with a DNS
+# lookup error. Test-HostnameNeedsClusterAlias checks this live rather than
+# guessing from the platform/hostname shape (see 66-grafana's identical
+# workaround for the reasoning). The Rancher chart has no hostAliases value
+# (unlike Grafana's), so this patches the Deployment directly — idempotent
+# on re-install since a matching hostAliases entry is a no-op merge.
+if ($oidc) {
+    $autheliaHost = ([Uri]$oidc.Issuer).Host
+    if (Test-HostnameNeedsClusterAlias -Hostname $autheliaHost -IngressNamespace "ingress" -IngressServiceName "traefik" -CheckNamespace $Namespace) {
+        $traefikClusterIp = (& kubectl get svc traefik -n ingress -o jsonpath='{.spec.clusterIP}' 2>$null)
+        if ($traefikClusterIp) {
+            $hostAliasPatch = "{`"spec`":{`"template`":{`"spec`":{`"hostAliases`":[{`"ip`":`"$traefikClusterIp`",`"hostnames`":[`"$autheliaHost`"]}]}}}}"
+            & kubectl patch deployment rancher -n $Namespace --type merge -p $hostAliasPatch 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                $exitCode = Invoke-WithSpinner -Message "Restarting Rancher with hostAliases..." -Executable "kubectl" `
+                    -Arguments @("rollout", "status", "deployment/rancher", "-n", $Namespace, "--timeout=10m") -ShowOutput:$verbose
+                if ($exitCode -eq 0) {
+                    Write-Host "  ✓ Rancher pod resolves $autheliaHost internally (hostAliases -> $traefikClusterIp)" -ForegroundColor Green
+                } else {
+                    Write-Warning "Rancher did not roll out cleanly after patching in the hostAliases entry for $autheliaHost — check pod status."
+                }
+            } else {
+                Write-Warning "Could not patch Rancher's Deployment with a hostAliases entry for $autheliaHost — Rancher's OIDC calls to Authelia may fail with a DNS lookup error."
+            }
+        } else {
+            Write-Warning "Could not resolve Traefik's ClusterIP in the 'ingress' namespace — skipping the hostAliases entry for $autheliaHost. If the cluster's DNS can't resolve this hostname on its own (e.g. a synthetic domain that only exists in a client's hosts file), Rancher's OIDC calls to Authelia will fail with a DNS lookup error."
+        }
+    } else {
+        Write-Host "  · $autheliaHost already resolves correctly from inside the cluster — skipping hostAliases workaround" -ForegroundColor DarkGray
+    }
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
