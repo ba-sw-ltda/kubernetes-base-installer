@@ -345,6 +345,14 @@ foreach ($systemNs in @("cattle-capi-system", "cattle-turtles-system", "cattle-u
     Set-RancherProjectAssignment -Namespace $systemNs -ProjectName "System"
 }
 
+# Components installed before Rancher existed on this cluster couldn't create a
+# real Rancher project (the Project CRD isn't registered yet), so their own
+# Set-RancherProjectAssignment call left a "rancher.k8s/pending-project" marker
+# on the namespace instead. Now that Rancher is up, finish those off — this
+# reads the markers each component already wrote on itself, not a list of
+# components, so nothing here needs updating as components are added.
+Resolve-PendingRancherProjectAssignments
+
 $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
 Register-PortalEntry -Name $FullConfig.PortalTitle -Url "https://$Hostname" `
     -Category "Management" -Subtitle $FullConfig.PortalSubtitle -Order 51 `
@@ -363,13 +371,14 @@ Write-Host "  ──────────────────────
 Write-Host "  Access:  https://$Hostname" -ForegroundColor Yellow
 if ($oidc) {
     Write-Host "  Login:   Single Sign-On via Authelia (admin/<your Authelia password>)" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  A local 'admin' bootstrap account also exists as a break-glass" -ForegroundColor Gray
+    Write-Host "  fallback for first login — normal day-to-day login is via Authelia" -ForegroundColor Gray
+    Write-Host "  above:" -ForegroundColor Gray
+    Write-Host "    admin / $BootstrapPassword" -ForegroundColor Yellow
 } else {
-    Write-Host "  Login:   admin / <bootstrap password — see Vault below>" -ForegroundColor Yellow
+    Write-Host "  Login:   admin / $BootstrapPassword" -ForegroundColor Yellow
 }
-Write-Host ""
-Write-Host "  A local 'admin' bootstrap account also exists as a break-glass" -ForegroundColor Gray
-Write-Host "  fallback — its auto-generated password is in Vault, never typed" -ForegroundColor Gray
-Write-Host "  in or shown here. Normal day-to-day login is via Authelia above." -ForegroundColor Gray
 Write-Host ""
 if ($secretsBackendInstalled) {
     Write-Host "  Vault (secret: rancher):" -ForegroundColor Gray
