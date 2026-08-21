@@ -653,6 +653,7 @@ $__exportFunctions = @(
   'Read-ComponentSelectionScreen'
   'Install-NetworkPolicyBaseline'
   'Resolve-ServiceRealPorts'
+  'Test-HostnameNeedsClusterAlias'
   'Set-NetworkPolicyProviderIngress'
   'Set-NetworkPolicyConsumerEgress'
   'Set-NetworkPolicyApiServerIngress'
