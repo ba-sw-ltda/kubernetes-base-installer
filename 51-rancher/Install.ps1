@@ -265,6 +265,24 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 $rancherPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "rancher" -ServicePortName "http"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $rancherPort
 Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $rancherPort
+
+# Rancher v2.14 embeds an aggregated API server (ext.cattle.io) directly in
+# the rancher pod, registered as APIService v1.ext.cattle.io and backed by
+# the imperative-api-extension Service. The Kubernetes API server's
+# aggregation layer calls this directly using its own real network identity,
+# not as a normal labeled-namespace consumer, so
+# Set-NetworkPolicyProviderIngress's label-based rule can't cover it. Without
+# this, the APIService silently times out (FailedDiscoveryCheck) and every
+# post-login UI call through it (e.g. /v1/ext.cattle.io.selfuser) 404s —
+# confirmed live on Magalu 2026-08-20, broke the UI after both local and
+# OIDC login.
+$rancherApiExtensionPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "imperative-api-extension"
+if ($rancherApiExtensionPort) {
+    Set-NetworkPolicyApiServerIngress -Namespace $Namespace -Port $rancherApiExtensionPort
+} else {
+    Write-Warning "Could not resolve the imperative-api-extension Service's real port — skipping Rancher's aggregated-API NetworkPolicy ingress rule. Rancher's embedded ext.cattle.io API (used by the UI right after login) may be unreachable until this is applied manually."
+}
+
 if ($oidc) {
     # Rancher itself calls out to Authelia's OIDC endpoints via the ingress hostname.
     # -Port is a mandatory int[] — an empty array is a terminating parameter-
