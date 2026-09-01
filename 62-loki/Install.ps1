@@ -166,7 +166,15 @@ $HelmArgs = @(
     "--set", "resultsCache.enabled=$($UserConfig.ResultsCacheEnabled.ToString().ToLower())",
     "--set", "test.enabled=false",
     "--set", "lokiCanary.enabled=false",
-    "--set", "gateway.enabled=$($UserConfig.GatewayEnabled.ToString().ToLower())"
+    "--set", "gateway.enabled=$($UserConfig.GatewayEnabled.ToString().ToLower())",
+    # Chart-native ServiceMonitor (loki:http-metrics/metrics) — same
+    # release=prometheus label convention as every other ServiceMonitor in
+    # this repo (see 21-longhorn/Install.ps1). CRD-only, no NetworkPolicy
+    # effect by itself — the existing provider-ingress rule below already
+    # bundles the http-metrics port, so no NetworkPolicy change is needed
+    # here.
+    "--set", "monitoring.serviceMonitor.enabled=true",
+    "--set", "monitoring.serviceMonitor.labels.release=prometheus"
 )
 
 $exitCode = Invoke-WithSpinner -Message "Deploying Loki..." -Executable "helm" `
@@ -210,6 +218,8 @@ if ($verbose) {
 if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
+
+Register-GrafanaDashboard -Namespace $Namespace -Name "loki" -JsonPath "$ScriptRoot\dashboards\loki.json" -Folder "Observability"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 $lokiIngressPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "loki" -ServicePortName "http-metrics"
