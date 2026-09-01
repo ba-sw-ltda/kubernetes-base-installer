@@ -100,7 +100,24 @@ $HelmArgs = @(
     "--set", "controller.resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "controller.resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
     "--set", "controller.resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
-    "--set", "configs.params.server\.insecure=$($UserConfig.ServerInsecure.ToString().ToLower())"
+    "--set", "configs.params.server\.insecure=$($UserConfig.ServerInsecure.ToString().ToLower())",
+    # Chart-native ServiceMonitors, one per component — same release=prometheus
+    # label convention as every other ServiceMonitor in this repo (see
+    # 21-longhorn/Install.ps1), since the Prometheus Operator here only picks
+    # up ServiceMonitors carrying that label. CRD-only, no NetworkPolicy
+    # effect by itself — server's metrics port is bundled into the
+    # provider-ingress rule below (controller/repoServer metrics ports are
+    # left unwired for now, same minimal-scope approach as elsewhere in this
+    # rollout).
+    "--set", "server.metrics.enabled=true",
+    "--set", "server.metrics.serviceMonitor.enabled=true",
+    "--set", "server.metrics.serviceMonitor.additionalLabels.release=prometheus",
+    "--set", "controller.metrics.enabled=true",
+    "--set", "controller.metrics.serviceMonitor.enabled=true",
+    "--set", "controller.metrics.serviceMonitor.additionalLabels.release=prometheus",
+    "--set", "repoServer.metrics.enabled=true",
+    "--set", "repoServer.metrics.serviceMonitor.enabled=true",
+    "--set", "repoServer.metrics.serviceMonitor.additionalLabels.release=prometheus"
 )
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
     # ArgoCD derives its OIDC redirect_uri (<url>/auth/callback) from this —
@@ -258,6 +275,13 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+# Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
+# Grafana's dashboard sidecar (see 66-grafana/Install.ps1 sidecar.dashboards.*
+# Helm flags). Order-independent, no NetworkPolicy involved — same pattern as
+# 21-longhorn/Install.ps1.
+Register-GrafanaDashboard -Namespace $Namespace -Name "argocd" `
+    -JsonPath "$ScriptRoot\dashboards\argocd.json" -Folder "CI/CD"
+
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # NetworkPolicy `ports` matches the pod's real destination port after the
 # Service's DNAT rewrite, not the Service's externally-advertised port —
@@ -266,7 +290,18 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 # found and fixed on 11-ingress-traefik/35-authelia/66-grafana/21-longhorn).
 # Resolved dynamically so a future chart bump can't silently reintroduce it.
 $argocdPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "argocd-server" -ServicePortName "http"
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $argocdPort
+
+# Metrics scrape port — separate "argocd-metrics" Service (not argocd-server's
+# own), created once controller.metrics.enabled is on above. Bundled into the
+# same provider-ingress rule as argocd-server's http port rather than a
+# separate call, mirroring how every other component in this rollout adds its
+# metrics port. Inert until `prometheus` is labeled as a consumer — same
+# deliberate gap as every other component here, see 21-longhorn/Install.ps1's
+# NOTE.
+$argocdMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "argocd-metrics" -ServicePortName "metrics"
+if (-not $argocdMetricsPort) { $argocdMetricsPort = @(8082) }
+
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port ($argocdPort + $argocdMetricsPort)
 Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $argocdPort
 if ($oidcConfig) {
     # ArgoCD itself calls out to Authelia's OIDC endpoints via the ingress hostname (HTTPS).
