@@ -186,7 +186,17 @@ try {
         "--set", "resources.limits.cpu=$($UserConfig.Resources.Limits.Cpu)",
         "--set", "resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
         "--set", "resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
-        "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)"
+        "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
+        # Chart-native ServiceMonitor (velero:8085/metrics) — same
+        # release=prometheus label convention as every other ServiceMonitor
+        # in this repo (see 21-longhorn/Install.ps1). CRD-only, no
+        # NetworkPolicy effect by itself — the metrics port is bundled into
+        # a new provider-ingress rule below (Velero previously had no
+        # provider-ingress rule at all, only its own consumer-egress rule
+        # toward MinIO).
+        "--set", "metrics.enabled=true",
+        "--set", "metrics.serviceMonitor.enabled=true",
+        "--set", "metrics.serviceMonitor.additionalLabels.release=prometheus"
     )
 
     $exitCode = Invoke-WithSpinner -Message "Deploying Velero..." -Executable "helm" `
@@ -241,9 +251,21 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+Register-GrafanaDashboard -Namespace $Namespace -Name "velero" -JsonPath "$ScriptRoot\dashboards\velero.json" -Folder "Storage"
+
 Install-NetworkPolicyBaseline -Namespace $Namespace
 $minioPort = Resolve-ServiceRealPorts -Namespace "minio" -ServiceName "minio"
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "minio" -Port $minioPort
+
+# Metrics scrape port (velero:8085/metrics), bundled separately since
+# Velero previously had no provider-ingress rule of its own — only the
+# consumer-egress rule above (toward MinIO, for the backup target).
+# Label-gated on the network.k8s/allow-$Namespace consumer contract, inert
+# until `prometheus` is labeled as a consumer, same deliberate gap as
+# 21-longhorn/Install.ps1.
+$veleroMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "velero" -ServicePortName "http-monitoring"
+if (-not $veleroMetricsPort) { $veleroMetricsPort = @(8085) }
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $veleroMetricsPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
