@@ -75,7 +75,16 @@ $HelmArgs = @(
     "--set", "allInOne.persistence.enabled=true",
     "--set", "allInOne.persistence.size=$($UserConfig.StorageSize)",
     "--set", "storage.badger.ephemeral=false",
-    "--set", "storage.badger.spanStoreTTL=$($UserConfig.Retention)"
+    "--set", "storage.badger.spanStoreTTL=$($UserConfig.Retention)",
+    # Chart-native ServiceMonitor (admin port 14269/16687, /metrics) — same
+    # release=prometheus label convention as every other ServiceMonitor in
+    # this repo (see 21-longhorn/Install.ps1). No dashboard registered here
+    # — Jaeger has no standard community Grafana dashboard (see
+    # project_servicemonitor_dashboard_inventory). CRD-only, no
+    # NetworkPolicy effect by itself — the admin port is bundled into the
+    # existing provider-ingress rule below.
+    "--set", "serviceMonitor.enabled=true",
+    "--set", "serviceMonitor.additionalLabels.release=prometheus"
 )
 
 Reset-StuckHelmRelease -ReleaseName "jaeger" -Namespace $Namespace
@@ -170,7 +179,16 @@ $jaegerQueryPort     = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceNa
 if (-not $jaegerQueryPort) { $jaegerQueryPort = @(16686) }
 $jaegerCollectorPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "jaeger-collector" -ServicePortName "grpc-otlp"
 if (-not $jaegerCollectorPort) { $jaegerCollectorPort = @(4317) }
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port ($jaegerQueryPort + $jaegerCollectorPort)
+# Admin/metrics port (default port name "admin", 14269 collector / 16687
+# query / 14269 allInOne) — scraped by the ServiceMonitor above. Resolved
+# per-service the same defensive way as the ports above; falls back to the
+# chart defaults if the Service/pod can't be found yet.
+$jaegerAdminPort = @(Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "jaeger-query" -ServicePortName "admin") +
+    @(Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "jaeger-collector" -ServicePortName "admin") +
+    @(Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "jaeger" -ServicePortName "admin")
+$jaegerAdminPort = $jaegerAdminPort | Where-Object { $_ } | Select-Object -Unique
+if (-not $jaegerAdminPort) { $jaegerAdminPort = @(14269, 16687) }
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port ($jaegerQueryPort + $jaegerCollectorPort + $jaegerAdminPort)
 Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $jaegerQueryPort
 
 Write-Host ""
