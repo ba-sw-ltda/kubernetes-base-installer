@@ -174,6 +174,13 @@ $HelmArgs = @(
     "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
     "--set", "service.type=ClusterIP",
     "--set", "consoleService.type=ClusterIP",
+    # Chart-native ServiceMonitor (minio:9000, /minio/v2/metrics/cluster) —
+    # same release=prometheus label convention as every other ServiceMonitor
+    # in this repo (see 21-longhorn/Install.ps1). CRD-only, no NetworkPolicy
+    # effect by itself — the metrics endpoint is on the same Service/port
+    # already covered by the existing provider-ingress rule below.
+    "--set", "metrics.serviceMonitor.enabled=true",
+    "--set", "metrics.serviceMonitor.additionalLabels.release=prometheus",
     "--values", $tempMinioValues
 )
 if ($UserConfig.StorageClass) {
@@ -214,6 +221,8 @@ if ($LASTEXITCODE -ne 0) {
 if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
+
+Register-GrafanaDashboard -Namespace $Namespace -Name "minio" -JsonPath "$ScriptRoot\dashboards\minio.json" -Folder "Storage"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 $minioPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "minio"
