@@ -91,7 +91,15 @@ $HelmArgs = @(
     "--set", "controller.resources.limits.cpu=$($UserConfig.Resources.Limits.Cpu)",
     "--set", "controller.resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "controller.resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
-    "--set", "controller.resources.requests.memory=$($UserConfig.Resources.Requests.Memory)"
+    "--set", "controller.resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
+    # Chart-native ServiceMonitor — same release=prometheus label convention
+    # as every other ServiceMonitor in this repo (see 21-longhorn/Install.ps1),
+    # since the Prometheus Operator here only picks up ServiceMonitors
+    # carrying that label. CRD-only, no NetworkPolicy effect by itself — the
+    # metrics port is bundled into the provider-ingress rule below.
+    "--set", "controller.metrics.enabled=true",
+    "--set", "controller.metrics.serviceMonitor.enabled=true",
+    "--set", "controller.metrics.serviceMonitor.additionalLabels.release=prometheus"
 )
 if ($UserConfig.HostPortEnabled) {
     $HelmArgs += @("--set", "controller.hostPort.enabled=true")
@@ -153,10 +161,29 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+# Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
+# Grafana's dashboard sidecar (see 66-grafana/Install.ps1 sidecar.dashboards.*
+# Helm flags). Order-independent, no NetworkPolicy involved — same pattern as
+# 21-longhorn/Install.ps1.
+Register-GrafanaDashboard -Namespace $Namespace -Name "ingress-nginx" `
+    -JsonPath "$ScriptRoot\dashboards\ingress-nginx.json" -Folder "Networking"
+
 # Every component that wants ingress traffic registers itself — see its own
 # Install.ps1 (Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace <self>).
 # This namespace only sets up its own baseline; it doesn't know or care who's behind it.
 Install-NetworkPolicyBaseline -Namespace $Namespace
+
+# Metrics scrape port — the chart creates a dedicated
+# "<release>-controller-metrics" Service (not the main controller Service)
+# when controller.metrics.service.enabled (default true once metrics are
+# on). Resolved dynamically rather than hardcoding 10254 so a future chart
+# bump can't silently reintroduce a mismatch (same reasoning as Traefik's
+# public-ingress port resolution above). Inert until `prometheus` is
+# labeled as a consumer — same deliberate gap as every other component in
+# this rollout, see 21-longhorn/Install.ps1's NOTE.
+$ingressNginxMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "ingress-nginx-controller-metrics" -ServicePortName "metrics"
+if (-not $ingressNginxMetricsPort) { $ingressNginxMetricsPort = @(10254) }
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $ingressNginxMetricsPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
