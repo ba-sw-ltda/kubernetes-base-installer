@@ -696,6 +696,7 @@ $__exportFunctions = @(
   'Register-PortalEntry'
   'Unregister-PortalEntry'
   'Resolve-PendingPortalEntries'
+  'Register-GrafanaDashboard'
   'Read-ComponentSelectionScreen'
   'Install-NetworkPolicyBaseline'
   'Resolve-ServiceRealPorts'

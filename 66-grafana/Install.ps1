@@ -388,6 +388,25 @@ $HelmArgs = @(
     "--set", "resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
     "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
+    # Dashboard sidecar: watches ConfigMaps cluster-wide (via the K8s API, so no
+    # NetworkPolicy change needed — API-server egress is already covered by
+    # Install-NetworkPolicyBaseline) for the grafana_dashboard=1 label and loads
+    # them live. This makes Register-GrafanaDashboard order-independent: a
+    # component can apply its dashboard ConfigMap before Grafana even exists.
+    "--set", "sidecar.dashboards.enabled=true",
+    # Scoped to configmap only (not the chart default "both") — Register-GrafanaDashboard
+    # only ever writes ConfigMaps, so there's no reason for the sidecar to also watch
+    # Secrets cluster-wide.
+    "--set", "sidecar.dashboards.resource=configmap",
+    "--set", "sidecar.dashboards.label=grafana_dashboard",
+    # --set-string, not --set: Helm parses a bare "1" as int64, but the chart
+    # template expects a string here (same pitfall as adminPassword above —
+    # see 66-grafana entry in project_observability_stack memory).
+    "--set-string", "sidecar.dashboards.labelValue=1",
+    "--set", "sidecar.dashboards.searchNamespace=ALL",
+    "--set", "sidecar.dashboards.folder=/tmp/dashboards",
+    "--set", "sidecar.dashboards.provider.foldersFromFilesStructure=true",
+    "--set", "sidecar.dashboards.folderAnnotation=grafana_folder",
     "--values", $tempValues
 )
 if ($oidcConfig) {
