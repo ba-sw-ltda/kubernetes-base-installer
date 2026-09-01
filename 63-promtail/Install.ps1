@@ -89,7 +89,16 @@ $HelmArgs = @(
     "--set", "resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
     "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
-    "--values", $tempValues
+    "--values", $tempValues,
+    # Chart-native ServiceMonitor (promtail:http-metrics/metrics) — same
+    # release=prometheus label convention as every other ServiceMonitor in
+    # this repo (see 21-longhorn/Install.ps1). CRD-only, no NetworkPolicy
+    # effect by itself — the metrics port is bundled into the new
+    # provider-ingress rule below (Promtail previously had no
+    # provider-ingress rule at all, only its own consumer-egress rule
+    # toward Loki).
+    "--set", "serviceMonitor.enabled=true",
+    "--set", "serviceMonitor.labels.release=prometheus"
 )
 
 if ($Platform -in @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")) {
@@ -135,9 +144,20 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+Register-GrafanaDashboard -Namespace $Namespace -Name "promtail" -JsonPath "$ScriptRoot\dashboards\promtail.json" -Folder "Observability"
+
 Install-NetworkPolicyBaseline -Namespace $Namespace
 $lokiPort = Resolve-ServiceRealPorts -Namespace "loki" -ServiceName "loki" -ServicePortName "http-metrics"
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port $lokiPort
+
+# Metrics scrape port (promtail:http-metrics), bundled separately since
+# Promtail previously had no provider-ingress rule of its own — only the
+# consumer-egress rule above (toward Loki, for shipping logs). Label-gated
+# on the network.k8s/allow-$Namespace consumer contract, inert until
+# `prometheus` is labeled as a consumer, same deliberate gap as
+# 21-longhorn/Install.ps1.
+$promtailMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "promtail" -ServicePortName "http-metrics"
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $promtailMetricsPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
