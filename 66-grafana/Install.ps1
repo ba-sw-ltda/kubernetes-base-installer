@@ -407,6 +407,13 @@ $HelmArgs = @(
     "--set", "sidecar.dashboards.folder=/tmp/dashboards",
     "--set", "sidecar.dashboards.provider.foldersFromFilesStructure=true",
     "--set", "sidecar.dashboards.folderAnnotation=grafana_folder",
+    # Self-monitoring only — Grafana ships no community dashboard of its own
+    # in this rollout (it's the thing rendering every other component's
+    # dashboard, not itself the subject of one). Same release=prometheus
+    # label convention as every other ServiceMonitor in this repo (see
+    # 21-longhorn/Install.ps1).
+    "--set", "serviceMonitor.enabled=true",
+    "--set", "serviceMonitor.labels.release=prometheus",
     "--values", $tempValues
 )
 if ($oidcConfig) {
