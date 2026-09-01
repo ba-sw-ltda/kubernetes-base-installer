@@ -102,7 +102,14 @@ $HelmArgs = @(
     "--set", "controller.resources.limits.cpu=$($UserConfig.Resources.Limits.Cpu)",
     "--set", "controller.resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "controller.resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
-    "--set", "controller.resources.requests.memory=$($UserConfig.Resources.Requests.Memory)"
+    "--set", "controller.resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
+    # Chart-native ServiceMonitor (controller+speaker :7472/metrics) — same
+    # release=prometheus label convention as every other ServiceMonitor in
+    # this repo (see 21-longhorn/Install.ps1). CRD-only, no NetworkPolicy
+    # effect by itself — the metrics port is bundled into the provider-ingress
+    # rule below.
+    "--set", "prometheus.serviceMonitor.enabled=true",
+    "--set", "prometheus.serviceMonitor.additionalLabels.release=prometheus"
 )
 
 Reset-StuckHelmRelease -ReleaseName "metallb" -Namespace $Namespace
@@ -218,7 +225,18 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+# Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
+# Grafana's dashboard sidecar. Order-independent, no NetworkPolicy involved —
+# same pattern as 21-longhorn/Install.ps1.
+Register-GrafanaDashboard -Namespace $Namespace -Name "metallb" `
+    -JsonPath "$ScriptRoot\dashboards\metallb.json" -Folder "Networking"
+
 Install-NetworkPolicyBaseline -Namespace $Namespace
+# Metrics scrape port (controller+speaker :7472), label-gated via the same
+# provider-ingress pattern as 21-longhorn/Install.ps1 — inert until
+# `prometheus` is labeled as a consumer (deferred to the weekend NetworkPolicy
+# fix, see project_rke2_ingress_namespace_mismatch).
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 7472
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
