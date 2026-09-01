@@ -461,6 +461,46 @@ if ($exitCode -ne 0) {
 }
 Write-Host "  ✓ Grafana ready" -ForegroundColor Green
 
+# ── Legacy local-admin / OIDC login collision self-heal ──────────────────────
+# Grafana's chart always bootstraps a local admin via GF_SECURITY_ADMIN_USER
+# (UserConfig.AdminUser — deliberately not "admin", see the comment in
+# Config.psd1). But that env var only creates/resets *that* login on boot —
+# it never renames a pre-existing "admin" row left over from before this
+# convention existed. When OIDC is enabled, login_attribute_path resolves to
+# "admin" for Authelia's own admin user, and Grafana refuses to create/link
+# that OIDC-provisioned "admin" account onto an existing local login with a
+# different email — SSO login then fails everywhere with the generic
+# "Failed to create user: user not found". Confirmed live 2026-09-01 on the
+# RKE2 cluster (Grafana first installed before UserConfig.AdminUser existed).
+# Self-heal it here on every install/upgrade so this never needs a manual
+# fix again — no manual kubectl/API intervention (see feedback_no_manual_intervention).
+if ($oidcConfig -and $UserConfig.AdminUser -ne "admin") {
+    Write-Host "  · Checking for legacy 'admin' login collision with OIDC..." -ForegroundColor DarkGray
+    $grafanaPod = (& kubectl get pods -n $Namespace -l "app.kubernetes.io/name=grafana" -o jsonpath='{.items[0].metadata.name}' 2>$null)
+    if ($grafanaPod) {
+        $authArg   = "$($UserConfig.AdminUser):$AdminPassword"
+        $usersJson = & kubectl exec -n $Namespace $grafanaPod -- curl -s -u $authArg http://localhost:3000/api/users 2>$null
+        if ($usersJson) {
+            try {
+                $legacyAdmin = ($usersJson | ConvertFrom-Json) |
+                    Where-Object { $_.login -eq "admin" -and (-not $_.authLabels -or $_.authLabels.Count -eq 0) }
+                if ($legacyAdmin) {
+                    & kubectl exec -n $Namespace $grafanaPod -- curl -s -u $authArg -X PUT `
+                        -H "Content-Type: application/json" -d '{"login":"break-glass-admin"}' `
+                        "http://localhost:3000/api/users/$($legacyAdmin.id)" 2>&1 | Out-Null
+                    Write-Host "  ✓ Renamed legacy local admin login 'admin' -> 'break-glass-admin' (was blocking the OIDC-provisioned 'admin' account)" -ForegroundColor Green
+                } else {
+                    Write-Host "  · No collision found" -ForegroundColor DarkGray
+                }
+            } catch {
+                Write-Host "  ⚠ Could not parse Grafana users list — skipping login-collision check" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "  ⚠ Could not reach Grafana API to check for a login collision (password may not have propagated to a running pod yet) — if SSO login fails with 'user not found', re-run this install" -ForegroundColor Yellow
+        }
+    }
+}
+
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
     $ingressYaml = @"
 apiVersion: networking.k8s.io/v1
