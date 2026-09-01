@@ -126,7 +126,15 @@ $HelmArgs = @(
     "--set", "resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
     "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
-    "--values", $tempValues
+    "--values", $tempValues,
+    # Chart-native ServiceMonitor (own port "metrics", collector self-metrics,
+    # default 8888) — same release=prometheus label convention as every other
+    # ServiceMonitor in this repo (see 21-longhorn/Install.ps1); this chart
+    # uses serviceMonitor.extraLabels rather than additionalLabels. CRD-only,
+    # no NetworkPolicy effect by itself — the metrics port is bundled into
+    # the existing provider-ingress rule below.
+    "--set", "serviceMonitor.enabled=true",
+    "--set", "serviceMonitor.extraLabels.release=prometheus"
 )
 
 Reset-StuckHelmRelease -ReleaseName "opentelemetry-collector" -Namespace $Namespace
@@ -167,12 +175,16 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+Register-GrafanaDashboard -Namespace $Namespace -Name "opentelemetry-collector" -JsonPath "$ScriptRoot\dashboards\opentelemetry-collector.json" -Folder "Observability"
+
 Install-NetworkPolicyBaseline -Namespace $Namespace
-# Only the OTLP gRPC/HTTP receiver ports (4317/4318) — the collector's Service
-# also exposes legacy jaeger-*/zipkin receiver ports this platform doesn't use.
+# OTLP gRPC/HTTP receiver ports (4317/4318) plus the ServiceMonitor's own
+# self-metrics port ("metrics", default 8888) — the collector's Service also
+# exposes legacy jaeger-*/zipkin receiver ports this platform doesn't use.
 $otelCollectorPorts = @(
     (Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "opentelemetry-collector" -ServicePortName "otlp") +
-    (Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "opentelemetry-collector" -ServicePortName "otlp-http") |
+    (Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "opentelemetry-collector" -ServicePortName "otlp-http") +
+    (Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "opentelemetry-collector" -ServicePortName "metrics") |
     Select-Object -Unique
 )
 if (-not $otelCollectorPorts) { $otelCollectorPorts = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "opentelemetry-collector" }
