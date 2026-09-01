@@ -69,7 +69,15 @@ $HelmArgs = @(
     "--set", "resources.limits.cpu=$($UserConfig.Resources.Limits.Cpu)",
     "--set", "resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
-    "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)"
+    "--set", "resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
+    # Chart-native ServiceMonitor (traefik:9100/metrics) — same
+    # release=prometheus label convention as every other ServiceMonitor in
+    # this repo (see 21-longhorn/Install.ps1), since the Prometheus Operator
+    # here only picks up ServiceMonitors carrying that label. CRD-only, no
+    # NetworkPolicy effect by itself — the metrics port is bundled into the
+    # provider-ingress rule below.
+    "--set", "metrics.prometheus.serviceMonitor.enabled=true",
+    "--set", "metrics.prometheus.serviceMonitor.additionalLabels.release=prometheus"
 )
 if ($UserConfig.HostPortWeb -gt 0) {
     $HelmArgs += @("--set", "ports.web.hostPort=$($UserConfig.HostPortWeb)")
@@ -135,6 +143,13 @@ if ($verbose) {
 if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
+
+# Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
+# Grafana's dashboard sidecar (see 66-grafana/Install.ps1 sidecar.dashboards.*
+# Helm flags). Order-independent, no NetworkPolicy involved — same pattern as
+# 21-longhorn/Install.ps1.
+Register-GrafanaDashboard -Namespace $Namespace -Name "traefik" `
+    -JsonPath "$ScriptRoot\dashboards\traefik.json" -Folder "Networking"
 
 # Every component that wants ingress traffic registers itself — see its own
 # Install.ps1 (Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace <self>).
@@ -228,6 +243,16 @@ if ($LASTEXITCODE -eq 0) {
     Write-Error "Failed to apply public web ingress rule in '$Namespace'"
     exit 1
 }
+
+# Metrics scrape port (traefik:9100), bundled separately from the unscoped
+# public-web-ingress rule above — that rule is deliberately world-open
+# (0.0.0.0/0) for ports 80/443 only; /metrics must NOT be reachable from the
+# internet. Set-NetworkPolicyProviderIngress instead gates ingress on the
+# label-contract pattern (only namespaces labeled network.k8s/allow-$Namespace
+# may reach this port) — inert until `prometheus` is labeled as a consumer,
+# same deliberate gap as 21-longhorn/Install.ps1 (see its NOTE on why
+# `prometheus`'s own egress side is deferred to the weekend NetworkPolicy fix).
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 9100
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
