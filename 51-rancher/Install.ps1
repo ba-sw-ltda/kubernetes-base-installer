@@ -55,6 +55,8 @@ Write-Host "  Namespace: $Namespace" -ForegroundColor Gray
 Write-Host "  Hostname:  $Hostname" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group "Preparation"
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "rancher-stable", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
@@ -62,11 +64,10 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 
 # Pull proxy Secret from proxy-config namespace via Reflector (if proxy is configured)
 & kubectl get secret proxy-config -n proxy-config 2>&1 | Out-Null
@@ -83,9 +84,13 @@ type: Opaque
 "@
     $reflectedSecret | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✓ Proxy Secret reflected into $Namespace" -ForegroundColor Green
+        Write-GroupLine "✓ Proxy Secret reflected into $Namespace" -ForegroundColor Green
     }
 }
+
+Complete-Group
+
+Start-Group "Bootstrap trust"
 
 # Bootstrap password is passed directly to Helm — it's a one-time credential used
 # only on first login. After Rancher bootstraps, it stores credentials internally.
@@ -158,11 +163,11 @@ if ($issuerName) {
                     --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
                 Remove-Item $caCertFile.FullName -Force -ErrorAction SilentlyContinue
                 $HelmArgs += "--set", "additionalTrustedCAs=true"
-                Write-Host "  ✓ OpenBao root CA trusted by Rancher ($caMount, tls-ca-additional)" -ForegroundColor Green
+                Write-GroupLine "✓ OpenBao root CA trusted by Rancher ($caMount, tls-ca-additional)" -ForegroundColor Green
             }
         }
     } else {
-        Write-Host "  · Default PKI isn't a self-signed Root CA — skipping CA-trust workaround" -ForegroundColor DarkGray
+        Write-GroupLine "· Default PKI isn't a self-signed Root CA — skipping CA-trust workaround" -ForegroundColor DarkGray
     }
 } else {
     $HelmArgs += "--set", "ingress.tls.source=$($UserConfig.TlsSource)"
@@ -171,18 +176,19 @@ if ($issuerName) {
     }
 }
 
+Complete-Group
+Start-Group "Deploy"
+
 Reset-StuckHelmRelease -ReleaseName "rancher" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying Rancher..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Rancher (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for rollout..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/rancher", "-n", $Namespace, "--timeout=10m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout of Rancher did not complete — check cluster state"; exit 1 }
-Write-Host "  ✓ Rancher ready" -ForegroundColor Green
 
 # tls=external causes Rancher Helm to set backend-protocol:HTTPS which breaks plain HTTP backends.
 # Remove it so nginx connects to Rancher via HTTP (TLS is terminated at nginx, not re-encrypted).
@@ -191,7 +197,7 @@ if (-not $issuerName -and $UserConfig.TlsExternal) {
     Invoke-WithSpinner -Message "Fixing ingress backend protocol..." -Executable "kubectl" `
         -Arguments @("annotate", "ingress", "rancher", "-n", $Namespace,
                      "nginx.ingress.kubernetes.io/backend-protocol-", "--overwrite") | Out-Null
-    Write-Host "  ✓ Ingress backend protocol fixed (HTTP)" -ForegroundColor Green
+    Write-GroupLine "✓ Ingress backend protocol fixed (HTTP)" -ForegroundColor Green
 }
 
 # Set server-url so Rancher knows its external hostname.
@@ -199,7 +205,11 @@ if (-not $issuerName -and $UserConfig.TlsExternal) {
 Invoke-WithSpinner -Message "Configuring server URL..." -Executable "kubectl" `
     -Arguments @("patch", "settings.management.cattle.io", "server-url",
                  "--type", "merge", "-p", "{`"value`":`"https://$Hostname`"}") | Out-Null
-Write-Host "  ✓ Server URL configured (https://$Hostname)" -ForegroundColor Green
+Write-GroupLine "✓ Server URL configured (https://$Hostname)" -ForegroundColor Green
+
+Complete-Group
+
+Start-Group "Single sign-on (Authelia)"
 
 # ── Single sign-on via Authelia ───────────────────────────────────
 # Register-AutheliaOidcClient is generic — any component can call it (this
@@ -230,7 +240,7 @@ scope: "openid profile email groups"
 "@
     $authConfigYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✓ OIDC auth provider configured (Authelia)" -ForegroundColor Green
+        Write-GroupLine "✓ OIDC auth provider configured (Authelia)" -ForegroundColor Green
 
         # GlobalRoleBinding uses generateName (no fixed name) — check for an
         # existing one with the same group+role first so re-running this
@@ -252,10 +262,10 @@ groupPrincipalName: "oidc_group://admins"
             # track) — create is correct here since $alreadyBound above already
             # guards against piling up duplicates on re-install.
             $bindingYaml | & kubectl create -f - 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ 'admins' group granted Rancher admin access" -ForegroundColor Green }
+            if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ 'admins' group granted Rancher admin access" -ForegroundColor Green }
             else { Write-Warning "  Could not create GlobalRoleBinding for the 'admins' group — grant access manually if needed" }
         } else {
-            Write-Host "  ✓ 'admins' group already has Rancher admin access" -ForegroundColor Green
+            Write-GroupLine "✓ 'admins' group already has Rancher admin access" -ForegroundColor Green
         }
     } else {
         Write-Warning "  Could not configure OIDC auth provider — AuthConfig schema may need adjusting (see installer notes)"
@@ -285,7 +295,7 @@ if ($oidc) {
                 $exitCode = Invoke-WithSpinner -Message "Restarting Rancher with hostAliases..." -Executable "kubectl" `
                     -Arguments @("rollout", "status", "deployment/rancher", "-n", $Namespace, "--timeout=10m") -ShowOutput:$verbose
                 if ($exitCode -eq 0) {
-                    Write-Host "  ✓ Rancher pod resolves $autheliaHost internally (hostAliases -> $traefikClusterIp)" -ForegroundColor Green
+                    Write-GroupLine "✓ Rancher pod resolves $autheliaHost internally (hostAliases -> $traefikClusterIp)" -ForegroundColor Green
                 } else {
                     Write-Warning "Rancher did not roll out cleanly after patching in the hostAliases entry for $autheliaHost — check pod status."
                 }
@@ -296,9 +306,12 @@ if ($oidc) {
             Write-Warning "Could not resolve Traefik's ClusterIP in the 'ingress' namespace — skipping the hostAliases entry for $autheliaHost. If the cluster's DNS can't resolve this hostname on its own (e.g. a synthetic domain that only exists in a client's hosts file), Rancher's OIDC calls to Authelia will fail with a DNS lookup error."
         }
     } else {
-        Write-Host "  · $autheliaHost already resolves correctly from inside the cluster — skipping hostAliases workaround" -ForegroundColor DarkGray
+        Write-GroupLine "· $autheliaHost already resolves correctly from inside the cluster — skipping hostAliases workaround" -ForegroundColor DarkGray
     }
 }
+
+Complete-Group
+Start-Group "Network policies"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 $rancherPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "rancher" -ServicePortName "http"
@@ -336,6 +349,9 @@ if ($oidc) {
     }
 }
 
+Complete-Group
+Start-Group "Housekeeping"
+
 # Rancher v2.14 creates these system namespaces itself (CAPI/turtles/UI-plugin
 # operators, plus Fleet's own "local" namespace) but — unlike cattle-system,
 # cattle-fleet-*, cattle-global-data, etc., which it assigns to the built-in
@@ -353,11 +369,16 @@ foreach ($systemNs in @("cattle-capi-system", "cattle-turtles-system", "cattle-u
 # components, so nothing here needs updating as components are added.
 Resolve-PendingRancherProjectAssignments
 
+Complete-Group
+Start-Group "Portal"
+
 $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
 Register-PortalEntry -Name $FullConfig.PortalTitle -Url "https://$Hostname" `
     -Category "Management" -Namespace $Namespace -Subtitle $FullConfig.PortalSubtitle -Order 51 `
     -InternalUrl "http://rancher.cattle-system.svc.cluster.local" `
     -LogoUrl $portalIcon
+
+Complete-Group
 
 if ($verbose) {
     Write-Host ""

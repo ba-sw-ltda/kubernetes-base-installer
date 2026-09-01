@@ -354,7 +354,7 @@ function Sync-AutheliaConfiguration {
     }
 
     # ── Admin user + hostname (written by 35-authelia/Install.ps1) ──
-    Write-Host "  · Reading admin credential from Vault..." -ForegroundColor DarkGray
+    Write-GroupLine "· Reading admin credential from Vault..." -ForegroundColor DarkGray
     $admin = Get-ClusterSecret -Path "authelia/admin-credential" -Keys @("username", "password", "hostname") -BaseDir $BaseDir -Platform $Platform
     if (-not $admin -or -not $admin["hostname"]) {
         Write-Error "Sync-AutheliaConfiguration: no admin credential found in vault — run 35-authelia/Install.ps1 first."
@@ -362,7 +362,7 @@ function Sync-AutheliaConfiguration {
     }
     $hostname      = $admin["hostname"]
     $clusterDomain = $hostname -replace '^[^.]+\.', ''
-    Write-Host "  · Computing password hash (starting helper pod, may take 10-30s)..." -ForegroundColor DarkGray
+    Write-GroupLine "· Computing password hash (starting helper pod, may take 10-30s)..." -ForegroundColor DarkGray
     $adminHash     = Get-HtpasswdHash -Username "admin" -Password $admin["password"]
     if (-not $adminHash) { Write-Error "Sync-AutheliaConfiguration: could not hash the admin password"; return $false }
     $adminHashOnly = ($adminHash -split ":", 2)[1]
@@ -393,7 +393,7 @@ function Sync-AutheliaConfiguration {
     $clientYamlBlocks = foreach ($id in $clientIds) {
         $client = Get-ClusterSecret -Path "authelia/oidc-clients/$id" -Keys @("secret", "name", "redirect_uris", "scopes") -BaseDir $BaseDir -Platform $Platform
         if (-not $client -or -not $client["secret"]) { continue }
-        Write-Host "  · Hashing OIDC client secret for '$id'..." -ForegroundColor DarkGray
+        Write-GroupLine "· Hashing OIDC client secret for '$id'..." -ForegroundColor DarkGray
         $hashedSecret = Get-AutheliaSecretHash -Secret $client["secret"]
         if (-not $hashedSecret) { Write-Warning "  Sync-AutheliaConfiguration: could not hash secret for OIDC client '$id' — skipping it this round"; continue }
         $redirectUris = @($client["redirect_uris"] -split ',' | Where-Object { $_ })
@@ -662,6 +662,9 @@ $__exportFunctions = @(
   'Invoke-WithSpinner'
   'Invoke-ScriptBlockWithSpinner'
   'Invoke-DownloadWithSpinner'
+  'Start-Group'
+  'Complete-Group'
+  'Write-GroupLine'
   'Get-ComponentConfig'
   'Merge-Config'
   'Get-IngressClass'
