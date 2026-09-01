@@ -107,7 +107,23 @@ $HelmArgs = @(
     "--version", $ChartVersion,
     "--set", "persistence.defaultClass=true",
     "--set", "persistence.defaultClassReplicaCount=$($UserConfig.ReplicaCount)",
-    "--set", "defaultSettings.defaultReplicaCount=$($UserConfig.ReplicaCount)"
+    "--set", "defaultSettings.defaultReplicaCount=$($UserConfig.ReplicaCount)",
+    # Chart-native ServiceMonitor (longhorn-backend:9500/metrics, port name
+    # "manager") — the Prometheus Operator here only picks up ServiceMonitors
+    # labeled release=prometheus, from any namespace (serviceMonitorSelector
+    # matchLabels, serviceMonitorNamespaceSelector: {}). This is CRD-only —
+    # no NetworkPolicy effect by itself. Confirmed missing 2026-09-01: Longhorn
+    # exports rich metrics but nothing wired it into Prometheus's scrape config.
+    # NOTE: scraping still needs a NetworkPolicy egress-allow from `prometheus`
+    # to `longhorn-system` on this port — deliberately NOT added here, since
+    # `prometheus` currently has zero NetworkPolicies (fully open) and applying
+    # Set-NetworkPolicyConsumerEgress to it today would flip it to
+    # deny-all-egress-except-longhorn, breaking every other scrape target
+    # (kubelet, CoreDNS, apiserver, ...). Needs a real egress baseline for
+    # `prometheus` first — deferred to the weekend NetworkPolicy fix alongside
+    # the ingress-nginx namespace mismatch (see project_rke2_ingress_namespace_mismatch).
+    "--set", "metrics.serviceMonitor.enabled=true",
+    "--set", "metrics.serviceMonitor.additionalLabels.release=prometheus"
 )
 
 $exitCode = Invoke-WithSpinner -Message "Deploying Longhorn..." -Executable "helm" `
@@ -206,6 +222,16 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+# Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
+# Grafana's dashboard sidecar (see 66-grafana/Install.ps1 sidecar.dashboards.*
+# Helm flags) via its own K8s API watch. Order-independent by design — unlike
+# Register-PortalEntry / Set-RancherProjectAssignment this needs no
+# pending/resolver mechanism: the ConfigMap can exist before Grafana does and
+# will simply be picked up once the sidecar starts. Stays in this namespace,
+# no NetworkPolicy involved.
+Register-GrafanaDashboard -Namespace $Namespace -Name "longhorn" `
+    -JsonPath "$ScriptRoot\dashboards\longhorn.json" -Folder "Storage"
+
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # NetworkPolicy `ports` matches the pod's real destination port after the
 # Service's DNAT rewrite, not the Service's externally-advertised port — the
@@ -214,8 +240,23 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 # found and fixed on 11-ingress-traefik/35-authelia/66-grafana). Resolved
 # dynamically so a future chart bump can't silently reintroduce the mismatch.
 $longhornPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "longhorn-frontend"
-Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $longhornPort
+# Metrics port (longhorn-backend:9500) — Service port matches the container
+# port directly here, no DNAT mismatch like the UI Service above (confirmed
+# 2026-09-01). Bundled into the same provider-ingress rule so the
+# ServiceMonitor added above (see $HelmArgs metrics.serviceMonitor.* flags)
+# can actually be scraped, not just defined.
+Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port ($longhornPort + 9500)
 Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $longhornPort
+# NOTE: the `prometheus` namespace is NOT labeled here via
+# Set-NetworkPolicyConsumerEgress — that function also creates an Egress-only
+# NetworkPolicy object in the *source* namespace, and `prometheus` currently
+# has zero NetworkPolicies of its own (fully open egress). Adding one would
+# flip it to deny-all-egress-except-longhorn, breaking every other scrape
+# target. Applied ad hoc instead (label only, same technique as the
+# ingress-nginx fix — see project_rke2_ingress_namespace_mismatch memory):
+#   kubectl label namespace prometheus network.k8s/allow-longhorn-system=true --overwrite
+# Needs a real `prometheus` egress baseline before this can be scripted here
+# safely — deferred to the weekend NetworkPolicy structural fix.
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
