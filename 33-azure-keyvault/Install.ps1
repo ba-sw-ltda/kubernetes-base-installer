@@ -67,6 +67,8 @@ Write-Host "  Mode:        $(if ($UseExisting) { 'Use existing' } else { 'Create
 Write-Host "  Resource Grp:$targetRg" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Configuration"
+
 # ── 1. Resource Provider registrieren ───────────────────────────
 $kvProvider = & az provider show --namespace Microsoft.KeyVault --query "registrationState" --output tsv 2>$null
 if ($kvProvider) { $kvProvider = $kvProvider.Trim() } else { $kvProvider = "" }
@@ -74,9 +76,9 @@ if ($kvProvider -ne "Registered") {
     $exitCode = Invoke-WithSpinner -Message "Registering Microsoft.KeyVault provider..." -Executable "az" `
         -Arguments @("provider", "register", "--namespace", "Microsoft.KeyVault", "--wait") -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Failed to register Microsoft.KeyVault provider"; exit 1 }
-    Write-Host "  ✓ Microsoft.KeyVault provider registered" -ForegroundColor Green
+    Write-GroupLine "✓ Microsoft.KeyVault provider registered" -ForegroundColor Green
 } else {
-    Write-Host "  ✓ Microsoft.KeyVault provider already registered" -ForegroundColor Green
+    Write-GroupLine "✓ Microsoft.KeyVault provider already registered" -ForegroundColor Green
 }
 
 # ── 2. Key Vault erstellen oder prüfen ───────────────────────────
@@ -88,7 +90,7 @@ if (-not $UseExisting) {
         $exitCode = Invoke-WithSpinner -Message "Creating Resource Group '$targetRg'..." -Executable "az" `
             -Arguments @("group", "create", "--name", $targetRg, "--location", $location) -ShowOutput:$verbose
         if ($exitCode -ne 0) { Write-Error "Failed to create Resource Group '$targetRg'"; exit 1 }
-        Write-Host "  ✓ Resource Group '$targetRg' created" -ForegroundColor Green
+        Write-GroupLine "✓ Resource Group '$targetRg' created" -ForegroundColor Green
     }
 
     $exists = & az keyvault show --name $VaultName --resource-group $targetRg 2>$null
@@ -109,13 +111,12 @@ if (-not $UseExisting) {
                 $exitCode = Invoke-WithSpinner -Message "Recovering soft-deleted Key Vault '$VaultName'..." -Executable "az" `
                     -Arguments @("keyvault", "recover", "--name", $VaultName) -ShowOutput:$verbose
                 if ($exitCode -ne 0) { Write-Error "Failed to recover soft-deleted Key Vault '$VaultName'"; exit 1 }
-                Write-Host "  ✓ Key Vault recovered from soft-deleted state" -ForegroundColor Green
+                Write-GroupLine "✓ Key Vault recovered from soft-deleted state" -ForegroundColor Green
             } else {
-                Write-Host "  ⚠ Azure Key Vault purge kann bis zu 15 Minuten dauern..." -ForegroundColor Yellow
+                Write-GroupLine "⚠ Azure Key Vault purge kann bis zu 15 Minuten dauern..." -ForegroundColor Yellow
                 $exitCode = Invoke-WithSpinner -Message "Purging soft-deleted Key Vault '$VaultName'..." -Executable "az" `
                     -Arguments @("keyvault", "purge", "--name", $VaultName, "--location", $location) -ShowOutput:$verbose -ShowElapsed
                 if ($exitCode -ne 0) { Write-Error "Failed to purge Key Vault '$VaultName'"; exit 1 }
-                Write-Host "  ✓ Key Vault purged" -ForegroundColor Green
                 $exitCode = Invoke-WithSpinner -Message "Creating Key Vault '$VaultName'..." -Executable "az" `
                     -Arguments @("keyvault", "create",
                         "--name", $VaultName,
@@ -124,7 +125,6 @@ if (-not $UseExisting) {
                         "--sku", $UserConfig.SkuName,
                         "--enable-rbac-authorization", "true") -ShowOutput:$verbose
                 if ($exitCode -ne 0) { Write-Error "Failed to create Key Vault '$VaultName'"; exit 1 }
-                Write-Host "  ✓ Key Vault created" -ForegroundColor Green
             }
         } else {
             $exitCode = Invoke-WithSpinner -Message "Creating Key Vault '$VaultName'..." -Executable "az" `
@@ -135,15 +135,14 @@ if (-not $UseExisting) {
                     "--sku", $UserConfig.SkuName,
                     "--enable-rbac-authorization", "true") -ShowOutput:$verbose
             if ($exitCode -ne 0) { Write-Error "Failed to create Key Vault '$VaultName'"; exit 1 }
-            Write-Host "  ✓ Key Vault created" -ForegroundColor Green
         }
     } else {
-        Write-Host "  ✓ Key Vault already exists" -ForegroundColor Green
+        Write-GroupLine "✓ Key Vault already exists" -ForegroundColor Green
     }
 } else {
     $check = & az keyvault show --name $VaultName 2>$null
     if (-not $check) { Write-Error "Key Vault '$VaultName' not found in subscription"; exit 1 }
-    Write-Host "  ✓ Key Vault found" -ForegroundColor Green
+    Write-GroupLine "✓ Key Vault found" -ForegroundColor Green
 }
 
 $vaultUri = "https://$VaultName.vault.azure.net"
@@ -166,9 +165,9 @@ if ($addonEnabled -ne "true") {
             "--enable-secret-rotation",
             "--rotation-poll-interval", "2m") -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Failed to enable Key Vault Secrets Provider addon"; exit 1 }
-    Write-Host "  ✓ Key Vault Secrets Provider addon enabled" -ForegroundColor Green
+    Write-GroupLine "✓ Key Vault Secrets Provider addon enabled" -ForegroundColor Green
 } else {
-    Write-Host "  ✓ Key Vault Secrets Provider addon already enabled" -ForegroundColor Green
+    Write-GroupLine "✓ Key Vault Secrets Provider addon already enabled" -ForegroundColor Green
 }
 
 # ── 4. Shared CSI Managed Identity ───────────────────────────────
@@ -180,9 +179,9 @@ if (-not $miExists) {
         -Arguments @("identity", "create",
             "--name", $miName, "--resource-group", $aksRg, "--location", $location) -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Failed to create Managed Identity"; exit 1 }
-    Write-Host "  ✓ CSI Managed Identity created" -ForegroundColor Green
+    Write-GroupLine "✓ CSI Managed Identity created" -ForegroundColor Green
 } else {
-    Write-Host "  ✓ CSI Managed Identity already exists" -ForegroundColor Green
+    Write-GroupLine "✓ CSI Managed Identity already exists" -ForegroundColor Green
 }
 
 $miClientId    = & az identity show --name $miName --resource-group $aksRg --query "clientId"    --output tsv 2>$null
@@ -200,9 +199,9 @@ if ($oidcEnabled -ne "true") {
             "--name", $clusterName, "--resource-group", $aksRg,
             "--enable-oidc-issuer", "--enable-workload-identity") -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Failed to enable OIDC/Workload Identity"; exit 1 }
-    Write-Host "  ✓ OIDC + Workload Identity enabled" -ForegroundColor Green
+    Write-GroupLine "✓ OIDC + Workload Identity enabled" -ForegroundColor Green
 } else {
-    Write-Host "  ✓ OIDC + Workload Identity already enabled" -ForegroundColor Green
+    Write-GroupLine "✓ OIDC + Workload Identity already enabled" -ForegroundColor Green
 }
 
 $oidcIssuer = & az aks show --name $clusterName --resource-group $aksRg `
@@ -225,7 +224,7 @@ foreach ($assignee in @(
             "--assignee-principal-type", $assignee.Type,
             "--scope", $vaultId) -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Warning "  Role assignment returned non-zero — may already exist" }
-    else { Write-Host "  ✓ '$($assignee.Role)' assigned to $($assignee.Desc)" -ForegroundColor Green }
+    else { Write-GroupLine "✓ '$($assignee.Role)' assigned to $($assignee.Desc)" -ForegroundColor Green }
 }
 
 # ── 7. State speichern — Key Vault Info in .aks-state.json ───────
@@ -242,10 +241,15 @@ $aksStateData['MiClientId']  = $miClientId
 $aksStateData['OidcIssuer']  = $oidcIssuer
 
 $aksStateData | ConvertTo-Json | Set-Content -Path $aksStatePath -Encoding UTF8
-Write-Host "  ✓ State saved to $aksStatePath" -ForegroundColor Green
+Write-GroupLine "✓ State saved to $aksStatePath" -ForegroundColor Green
+
+Complete-Group
 
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Housekeeping"
     Set-RancherProjectAssignment -Namespace $FullConfig.Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
 Write-Host ""
