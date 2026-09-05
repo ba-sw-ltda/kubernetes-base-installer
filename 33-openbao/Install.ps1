@@ -58,6 +58,8 @@ if ($PKIs.Count -gt 0) {
 }
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 # ── 1. Helm install ──────────────────────────────────────────────
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "openbao", $Repository, "--force-update") -ShowOutput:$verbose
@@ -66,7 +68,6 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
 
@@ -78,6 +79,8 @@ if ($stsExists) {
         -Arguments @("delete", "statefulset", "openbao", "-n", $Namespace, "--cascade=orphan")
     if ($exitCode -ne 0) { Write-Warning "  Could not delete StatefulSet — upgrade may fail" }
 }
+
+Complete-Group
 
 $storageClassLine = if ($UserConfig.StorageClass) { "    storageClass: $($UserConfig.StorageClass)" } else { "" }
 
@@ -114,6 +117,8 @@ Set-Content -Path $valuesFile.FullName -Value $HelmValues -Encoding UTF8
 
 Reset-StuckHelmRelease -ReleaseName "openbao" -Namespace $Namespace
 
+Start-Group -Title "Deploy"
+
 $exitCode = Invoke-WithSpinner -Message "Deploying OpenBao..." -Executable "helm" `
     -Arguments @("upgrade", "--install", "openbao", "openbao/openbao",
                  "--namespace", $Namespace,
@@ -123,7 +128,6 @@ $exitCode = Invoke-WithSpinner -Message "Deploying OpenBao..." -Executable "helm
                  "--timeout", "5m") -ShowOutput:$verbose
 Remove-Item $valuesFile.FullName -Force -ErrorAction SilentlyContinue
 if ($exitCode -ne 0) { Write-Error "Failed to deploy OpenBao (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 # Wait for pod to be Running (not Ready — readiness probe fails until initialized)
 $exitCode = Invoke-WithSpinner -Message "Waiting for OpenBao pod..." -Executable "kubectl" `
@@ -153,7 +157,10 @@ if (-not $baoStatus) {
     Write-Error "OpenBao listener did not respond after 60s — check pod logs: kubectl logs openbao-0 -n $Namespace"
     exit 1
 }
-Write-Host "  ✓ Pod running" -ForegroundColor Green
+Write-GroupLine "✓ Pod running" -ForegroundColor Green
+
+Complete-Group
+Start-Group -Title "Unseal"
 
 # ── 2. Init / Unseal ─────────────────────────────────────────────
 $unsealKey = $null
@@ -177,12 +184,12 @@ if (-not $baoStatus['initialized']) {
 
     @{ UnsealKey = $unsealKey; RootToken = $rootToken } |
         ConvertTo-Json | Set-Content -Path $StateFile -Encoding UTF8
-    Write-Host "  ✓ Initialized — state saved to $StateFile" -ForegroundColor Green
+    Write-GroupLine "✓ Initialized — state saved to $StateFile" -ForegroundColor Green
 
     & kubectl create secret generic openbao-unseal-keys -n $Namespace `
         --from-literal=unseal-key=$unsealKey `
         --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
-    Write-Host "  ✓ Unseal key stored in Kubernetes Secret" -ForegroundColor Green
+    Write-GroupLine "✓ Unseal key stored in Kubernetes Secret" -ForegroundColor Green
 } else {
     if (-not (Test-Path $StateFile)) {
         Write-Error @"
@@ -197,17 +204,20 @@ Run Reset-RKE2.ps1 to wipe the OpenBao PVC, then re-run Install-Base.ps1.
     $state     = Get-Content $StateFile | ConvertFrom-Json
     $unsealKey = $state.UnsealKey
     $rootToken = $state.RootToken
-    Write-Host "  ✓ Already initialized — loaded state from $StateFile" -ForegroundColor Green
+    Write-GroupLine "✓ Already initialized — loaded state from $StateFile" -ForegroundColor Green
 }
 
 if ($baoStatus['sealed']) {
     Invoke-WithSpinner -Message "Unsealing OpenBao..." -Executable "kubectl" `
         -Arguments @("exec", "openbao-0", "-n", $Namespace, "--",
                      "bao", "operator", "unseal", $unsealKey) | Out-Null
-    Write-Host "  ✓ Unsealed" -ForegroundColor Green
+    Write-GroupLine "✓ Unsealed" -ForegroundColor Green
 } else {
-    Write-Host "  ✓ Already unsealed" -ForegroundColor Green
+    Write-GroupLine "✓ Already unsealed" -ForegroundColor Green
 }
+
+Complete-Group
+Start-Group -Title "Configuration"
 
 # ── 3. Kubernetes Auth + KV-v2 ───────────────────────────────────
 function Invoke-BaoCmd {
@@ -227,7 +237,7 @@ $k8sHost = (& kubectl exec openbao-0 -n $Namespace -- sh -c 'echo $KUBERNETES_SE
 Invoke-BaoCmd "Configuring Kubernetes auth..." `
     "BAO_TOKEN=$rootToken bao write auth/kubernetes/config kubernetes_host='https://${k8sHost}:443'"
 
-Write-Host "  ✓ Kubernetes auth configured" -ForegroundColor Green
+Write-GroupLine "✓ Kubernetes auth configured" -ForegroundColor Green
 
 # ── 3b. Audit device (Finding #9) ─────────────────────────────────
 # Local file audit log on the existing data PVC (no new volume needed) —
@@ -242,9 +252,9 @@ $auditListJson = ($auditListRef.Value -join "`n")
 if ($auditListJson -notmatch '"file/"') {
     Invoke-BaoCmd "Enabling audit device (file)..." `
         "BAO_TOKEN=$rootToken bao audit enable file file_path=/openbao/data/audit/audit.log || true"
-    Write-Host "  ✓ Audit device enabled (/openbao/data/audit/audit.log)" -ForegroundColor Green
+    Write-GroupLine "✓ Audit device enabled (/openbao/data/audit/audit.log)" -ForegroundColor Green
 } else {
-    Write-Host "  ✓ Audit device already enabled" -ForegroundColor Green
+    Write-GroupLine "✓ Audit device already enabled" -ForegroundColor Green
 }
 
 # ── 4. PKI Engines — one per PKI definition ───────────────────────
@@ -263,7 +273,7 @@ if ($auditListJson -notmatch '"file/"') {
 # on mount "pki" so existing clusters keep working without re-running Prompt.ps1.
 
 if ($PKIs.Count -eq 0) {
-    Write-Host "  No PKIs defined — PKI engine will not be activated (no TLS, no ClusterIssuer)." -ForegroundColor Yellow
+    Write-GroupLine "No PKIs defined — PKI engine will not be activated (no TLS, no ClusterIssuer)." -ForegroundColor Yellow
 }
 
 # The old single ClusterIssuer "openbao-pki" is intentionally NOT deleted here.
@@ -272,8 +282,8 @@ if ($PKIs.Count -eq 0) {
 # migrates to "openbao-pki-<name>" the next time its own Install.ps1 is re-run.
 $oldIssuerExists = & kubectl get clusterissuer openbao-pki --ignore-not-found 2>$null
 if ($oldIssuerExists -and ($PKIs | Where-Object { "HTTP" -in @($_.Roles) -and $_.MountPath -ne "pki" })) {
-    Write-Host "  ℹ  Old ClusterIssuer 'openbao-pki' is kept." -ForegroundColor DarkGray
-    Write-Host "     Components migrate to 'openbao-pki-<name>' on their next re-install." -ForegroundColor DarkGray
+    Write-GroupLine "ℹ  Old ClusterIssuer 'openbao-pki' is kept." -ForegroundColor DarkGray
+    Write-GroupLine "   Components migrate to 'openbao-pki-<name>' on their next re-install." -ForegroundColor DarkGray
 }
 
 # Helper: write a Vault policy via file + kubectl cp (avoids CRLF issues with heredocs)
@@ -303,13 +313,12 @@ foreach ($pki in $PKIs) {
     $isDefault    = [bool]$pki.IsDefault
     $currentStatus = $pki.Status
 
-    Write-Host ""
-    Write-Host "  ────────────────────────────────────────" -ForegroundColor DarkGray
-    Write-Host "  PKI: $pkiName  ($pkiType · $mountPath)" -ForegroundColor Cyan
+    Write-GroupLine "────────────────────────────────────────" -ForegroundColor DarkGray
+    Write-GroupLine "PKI: $pkiName  ($pkiType · $mountPath)" -ForegroundColor Cyan
 
     # Skip if this is a pending external intermediate — Complete-PkiIntermediate handles it
     if ($currentStatus -eq "PendingCSR") {
-        Write-Host "  ⏸ Status PendingCSR — waiting for external certificate (Complete-PkiIntermediate.ps1)" -ForegroundColor Yellow
+        Write-GroupLine "⏸ Status PendingCSR — waiting for external certificate (Complete-PkiIntermediate.ps1)" -ForegroundColor Yellow
         $pkiResults.Add($pki) | Out-Null
         continue
     }
@@ -351,7 +360,7 @@ foreach ($pki in $PKIs) {
                 ("BAO_TOKEN=$rootToken bao write $mountPath/config/urls " +
                  "issuing_certificates='http://openbao.$Namespace.svc.cluster.local:8200/v1/$mountPath/ca' " +
                  "crl_distribution_points='http://openbao.$Namespace.svc.cluster.local:8200/v1/$mountPath/crl'")
-            Write-Host "  ✓ Root CA created (10y, CN=$cn)" -ForegroundColor Green
+            Write-GroupLine "✓ Root CA created (10y, CN=$cn)" -ForegroundColor Green
         }
         elseif ($pkiType -eq "Intermediate") {
             $cn = "$pkiName-intermediate.$Domain"
@@ -371,7 +380,7 @@ foreach ($pki in $PKIs) {
                 $csrRemote = "/tmp/$pkiName-csr.pem"
                 $csrTmp = New-TemporaryFile
                 Set-Content -Path $csrTmp.FullName -Value $csr -Encoding UTF8 -NoNewline
-                Write-Host "  · Uploading CSR to pod..." -ForegroundColor DarkGray
+                Write-GroupLine "· Uploading CSR to pod..." -ForegroundColor DarkGray
                 Push-Location (Split-Path $csrTmp.FullName)
                 & kubectl cp "./$(Split-Path $csrTmp.FullName -Leaf)" "${Namespace}/openbao-0:$csrRemote" 2>$null | Out-Null
                 Pop-Location
@@ -389,7 +398,7 @@ foreach ($pki in $PKIs) {
                 $signedRemote = "/tmp/$pkiName-signed.pem"
                 $signedTmp = New-TemporaryFile
                 Set-Content -Path $signedTmp.FullName -Value $signedCert -Encoding UTF8 -NoNewline
-                Write-Host "  · Uploading signed certificate to pod..." -ForegroundColor DarkGray
+                Write-GroupLine "· Uploading signed certificate to pod..." -ForegroundColor DarkGray
                 Push-Location (Split-Path $signedTmp.FullName)
                 & kubectl cp "./$(Split-Path $signedTmp.FullName -Leaf)" "${Namespace}/openbao-0:$signedRemote" 2>$null | Out-Null
                 Pop-Location
@@ -409,7 +418,7 @@ foreach ($pki in $PKIs) {
                     ("BAO_TOKEN=$rootToken bao write $mountPath/config/urls " +
                      "issuing_certificates='http://openbao.$Namespace.svc.cluster.local:8200/v1/$mountPath/ca' " +
                      "crl_distribution_points='http://openbao.$Namespace.svc.cluster.local:8200/v1/$mountPath/crl'")
-                Write-Host "  ✓ Intermediate CA signed and imported (Parent: $parentMount)" -ForegroundColor Green
+                Write-GroupLine "✓ Intermediate CA signed and imported (Parent: $parentMount)" -ForegroundColor Green
             }
             elseif ($pki.ParentType -eq "External") {
                 # Export CSR, set PendingCSR status — Complete-PkiIntermediate.ps1 finishes this
@@ -422,10 +431,10 @@ foreach ($pki in $PKIs) {
 
                 $csrExportPath = Join-Path $BaseDir "$pkiName-intermediate.csr"
                 Set-Content -Path $csrExportPath -Value $csr -Encoding UTF8
-                Write-Host "  ✓ CSR generated and exported to:" -ForegroundColor Green
-                Write-Host "    $csrExportPath" -ForegroundColor Yellow
-                Write-Host "  → Have the CSR signed by your Corporate CA," -ForegroundColor DarkGray
-                Write-Host "    then: .\33-openbao\Complete-PkiIntermediate.ps1 -Platform $Platform" -ForegroundColor DarkGray
+                Write-GroupLine "✓ CSR generated and exported to:" -ForegroundColor Green
+                Write-GroupLine "  $csrExportPath" -ForegroundColor Yellow
+                Write-GroupLine "→ Have the CSR signed by your Corporate CA," -ForegroundColor DarkGray
+                Write-GroupLine "  then: .\33-openbao\Complete-PkiIntermediate.ps1 -Platform $Platform" -ForegroundColor DarkGray
 
                 $pki['Status']        = "PendingCSR"
                 $pki['CSRExportPath'] = $csrExportPath
@@ -434,7 +443,7 @@ foreach ($pki in $PKIs) {
             }
         }
     } else {
-        Write-Host "  ✓ CA already exists" -ForegroundColor Green
+        Write-GroupLine "✓ CA already exists" -ForegroundColor Green
     }
 
     # ── Configure PKI roles ──────────────────────────────────────
@@ -445,7 +454,7 @@ foreach ($pki in $PKIs) {
              "allowed_domains='$Domain' allow_subdomains=true allow_bare_domains=true allow_any_name=false " +
              "require_cn=false max_ttl=720h ttl=720h key_type=rsa key_bits=2048 " +
              "key_usage='DigitalSignature,KeyEncipherment' ext_key_usage='ServerAuth'")
-        Write-Host "  ✓ Role 'http' (ServerAuth, *.${Domain})" -ForegroundColor Green
+        Write-GroupLine "✓ Role 'http' (ServerAuth, *.${Domain})" -ForegroundColor Green
     }
 
     if ("mTLS" -in $roles) {
@@ -456,7 +465,7 @@ foreach ($pki in $PKIs) {
              "allow_any_name=true enforce_hostnames=false require_cn=true " +
              "max_ttl=${ttlH}h ttl=${ttlH}h key_type=rsa key_bits=2048 " +
              "key_usage='DigitalSignature' ext_key_usage='ClientAuth' no_store=false")
-        Write-Host "  ✓ Role 'mtls' (ClientAuth, TTL=${ttlH}h)" -ForegroundColor Green
+        Write-GroupLine "✓ Role 'mtls' (ClientAuth, TTL=${ttlH}h)" -ForegroundColor Green
 
         # AppRole for device enrollment (one-time token) — infrastructure only.
         # Actual token generation happens in the vehicle/MQTT onboarding script.
@@ -474,7 +483,7 @@ path "$mountPath/sign/mtls" {
             ("BAO_TOKEN=$rootToken bao write auth/approle/role/$pkiName-enroll " +
              "secret_id_ttl=1h token_policies=vehicle-enroll-$pkiName " +
              "token_ttl=10m token_max_ttl=30m")
-        Write-Host "  ✓ AppRole '$pkiName-enroll' ready (one-time token, 1h TTL)" -ForegroundColor Green
+        Write-GroupLine "✓ AppRole '$pkiName-enroll' ready (one-time token, 1h TTL)" -ForegroundColor Green
     }
 
     # ── cert-manager ClusterIssuer (HTTP role only) ───────────────
@@ -527,7 +536,7 @@ spec:
             Start-Sleep -Seconds 5
         }
         if ($issuerApplied) {
-            Write-Host "  ✓ ClusterIssuer '$issuerName' ready" -ForegroundColor Green
+            Write-GroupLine "✓ ClusterIssuer '$issuerName' ready" -ForegroundColor Green
         } else {
             Write-Warning "  ClusterIssuer '$issuerName' could not be created after retries: $applyOutput"
         }
@@ -540,8 +549,7 @@ spec:
 # ── 5. Persist PKI state ──────────────────────────────────────────
 if ($pkiResults.Count -gt 0) {
     Save-OpenBaoPkis -PKIs @($pkiResults | ForEach-Object { [hashtable]$_ }) -BaseDir $BaseDir -Platform $Platform
-    Write-Host ""
-    Write-Host "  ✓ PKI status saved ($StateFile)" -ForegroundColor Green
+    Write-GroupLine "✓ PKI status saved ($StateFile)" -ForegroundColor Green
 }
 
 # ── 6. Auto-Unsealer Deployment ───────────────────────────────────
@@ -591,7 +599,7 @@ spec:
           secretName: openbao-unseal-keys
 "@
 $unsealerYaml | & kubectl apply -f - 2>&1 | Out-Null
-if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Auto-unsealer deployed" -ForegroundColor Green }
+if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Auto-unsealer deployed" -ForegroundColor Green }
 
 # ── 7. Ingress ────────────────────────────────────────────────────
 # TLS terminates at the ingress (same convention as Grafana/Rancher/etc.) —
@@ -628,7 +636,7 @@ $($protect.TlsBlock)
               number: 8200
 "@
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
+    if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Ingress configured ($Hostname)" -ForegroundColor Green }
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
     Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
@@ -637,16 +645,22 @@ $($protect.TlsBlock)
         -LogoUrl $portalIcon
 }
 
+Complete-Group
+Start-Group -Title "Housekeeping"
+
 if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
+Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 # Only the external-facing "http" port (8200) — 8201 is OpenBao's internal
 # cluster/Raft-replication port between its own pods, not something other
 # namespaces need to reach.
 $openbaoIngressPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "openbao" -ServicePortName "http"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $openbaoIngressPort
+Write-GroupLine "✓ NetworkPolicy provider-ingress rule applied (port $openbaoIngressPort)" -ForegroundColor Green
 # Consumer-side counterpart, missing until 2026-08-20 (confirmed live on
 # Magalu: vault.<hostname> gave a Traefik Gateway Timeout — "ingress" never
 # had the "network.k8s/allow-openbao" label, so default-deny-all silently
@@ -657,7 +671,10 @@ Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $openbaoIngressPort
 # to register as a consumer of.
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
     Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $openbaoIngressPort
+    Write-GroupLine "✓ NetworkPolicy consumer-egress rule applied (ingress → $Namespace)" -ForegroundColor Green
 }
+
+Complete-Group
 
 # ── Summary ───────────────────────────────────────────────────────
 Write-Host ""
