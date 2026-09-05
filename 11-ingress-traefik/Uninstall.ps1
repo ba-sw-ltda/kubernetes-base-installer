@@ -11,12 +11,19 @@ $BaseDir = Split-Path $PSScriptRoot -Parent
 Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
 Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
-$verbose   = $VerbosePreference -eq 'Continue'
-$namespace = "ingress"
-$release   = "traefik"
+$verbose = $VerbosePreference -eq 'Continue'
+$release = "traefik"
 
-$existing = & helm list -n $namespace --filter "^$release$" --short 2>&1
+# Same reasoning as 11-ingress-nginx/Uninstall.ps1 — resolve the release's
+# real namespace instead of assuming "ingress", so this stays correct even
+# against a legacy/pre-rename layout.
+$existingJson = & helm list -A --filter "^$release$" -o json 2>&1
+$existing = $null
+if ($LASTEXITCODE -eq 0 -and $existingJson) {
+    $existing = ($existingJson | ConvertFrom-Json) | Select-Object -First 1
+}
 if (-not $existing) { exit 0 }
+$namespace = $existing.namespace
 
 Write-Host "  Removing Traefik Ingress Controller (switching ingress controller)..." -ForegroundColor Cyan
 
