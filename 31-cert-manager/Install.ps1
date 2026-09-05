@@ -43,6 +43,8 @@ Write-Host "  Chart:      $ChartName $ChartVersion" -ForegroundColor Gray
 Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 # Helm repository
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "jetstack", $Repository, "--force-update") -ShowOutput:$verbose
@@ -51,14 +53,16 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
 # Namespace
 if ($CreateNamespace) {
     & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-    Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+    Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 }
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 # Deploy
 $HelmArgs = @(
@@ -85,7 +89,6 @@ Reset-StuckHelmRelease -ReleaseName "cert-manager" -Namespace $Namespace
 $exitCode = Invoke-WithSpinner -Message "Deploying cert-manager..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy cert-manager (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 # Wait for all three components
 foreach ($dep in @("cert-manager", "cert-manager-cainjector", "cert-manager-webhook")) {
@@ -93,16 +96,19 @@ foreach ($dep in @("cert-manager", "cert-manager-cainjector", "cert-manager-webh
         -Arguments @("rollout", "status", "deployment/$dep", "-n", $Namespace, "--timeout=5m") `
         -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Rollout of $dep did not complete"; exit 1 }
-    Write-Host "  ✓ $dep ready" -ForegroundColor Green
 }
 
 if ($verbose) {
-    Write-Host ""
+    Write-GroupLine ""
     & kubectl get pods -n $Namespace
 }
 
+Complete-Group
+Start-Group -Title "Housekeeping"
+
 if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
 }
 
 # Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
@@ -110,13 +116,16 @@ if ($FullConfig.RancherProject) {
 # same pattern as 21-longhorn/Install.ps1.
 Register-GrafanaDashboard -Namespace $Namespace -Name "cert-manager" `
     -JsonPath "$ScriptRoot\dashboards\cert-manager.json" -Folder "Security"
+Write-GroupLine "✓ Grafana dashboard registered" -ForegroundColor Green
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
+Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 # Metrics scrape port (cert-manager:9402), label-gated via the same
 # provider-ingress pattern as 21-longhorn/Install.ps1 — inert until
 # `prometheus` is labeled as a consumer (deferred to the weekend NetworkPolicy
 # fix, see project_rke2_ingress_namespace_mismatch).
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 9402
+Write-GroupLine "✓ Metrics scrape port allowed" -ForegroundColor Green
 # Resolved dynamically against OpenBao's real container port rather than
 # hardcoded — see Resolve-ServiceRealPorts for why (NetworkPolicy `ports`
 # matches the pod's real destination port after Service DNAT, not the
@@ -137,6 +146,7 @@ if ($openbaoPort.Count -eq 0) {
     $openbaoPort = @(8200)
 }
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "openbao" -Port $openbaoPort
+Write-GroupLine "✓ Egress to OpenBao allowed" -ForegroundColor Green
 
 # The default-deny above also blocks the kube-apiserver's admission-webhook
 # calls into this namespace (every Certificate/ClusterIssuer create or update,
@@ -212,13 +222,15 @@ $ipBlockYaml
 "@
     $webhookYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✓ NetworkPolicy exception applied (apiserver -> cert-manager-webhook:10250)" -ForegroundColor Green
+        Write-GroupLine "✓ NetworkPolicy exception applied (apiserver -> cert-manager-webhook:10250)" -ForegroundColor Green
     } else {
         Write-Warning "  ⚠ Failed to apply apiserver->webhook NetworkPolicy exception"
     }
 } else {
     Write-Warning "  ⚠ Could not determine control-plane node IPs — cert-manager webhook may be unreachable from the API server under the new default-deny policy"
 }
+
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
