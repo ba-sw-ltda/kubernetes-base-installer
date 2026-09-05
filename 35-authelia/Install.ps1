@@ -63,6 +63,8 @@ Write-Host "  Hostname:   $Hostname" -ForegroundColor Gray
 Write-Host "  Covers:     *.$clusterDomain" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "authelia", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
@@ -70,11 +72,13 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
+
+Complete-Group
+Start-Group -Title "Configuration"
 
 # ── Session/JWT/storage-encryption secrets ──────────────────────────────────
 # The chart auto-generates its own Secret for these three and points
@@ -114,7 +118,10 @@ if (-not (Sync-AutheliaConfiguration -BaseDir $BaseDir -Platform $Platform)) {
 }
 $mount.SpcYaml | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "SecretProviderClass could not be applied — check CSI driver installation"; exit 1 }
-Write-Host "  ✓ Rendered config written to vault + SecretProviderClass created" -ForegroundColor Green
+Write-GroupLine "✓ Rendered config written to vault + SecretProviderClass created" -ForegroundColor Green
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 # NOTE: this chart nests resources/extraVolumes/extraVolumeMounts under a
 # top-level "pod:" key (confirmed against the chart's values.yaml — most
@@ -174,18 +181,18 @@ if ($authPodsJson) {
     $authPods = try { ($authPodsJson | ConvertFrom-Json).items } catch { @() }
     @($authPods | Where-Object { $_.status.phase -eq "Unknown" -or $_.metadata.deletionTimestamp } | ForEach-Object { $_.metadata.name }) |
         Where-Object { $_ } | ForEach-Object {
-            Write-Host "  ⚠ Force-deleting stuck pod '$_' (Unknown/Terminating) to free PVC..." -ForegroundColor Yellow
+            Write-GroupLine "⚠ Force-deleting stuck pod '$_' (Unknown/Terminating) to free PVC..." -ForegroundColor Yellow
             & kubectl delete pod $_ -n $Namespace --grace-period=0 --force 2>$null | Out-Null
         }
 }
 $pvcDts = & kubectl get pvc authelia -n $Namespace -o "jsonpath={.metadata.deletionTimestamp}" 2>$null
 if ($pvcDts) {
-    Write-Host "  · Waiting for Terminating PVC to clear (up to 60s)..." -ForegroundColor DarkGray
+    Write-GroupLine "· Waiting for Terminating PVC to clear (up to 60s)..." -ForegroundColor DarkGray
     & kubectl wait --for=delete pvc/authelia -n $Namespace --timeout=60s 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
         # The PVC's protection finalizer is still set despite no pods holding it —
         # patch it out so the deletion can complete.
-        Write-Host "  ⚠ PVC still Terminating — removing protection finalizer..." -ForegroundColor Yellow
+        Write-GroupLine "⚠ PVC still Terminating — removing protection finalizer..." -ForegroundColor Yellow
         & kubectl patch pvc authelia -n $Namespace --type json `
             -p '[{"op":"remove","path":"/metadata/finalizers"}]' 2>$null | Out-Null
         & kubectl wait --for=delete pvc/authelia -n $Namespace --timeout=15s 2>$null | Out-Null
@@ -202,22 +209,20 @@ $exitCode = Invoke-WithSpinner -Message "Waiting for authelia (up to 5m)..." -Ex
     -Arguments @("rollout", "status", "deployment/authelia", "-n", $Namespace, "--timeout=5m") `
     -ShowOutput:$verbose -ShowElapsed
 if ($exitCode -ne 0) {
-    Write-Host ""
-    Write-Host "  ── Pod status ──────────────────────────────" -ForegroundColor DarkGray
-    & kubectl get pods -n $Namespace -l "app.kubernetes.io/name=authelia" 2>&1 | ForEach-Object { Write-Host "  $_" }
+    Write-GroupLine "── Pod status ──────────────────────────────" -ForegroundColor DarkGray
+    & kubectl get pods -n $Namespace -l "app.kubernetes.io/name=authelia" 2>&1 | ForEach-Object { Write-GroupLine "$_" }
     $pendingPod = & kubectl get pods -n $Namespace -l "app.kubernetes.io/name=authelia" `
         --field-selector "status.phase=Pending" -o "jsonpath={.items[0].metadata.name}" 2>$null
     if ($pendingPod -and $pendingPod.Trim()) {
-        Write-Host ""
-        Write-Host "  ── Events for $($pendingPod.Trim()) ──────────────" -ForegroundColor DarkGray
+        Write-GroupLine "── Events for $($pendingPod.Trim()) ──────────────" -ForegroundColor DarkGray
         & kubectl get events -n $Namespace `
             --field-selector "involvedObject.name=$($pendingPod.Trim())" `
-            --sort-by ".lastTimestamp" 2>&1 | ForEach-Object { Write-Host "  $_" }
+            --sort-by ".lastTimestamp" 2>&1 | ForEach-Object { Write-GroupLine "$_" }
     }
     Write-Error "Rollout of Authelia did not complete"
     exit 1
 }
-Write-Host "  ✓ Authelia ready" -ForegroundColor Green
+Write-GroupLine "✓ Authelia ready" -ForegroundColor Green
 
 # Sync-AutheliaConfiguration's own restart (triggered while writing the
 # rendered config, earlier in this script) can get reverted by the Helm
@@ -232,6 +237,9 @@ $exitCode = Invoke-WithSpinner -Message "Restarting to pick up rendered config..
     -Arguments @("rollout", "status", "deployment/authelia", "-n", $Namespace, "--timeout=5m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout of Authelia did not complete after the post-deploy restart"; exit 1 }
+
+Complete-Group
+Start-Group -Title "Ingress"
 
 $issuerName = Get-ClusterIssuerName -Platform $Platform -BaseDir $BaseDir
 $tlsSecretName = "$($Hostname -replace '\.', '-')-tls"
@@ -326,11 +334,11 @@ $tlsBlock
 "@
 if ((Get-IngressClass) -eq "traefik") {
     $scopeFixMiddlewareYaml | & kubectl apply -f - 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Traefik OIDC scope-fix Middleware configured (unverified, see comment)" -ForegroundColor Green }
+    if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Traefik OIDC scope-fix Middleware configured (unverified, see comment)" -ForegroundColor Green }
     else { Write-Warning "  Failed to apply the Traefik OIDC scope-fix Middleware" }
 }
 $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
-if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)$(if ($issuerName) { ' [TLS via ' + $issuerName + ']' })" -ForegroundColor Green }
+if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Ingress configured ($Hostname)$(if ($issuerName) { ' [TLS via ' + $issuerName + ']' })" -ForegroundColor Green }
 
 # Traefik equivalent of the nginx auth-url/auth-signin annotation pair —
 # Protect-ComponentIngress (every other component's forward-auth helper)
@@ -357,12 +365,16 @@ spec:
       - Remote-Email
 "@
     $middlewareYaml | & kubectl apply -f - 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Traefik forward-auth Middleware configured" -ForegroundColor Green }
+    if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Traefik forward-auth Middleware configured" -ForegroundColor Green }
     else { Write-Warning "  Failed to apply the Traefik forward-auth Middleware" }
 }
 
+Complete-Group
+Start-Group -Title "Housekeeping"
+
 if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
 }
 
 # A NetworkPolicy's `ports` matches the pod's real destination port after the
@@ -377,9 +389,14 @@ if ($FullConfig.RancherProject) {
 # same port-mismatch bug class already found and fixed in
 # 11-ingress-traefik/Install.ps1's allow-public-web-ingress rule.
 Install-NetworkPolicyBaseline -Namespace $Namespace
+Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 $autheliaPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "authelia"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $autheliaPort
+Write-GroupLine "✓ NetworkPolicy provider-ingress rule applied (port $autheliaPort)" -ForegroundColor Green
 Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $autheliaPort
+Write-GroupLine "✓ NetworkPolicy consumer-egress rule applied (ingress → $Namespace)" -ForegroundColor Green
+
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
