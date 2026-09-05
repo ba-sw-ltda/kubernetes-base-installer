@@ -35,6 +35,8 @@ Write-Host "  Chart:    $ChartName v$ChartVersion" -ForegroundColor Gray
 Write-Host "  Strategy: File-mount only (no K8s Secrets, no etcd)" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "secrets-store-csi-driver", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
@@ -42,7 +44,9 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 $HelmArgs = @(
     "upgrade", "--install", "secrets-store-csi-driver",
@@ -59,16 +63,19 @@ Reset-StuckHelmRelease -ReleaseName "secrets-store-csi-driver" -Namespace $Names
 $exitCode = Invoke-WithSpinner -Message "Deploying Secrets Store CSI Driver..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Secrets Store CSI Driver (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for CSI Driver DaemonSet..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "daemonset/secrets-store-csi-driver",
                  "-n", $Namespace, "--timeout=5m") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "CSI Driver DaemonSet did not become ready"; exit 1 }
-Write-Host "  ✓ Secrets Store CSI Driver ready" -ForegroundColor Green
+
+Complete-Group
 
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Housekeeping"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
 Write-Host ""
