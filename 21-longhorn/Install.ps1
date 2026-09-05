@@ -45,6 +45,8 @@ Write-Host "  Replicas:   $($UserConfig.ReplicaCount)  |  Default StorageClass: 
 if ($Hostname) { Write-Host "  UI:         $Hostname" -ForegroundColor Gray }
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "longhorn", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
@@ -52,12 +54,11 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
 if ($CreateNamespace) {
     & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-    Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+    Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 }
 
 $resetOk = Reset-StuckHelmRelease -ReleaseName "longhorn" -Namespace $Namespace
@@ -78,10 +79,10 @@ $stuckCrds = $allCrds['items'] | Where-Object {
 foreach ($crd in $stuckCrds) {
     & kubectl patch crd $crd['metadata']['name'] `
         -p '{"metadata":{"finalizers":[]}}' --type=merge 2>$null | Out-Null
-    Write-Host "  ✓ Removed finalizer from stuck CRD: $($crd['metadata']['name'])" -ForegroundColor Yellow
+    Write-GroupLine "✓ Removed finalizer from stuck CRD: $($crd['metadata']['name'])" -ForegroundColor Yellow
 }
 if ($stuckCrds) {
-    Write-Host "  Waiting for stuck CRDs to clear..." -ForegroundColor Yellow
+    Write-GroupLine "Waiting for stuck CRDs to clear..." -ForegroundColor Yellow
     Start-Sleep -Seconds 10
 }
 
@@ -97,9 +98,12 @@ if ($exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($crdYaml)) {
     $crdOnly = ($crdYaml -split "(?m)^---") | Where-Object { $_ -match "kind:\s*CustomResourceDefinition" }
     if ($crdOnly) {
         ($crdOnly -join "`n---`n") | & kubectl apply --server-side --force-conflicts -f - 2>&1 | Out-Null
-        Write-Host "  ✓ CRDs applied" -ForegroundColor Green
+        Write-GroupLine "✓ CRDs applied" -ForegroundColor Green
     }
 }
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 $HelmArgs = @(
     "upgrade", "--install", "longhorn", "longhorn/$ChartName",
@@ -129,44 +133,43 @@ $HelmArgs = @(
 $exitCode = Invoke-WithSpinner -Message "Deploying Longhorn..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Longhorn (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for longhorn-manager (up to 20m)..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "daemonset/longhorn-manager", "-n", $Namespace, "--timeout=20m") `
     -ShowOutput:$verbose -ShowElapsed
 if ($exitCode -ne 0) {
-    Write-Host ""
-    Write-Host "  ── Pod status ──────────────────────────────" -ForegroundColor DarkGray
-    & kubectl get pods -n $Namespace -l "app=longhorn-manager" 2>&1 | ForEach-Object { Write-Host "  $_" }
-    Write-Host ""
-    Write-Host "  ── Recent events ───────────────────────────" -ForegroundColor DarkGray
-    & kubectl get events -n $Namespace --sort-by='.lastTimestamp' --field-selector type=Warning 2>&1 | Select-Object -Last 10 | ForEach-Object { Write-Host "  $_" }
-    Write-Host ""
-    Write-Host "  Tip: Longhorn requires open-iscsi on all nodes:" -ForegroundColor Yellow
-    Write-Host "    apt-get install -y open-iscsi && systemctl enable --now iscsid" -ForegroundColor Yellow
+    Write-GroupLine ""
+    Write-GroupLine "── Pod status ──────────────────────────────" -ForegroundColor DarkGray
+    & kubectl get pods -n $Namespace -l "app=longhorn-manager" 2>&1 | ForEach-Object { Write-GroupLine "$_" }
+    Write-GroupLine ""
+    Write-GroupLine "── Recent events ───────────────────────────" -ForegroundColor DarkGray
+    & kubectl get events -n $Namespace --sort-by='.lastTimestamp' --field-selector type=Warning 2>&1 | Select-Object -Last 10 | ForEach-Object { Write-GroupLine "$_" }
+    Write-GroupLine ""
+    Write-GroupLine "Tip: Longhorn requires open-iscsi on all nodes:" -ForegroundColor Yellow
+    Write-GroupLine "  apt-get install -y open-iscsi && systemctl enable --now iscsid" -ForegroundColor Yellow
     Write-Error "Rollout of longhorn-manager did not complete"
     exit 1
 }
-Write-Host "  ✓ longhorn-manager ready" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for longhorn-driver-deployer..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/longhorn-driver-deployer", "-n", $Namespace, "--timeout=15m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout of longhorn-driver-deployer did not complete"; exit 1 }
-Write-Host "  ✓ longhorn-driver-deployer ready" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for longhorn-ui..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/longhorn-ui", "-n", $Namespace, "--timeout=15m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout of longhorn-ui did not complete"; exit 1 }
-Write-Host "  ✓ longhorn-ui ready" -ForegroundColor Green
+
+Complete-Group
+Start-Group -Title "Configuration"
 
 # Remove default annotation from local-path StorageClass (RKE2 ships with it as default)
 $lpExists = & kubectl get storageclass local-path --ignore-not-found 2>&1
 if ($lpExists) {
     $patch = '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'
     & kubectl patch storageclass local-path -p $patch 2>&1 | Out-Null
-    Write-Host "  ✓ local-path StorageClass de-defaulted" -ForegroundColor Green
+    Write-GroupLine "✓ local-path StorageClass de-defaulted" -ForegroundColor Green
 }
 
 # Ingress for Longhorn UI
@@ -199,10 +202,10 @@ $($protect.TlsBlock)
 "@
     $applyOut = $ingressYaml | & kubectl apply -f - 2>&1
     if ($LASTEXITCODE -ne 0) {
-        foreach ($line in $applyOut) { Write-Host $line -ForegroundColor Red }
+        foreach ($line in $applyOut) { Write-GroupLine "$line" -ForegroundColor Red }
         Write-Error "Failed to create Longhorn UI Ingress"; exit 1
     }
-    Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green
+    Write-GroupLine "✓ Ingress configured ($Hostname)" -ForegroundColor Green
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
     Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
@@ -212,14 +215,18 @@ $($protect.TlsBlock)
 }
 
 if ($verbose) {
-    Write-Host ""
+    Write-GroupLine ""
     & kubectl get storageclass
-    Write-Host ""
+    Write-GroupLine ""
     & kubectl get pods -n $Namespace
 }
 
+Complete-Group
+Start-Group -Title "Housekeeping"
+
 if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
 }
 
 # Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
@@ -231,8 +238,10 @@ if ($FullConfig.RancherProject) {
 # no NetworkPolicy involved.
 Register-GrafanaDashboard -Namespace $Namespace -Name "longhorn" `
     -JsonPath "$ScriptRoot\dashboards\longhorn.json" -Folder "Storage"
+Write-GroupLine "✓ Grafana dashboard registered" -ForegroundColor Green
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
+Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 # NetworkPolicy `ports` matches the pod's real destination port after the
 # Service's DNAT rewrite, not the Service's externally-advertised port — the
 # longhorn-frontend Service exposes 80 but its container listens on 8000
@@ -247,6 +256,7 @@ $longhornPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "lon
 # can actually be scraped, not just defined.
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port ($longhornPort + 9500)
 Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $longhornPort
+Write-GroupLine "✓ Metrics scrape port allowed (ingress consumer egress wired)" -ForegroundColor Green
 # NOTE: the `prometheus` namespace is NOT labeled here via
 # Set-NetworkPolicyConsumerEgress — that function also creates an Egress-only
 # NetworkPolicy object in the *source* namespace, and `prometheus` currently
@@ -257,6 +267,8 @@ Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace
 #   kubectl label namespace prometheus network.k8s/allow-longhorn-system=true --overwrite
 # Needs a real `prometheus` egress baseline before this can be scripted here
 # safely — deferred to the weekend NetworkPolicy structural fix.
+
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
