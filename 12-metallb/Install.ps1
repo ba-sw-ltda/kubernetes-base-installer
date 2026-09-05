@@ -80,6 +80,8 @@ if ($Platform -eq "RKE2 (On-Premise)") {
 
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "metallb", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
@@ -87,12 +89,11 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
 if ($CreateNamespace) {
     & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-    Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+    Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 }
 
 $HelmArgs = @(
@@ -112,31 +113,33 @@ $HelmArgs = @(
     "--set", "prometheus.serviceMonitor.additionalLabels.release=prometheus"
 )
 
+Complete-Group
+
+Start-Group -Title "Deploy"
+
 Reset-StuckHelmRelease -ReleaseName "metallb" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying MetalLB..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy MetalLB (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for metallb-controller..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/metallb-controller", "-n", $Namespace, "--timeout=5m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout of metallb-controller did not complete"; exit 1 }
-Write-Host "  ✓ metallb-controller ready" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for metallb-speaker..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "daemonset/metallb-speaker", "-n", $Namespace, "--timeout=5m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout of metallb-speaker did not complete"; exit 1 }
-Write-Host "  ✓ metallb-speaker ready" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for MetalLB CRDs..." -Executable "kubectl" `
     -Arguments @("wait", "--for=condition=established", "--timeout=2m",
                  "crd/ipaddresspools.metallb.io", "crd/l2advertisements.metallb.io") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "MetalLB CRDs did not become established in time"; exit 1 }
-Write-Host "  ✓ CRDs ready" -ForegroundColor Green
+
+Complete-Group
 
 # Build pool YAML per platform
 if ($Platform -eq "RKE2 (On-Premise)") {
@@ -203,6 +206,8 @@ $poolList
 "@
 }
 
+Start-Group -Title "Configuration"
+
 $applyOutput = $poolYaml | & kubectl apply -f - 2>&1
 if ($LASTEXITCODE -ne 0) {
     foreach ($line in $applyOutput) { Write-Host $line -ForegroundColor Red }
@@ -210,10 +215,10 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 if ($Platform -eq "RKE2 (On-Premise)") {
-    Write-Host "  ✓ Pool '$($UserConfig.IngressPoolName)' configured ($NginxIp)" -ForegroundColor Green
+    Write-GroupLine "✓ Pool '$($UserConfig.IngressPoolName)' configured ($NginxIp)" -ForegroundColor Green
 } else {
-    Write-Host "  ✓ Pool '$($UserConfig.PoolName)-v4' configured ($kindIpv4)" -ForegroundColor Green
-    if ($kindIpv6) { Write-Host "  ✓ Pool '$($UserConfig.PoolName)-v6' configured ($kindIpv6)" -ForegroundColor Green }
+    Write-GroupLine "✓ Pool '$($UserConfig.PoolName)-v4' configured ($kindIpv4)" -ForegroundColor Green
+    if ($kindIpv6) { Write-GroupLine "✓ Pool '$($UserConfig.PoolName)-v6' configured ($kindIpv6)" -ForegroundColor Green }
 }
 
 if ($verbose) {
@@ -221,8 +226,13 @@ if ($verbose) {
     & kubectl get pods -n $Namespace
 }
 
+Complete-Group
+
+Start-Group -Title "Housekeeping"
+
 if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
 }
 
 # Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
@@ -230,13 +240,18 @@ if ($FullConfig.RancherProject) {
 # same pattern as 21-longhorn/Install.ps1.
 Register-GrafanaDashboard -Namespace $Namespace -Name "metallb" `
     -JsonPath "$ScriptRoot\dashboards\metallb.json" -Folder "Networking"
+Write-GroupLine "✓ Grafana dashboard registered" -ForegroundColor Green
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
+Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 # Metrics scrape port (controller+speaker :7472), label-gated via the same
 # provider-ingress pattern as 21-longhorn/Install.ps1 — inert until
 # `prometheus` is labeled as a consumer (deferred to the weekend NetworkPolicy
 # fix, see project_rke2_ingress_namespace_mismatch).
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 7472
+Write-GroupLine "✓ Metrics scrape port allowed" -ForegroundColor Green
+
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
