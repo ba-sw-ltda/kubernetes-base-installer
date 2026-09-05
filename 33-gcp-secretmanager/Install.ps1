@@ -40,16 +40,18 @@ Write-Host "  Cluster:  $clusterName" -ForegroundColor Gray
 Write-Host "  Zone:     $zone" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Configuration"
+
 # ── 1. APIs aktivieren ───────────────────────────────────────────
 foreach ($api in @("secretmanager.googleapis.com", "container.googleapis.com")) {
     $enabled = & gcloud services list --project $projectId --filter "name:$api" --format "value(name)" 2>$null
     if ($enabled) {
-        Write-Host "  ✓ $api already enabled" -ForegroundColor Green
+        Write-GroupLine "✓ $api already enabled" -ForegroundColor Green
     } else {
         $exitCode = Invoke-WithSpinner -Message "Enabling $api..." -Executable "gcloud" `
             -Arguments @("services", "enable", $api, "--project", $projectId) -ShowOutput:$verbose
         if ($exitCode -ne 0) { Write-Error "Failed to enable $api"; exit 1 }
-        Write-Host "  ✓ $api enabled" -ForegroundColor Green
+        Write-GroupLine "✓ $api enabled" -ForegroundColor Green
     }
 }
 
@@ -57,14 +59,14 @@ foreach ($api in @("secretmanager.googleapis.com", "container.googleapis.com")) 
 $wiEnabled = & gcloud container clusters describe $clusterName --zone $zone --project $projectId `
     --format "value(workloadIdentityConfig.workloadPool)" 2>$null
 if ($wiEnabled) {
-    Write-Host "  ✓ Workload Identity already enabled" -ForegroundColor Green
+    Write-GroupLine "✓ Workload Identity already enabled" -ForegroundColor Green
 } else {
     $exitCode = Invoke-WithSpinner -Message "Enabling Workload Identity..." -Executable "gcloud" `
         -Arguments @("container", "clusters", "update", $clusterName,
             "--zone", $zone, "--project", $projectId,
             "--workload-pool=$projectId.svc.id.goog") -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Failed to enable Workload Identity"; exit 1 }
-    Write-Host "  ✓ Workload Identity enabled" -ForegroundColor Green
+    Write-GroupLine "✓ Workload Identity enabled" -ForegroundColor Green
 }
 
 # Nodepool auf GKE_METADATA umstellen — Pflicht damit Workload Identity in Pods funktioniert
@@ -73,21 +75,19 @@ $exitCode = Invoke-WithSpinner -Message "Configuring nodepool for GKE Metadata S
         "--cluster", $clusterName, "--zone", $zone, "--project", $projectId,
         "--workload-metadata=GKE_METADATA") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update nodepool workload metadata"; exit 1 }
-Write-Host "  ✓ Nodepool configured for Workload Identity" -ForegroundColor Green
 
 # ── 3. Shared CSI Google Service Account ─────────────────────────
 $gsaName    = "$clusterName-csi-sa"
 $gsaEmail   = "$gsaName@$projectId.iam.gserviceaccount.com"
 $gsaExists  = & gcloud iam service-accounts describe $gsaEmail --project $projectId 2>$null
 if ($gsaExists) {
-    Write-Host "  ✓ CSI Service Account already exists" -ForegroundColor Green
+    Write-GroupLine "✓ CSI Service Account already exists" -ForegroundColor Green
 } else {
     $exitCode = Invoke-WithSpinner -Message "Creating CSI Service Account..." -Executable "gcloud" `
         -Arguments @("iam", "service-accounts", "create", $gsaName,
             "--project", $projectId,
             "--display-name", "$clusterName CSI Secret Manager SA") -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Failed to create Service Account"; exit 1 }
-    Write-Host "  ✓ CSI Service Account created" -ForegroundColor Green
 }
 
 # ── 4. Secret Manager Viewer Rolle zuweisen ──────────────────────
@@ -97,7 +97,6 @@ $exitCode = Invoke-WithSpinner -Message "Assigning Secret Manager Viewer role...
         "--role", "roles/secretmanager.secretAccessor",
         "--condition=None") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to assign secretmanager.secretAccessor role to $gsaEmail"; exit 1 }
-Write-Host "  ✓ roles/secretmanager.secretAccessor assigned to $gsaEmail" -ForegroundColor Green
 
 # ── 5. GCP Secret Manager CSI Provider installieren ─────────────
 # Official installation method: kubectl apply with the manifest from GitHub.
@@ -105,7 +104,6 @@ $providerUrl = "https://raw.githubusercontent.com/GoogleCloudPlatform/secrets-st
 $exitCode = Invoke-WithSpinner -Message "Installing GCP Secret Manager CSI Provider..." -Executable "kubectl" `
     -Arguments @("apply", "-f", $providerUrl) -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to install GCP Secret Manager CSI Provider"; exit 1 }
-Write-Host "  ✓ GCP Secret Manager CSI Provider installed" -ForegroundColor Green
 
 # ── 6. State speichern ───────────────────────────────────────────
 $gkeStateData = Get-Content $gkeStatePath | ConvertFrom-Json -AsHashtable
@@ -113,10 +111,15 @@ $gkeStateData['CsiGsaEmail'] = $gsaEmail
 $gkeStateData['CsiGsaName']  = $gsaName
 $gkeStateData['WorkloadPool'] = "$projectId.svc.id.goog"
 $gkeStateData | ConvertTo-Json | Set-Content -Path $gkeStatePath -Encoding UTF8
-Write-Host "  ✓ State saved" -ForegroundColor Green
+Write-GroupLine "✓ State saved" -ForegroundColor Green
+
+Complete-Group
 
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Housekeeping"
     Set-RancherProjectAssignment -Namespace $FullConfig.Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
 Write-Host ""
