@@ -32,10 +32,6 @@ Write-Host ""
 
 $extraArgs = if ($verbose) { @{ Verbose = $true } } else { @{} }
 $otherUninstall = Join-Path $BaseDir "11-ingress-traefik\Uninstall.ps1"
-if (Test-Path $otherUninstall) {
-    & $otherUninstall -Platform $Platform @extraArgs
-    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to remove Traefik ingress controller"; exit 1 }
-}
 
 $FullConfig = Get-ComponentConfig -ScriptRoot $ScriptRoot -Platform $Platform -ConfigPath $ConfigPath
 
@@ -55,6 +51,14 @@ Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
 Write-Host "  Replicas:   $replicaCount  |  Service: $serviceType  |  CPU: $($UserConfig.Resources.Limits.Cpu)  |  Memory: $($UserConfig.Resources.Limits.Memory)" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
+if (Test-Path $otherUninstall) {
+    & $otherUninstall -Platform $Platform @extraArgs
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to remove Traefik ingress controller"; exit 1 }
+    Write-GroupLine "✓ Traefik controller removed (if present)" -ForegroundColor Green
+}
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "ingress-nginx", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
@@ -62,12 +66,11 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
 if ($CreateNamespace) {
     & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-    Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+    Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 }
 
 $HelmArgs = @(
@@ -116,37 +119,39 @@ if ($Platform -in @("Azure AKS", "AWS EKS")) {
 
 $HelmArgs += @("--timeout", "10m")
 
+Complete-Group
+
+Start-Group -Title "Deploy"
+
 Reset-StuckHelmRelease -ReleaseName "ingress-nginx" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying NGINX Ingress Controller..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy NGINX Ingress Controller (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for rollout..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/ingress-nginx-controller", "-n", $Namespace, "--timeout=5m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout did not complete — check cluster state"; exit 1 }
-Write-Host "  ✓ Rollout complete" -ForegroundColor Green
 
 # Cloud platforms: wait for the LoadBalancer external IP and write it to .ingress-ip for Install-Base.ps1
 $ipStateFile = Join-Path $BaseDir ".ingress-ip"
 Remove-Item $ipStateFile -Force -ErrorAction SilentlyContinue
 if ($Platform -eq "Azure AKS" -or $Platform -eq "Google GKE") {
-    Write-Host "`n  Waiting for LoadBalancer external IP..." -ForegroundColor Cyan
+    Write-GroupLine "Waiting for LoadBalancer external IP..." -ForegroundColor Cyan
     $externalIp = Get-AksIngressIp -Namespace $Namespace
     if ($externalIp) {
         Set-Content -Path $ipStateFile -Value $externalIp -Encoding UTF8
-        Write-Host "  ✓ External IP: $externalIp" -ForegroundColor Green
+        Write-GroupLine "✓ External IP: $externalIp" -ForegroundColor Green
     } else {
         Write-Warning "  ⚠ Could not resolve external IP — update hosts file manually"
     }
 } elseif ($Platform -eq "AWS EKS") {
-    Write-Host "`n  Waiting for LoadBalancer external IP..." -ForegroundColor Cyan
+    Write-GroupLine "Waiting for LoadBalancer external IP..." -ForegroundColor Cyan
     $externalIp = Get-EksIngressIp -Namespace $Namespace
     if ($externalIp) {
         Set-Content -Path $ipStateFile -Value $externalIp -Encoding UTF8
-        Write-Host "  ✓ External IP: $externalIp" -ForegroundColor Green
+        Write-GroupLine "✓ External IP: $externalIp" -ForegroundColor Green
     } else {
         Write-Warning "  ⚠ Could not resolve external IP — update hosts file manually"
     }
@@ -157,8 +162,13 @@ if ($verbose) {
     & kubectl get pods -n $Namespace -l app.kubernetes.io/name=ingress-nginx
 }
 
+Complete-Group
+
+Start-Group -Title "Housekeeping"
+
 if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
 }
 
 # Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
@@ -167,11 +177,13 @@ if ($FullConfig.RancherProject) {
 # 21-longhorn/Install.ps1.
 Register-GrafanaDashboard -Namespace $Namespace -Name "ingress-nginx" `
     -JsonPath "$ScriptRoot\dashboards\ingress-nginx.json" -Folder "Networking"
+Write-GroupLine "✓ Grafana dashboard registered" -ForegroundColor Green
 
 # Every component that wants ingress traffic registers itself — see its own
 # Install.ps1 (Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace <self>).
 # This namespace only sets up its own baseline; it doesn't know or care who's behind it.
 Install-NetworkPolicyBaseline -Namespace $Namespace
+Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 
 # Metrics scrape port — the chart creates a dedicated
 # "<release>-controller-metrics" Service (not the main controller Service)
@@ -184,6 +196,9 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 $ingressNginxMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "ingress-nginx-controller-metrics" -ServicePortName "metrics"
 if (-not $ingressNginxMetricsPort) { $ingressNginxMetricsPort = @(10254) }
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $ingressNginxMetricsPort
+Write-GroupLine "✓ Metrics scrape port allowed" -ForegroundColor Green
+
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
