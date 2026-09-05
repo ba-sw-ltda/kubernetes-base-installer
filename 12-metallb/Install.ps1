@@ -109,8 +109,18 @@ $HelmArgs = @(
     # this repo (see 21-longhorn/Install.ps1). CRD-only, no NetworkPolicy
     # effect by itself — the metrics port is bundled into the provider-ingress
     # rule below.
+    # Unlike every other chart in this repo, this one's servicemonitor.yaml
+    # template also renders a Role/RoleBinding granting the Prometheus
+    # ServiceAccount read access to metallb-system (prometheus.rbacPrometheus,
+    # chart-default true) — it hard-fails at render time if serviceAccount/
+    # namespace aren't given once serviceMonitor.enabled=true. Values must
+    # match the actual Prometheus pod's ServiceAccount from 61-prometheus's
+    # kube-prometheus-stack release (name "prometheus"), confirmed via
+    # `helm template`.
     "--set", "prometheus.serviceMonitor.enabled=true",
-    "--set", "prometheus.serviceMonitor.additionalLabels.release=prometheus"
+    "--set", "prometheus.serviceMonitor.additionalLabels.release=prometheus",
+    "--set", "prometheus.serviceAccount=prometheus-kube-prometheus-prometheus",
+    "--set", "prometheus.namespace=prometheus"
 )
 
 Complete-Group
