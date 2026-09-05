@@ -88,7 +88,14 @@ $HelmArgs = @(
     "--set", "ingester.resources.limits.cpu=$($UserConfig.Resources.Limits.Cpu)",
     "--set", "ingester.resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "ingester.resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
-    "--set", "ingester.resources.requests.memory=$($UserConfig.Resources.Requests.Memory)"
+    "--set", "ingester.resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
+
+    # Prometheus scraping — this chart's toggle lives under metaMonitoring,
+    # NOT monitoring.serviceMonitor like Loki's chart. release=prometheus is
+    # the repo-wide label convention the Prometheus Operator release-scoped
+    # selector requires (see 62-loki/Install.ps1).
+    "--set", "metaMonitoring.serviceMonitor.enabled=true",
+    "--set", "metaMonitoring.serviceMonitor.labels.release=prometheus"
 )
 
 Reset-StuckHelmRelease -ReleaseName "tempo" -Namespace $Namespace
@@ -123,6 +130,19 @@ if ($FullConfig.RancherProject) {
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
 }
 
+# Official Tempo mixin "operational" dashboard (grafana/tempo repo,
+# operations/tempo-mixin-compiled) — single all-in-one view of
+# distributor/ingester/compactor/querier/query-frontend health, matching
+# this repo's one-dashboard-per-component convention. Its cluster/namespace
+# template variables come from Grafana Labs' internal multi-tenant mixin
+# convention (label_values(tempo_build_info, cluster)); on this single-
+# cluster deployment tempo_build_info won't carry a "cluster" label, so
+# expect those dropdowns to resolve empty rather than populate like a
+# multi-tenant install — panels should still render since Prometheus
+# treats a missing label as an empty-string match. Not yet verified against
+# live data (ServiceMonitor isn't deployed yet).
+Register-GrafanaDashboard -Namespace $Namespace -Name "tempo" -JsonPath "$ScriptRoot\dashboards\tempo.json" -Folder "Observability"
+
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # This provider-ingress rule covers the whole tempo namespace (podSelector:
 # {}), which fronts several distinct Services with different real listen
@@ -134,9 +154,18 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 # meaning this chart's OTLP receiver isn't enabled, a separate Helm-values
 # gap unrelated to NetworkPolicy ports; Resolve-ServiceRealPorts intentionally
 # won't invent a phantom 4317 entry the way the old hardcoded list did.
+# The Tempo ServiceMonitor (metaMonitoring.serviceMonitor, enabled above)
+# creates one ServiceMonitor per component, each scraping its own Service's
+# "http-metrics" port — compactor/ingester/querier weren't previously in
+# this allow-list (only query-frontend and distributor were, for Grafana's
+# datasource and the OTLP-export path respectively), so Prometheus would be
+# silently blocked from scraping 3 of the 5 ServiceMonitor targets.
 $tempoQueryFrontendPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "tempo-query-frontend" -ServicePortName "http-metrics"
 $tempoDistributorPorts  = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "tempo-distributor"
-$tempoPorts = @($tempoQueryFrontendPort + $tempoDistributorPorts | Select-Object -Unique)
+$tempoCompactorPort     = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "tempo-compactor" -ServicePortName "http-metrics"
+$tempoIngesterPort      = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "tempo-ingester" -ServicePortName "http-metrics"
+$tempoQuerierPort       = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "tempo-querier" -ServicePortName "http-metrics"
+$tempoPorts = @($tempoQueryFrontendPort + $tempoDistributorPorts + $tempoCompactorPort + $tempoIngesterPort + $tempoQuerierPort | Select-Object -Unique)
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $tempoPorts
 
 Write-Host ""
