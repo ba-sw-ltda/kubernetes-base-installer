@@ -37,6 +37,8 @@ Write-Host "  Cluster: $clusterName" -ForegroundColor Gray
 Write-Host "  Region:  $region" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Configuration"
+
 # ── 1. OIDC Provider aktivieren ──────────────────────────────────
 $oidcUrl = & aws eks describe-cluster --name $clusterName --region $region `
     --query "cluster.identity.oidc.issuer" --output text 2>$null
@@ -50,9 +52,9 @@ if (-not $oidcExists) {
         -Arguments @("utils", "associate-iam-oidc-provider",
             "--cluster", $clusterName, "--region", $region, "--approve") -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Failed to create OIDC provider"; exit 1 }
-    Write-Host "  ✓ OIDC provider created" -ForegroundColor Green
+    Write-GroupLine "✓ OIDC provider created" -ForegroundColor Green
 } else {
-    Write-Host "  ✓ OIDC provider already exists" -ForegroundColor Green
+    Write-GroupLine "✓ OIDC provider already exists" -ForegroundColor Green
 }
 
 # ── 2. AWS Account ID ermitteln ──────────────────────────────────
@@ -86,9 +88,9 @@ if (-not $policyExists) {
             "--policy-document", "file://$($tmpPolicy.FullName)") -ShowOutput:$verbose
     Remove-Item $tmpPolicy.FullName -Force -ErrorAction SilentlyContinue
     if ($exitCode -ne 0) { Write-Error "Failed to create IAM policy"; exit 1 }
-    Write-Host "  ✓ IAM policy created" -ForegroundColor Green
+    Write-GroupLine "✓ IAM policy created" -ForegroundColor Green
 } else {
-    Write-Host "  ✓ IAM policy already exists" -ForegroundColor Green
+    Write-GroupLine "✓ IAM policy already exists" -ForegroundColor Green
 }
 
 # ── 4. CSI IAM Role + Service Account erstellen ──────────────────
@@ -107,9 +109,9 @@ if (-not $roleExists) {
             "--role-name", $roleName,
             "--approve", "--override-existing-serviceaccounts") -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Failed to create IRSA role"; exit 1 }
-    Write-Host "  ✓ IAM role + ServiceAccount created" -ForegroundColor Green
+    Write-GroupLine "✓ IAM role + ServiceAccount created" -ForegroundColor Green
 } else {
-    Write-Host "  ✓ IAM role already exists" -ForegroundColor Green
+    Write-GroupLine "✓ IAM role already exists" -ForegroundColor Green
 }
 
 $roleArn = & aws iam get-role --role-name $roleName --query "Role.Arn" --output text 2>$null
@@ -121,7 +123,6 @@ $exitCode = Invoke-WithSpinner -Message "Installing AWS Secrets and Config Provi
         "https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to install ASCP"; exit 1 }
-Write-Host "  ✓ ASCP installed" -ForegroundColor Green
 
 # ── 6. State speichern ───────────────────────────────────────────
 $eksStateData = Get-Content $eksStatePath | ConvertFrom-Json -AsHashtable
@@ -132,10 +133,15 @@ $eksStateData['CsiPolicyArn'] = $policyArn
 $eksStateData['AccountId']    = $accountId
 $eksStateData['OidcId']       = $oidcId
 $eksStateData | ConvertTo-Json | Set-Content -Path $eksStatePath -Encoding UTF8
-Write-Host "  ✓ State saved" -ForegroundColor Green
+Write-GroupLine "✓ State saved" -ForegroundColor Green
+
+Complete-Group
 
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Housekeeping"
     Set-RancherProjectAssignment -Namespace $FullConfig.Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
 Write-Host ""
