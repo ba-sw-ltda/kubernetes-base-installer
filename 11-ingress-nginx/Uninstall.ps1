@@ -27,7 +27,15 @@ if ($LASTEXITCODE -eq 0 -and $existingJson) {
 if (-not $existing) { exit 0 }
 $namespace = $existing.namespace
 
-Write-Host "  Removing NGINX Ingress Controller (switching ingress controller)..." -ForegroundColor Cyan
+# Own Start-Group/Complete-Group, not the caller's — this script runs as the
+# very first action inside the installing controller's own "Preparation"
+# group, and previously printed flat, ungrouped Write-Host lines there. That
+# squeezed a plain-text removal step underneath the parent's "▸ Preparation"
+# header with no group marker of its own, reading as mis-nested (confirmed
+# live 2026-09-05, user-flagged). Opening/closing a group here instead — and
+# calling this script before the caller opens "Preparation" (see
+# 11-ingress-traefik/Install.ps1) — makes the switch its own clean step.
+Start-Group -Title "Switching ingress controller (removing NGINX)"
 
 $exitCode = Invoke-WithSpinner -Message "Uninstalling NGINX Ingress Controller..." -Executable "helm" `
     -Arguments @("uninstall", $release, "-n", $namespace) -ShowOutput:$verbose
@@ -37,4 +45,5 @@ $exitCode = Invoke-WithSpinner -Message "Waiting for cleanup..." -Executable "ku
     -Arguments @("wait", "--for=delete", "service/ingress-nginx-controller", "-n", $namespace, "--timeout=2m") `
     -ShowOutput:$verbose
 # exit code non-zero = service already gone, that's fine
-Write-Host "  ✓ NGINX Ingress Controller removed" -ForegroundColor Green
+
+Complete-Group

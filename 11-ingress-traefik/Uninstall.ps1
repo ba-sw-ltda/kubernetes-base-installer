@@ -25,7 +25,9 @@ if ($LASTEXITCODE -eq 0 -and $existingJson) {
 if (-not $existing) { exit 0 }
 $namespace = $existing.namespace
 
-Write-Host "  Removing Traefik Ingress Controller (switching ingress controller)..." -ForegroundColor Cyan
+# See 11-ingress-nginx/Uninstall.ps1 for why this owns its own group instead
+# of printing flat Write-Host lines — same fix, mirrored.
+Start-Group -Title "Switching ingress controller (removing Traefik)"
 
 $exitCode = Invoke-WithSpinner -Message "Uninstalling Traefik..." -Executable "helm" `
     -Arguments @("uninstall", $release, "-n", $namespace) -ShowOutput:$verbose
@@ -35,4 +37,5 @@ $exitCode = Invoke-WithSpinner -Message "Waiting for cleanup..." -Executable "ku
     -Arguments @("wait", "--for=delete", "service/traefik", "-n", $namespace, "--timeout=2m") `
     -ShowOutput:$verbose
 # exit code non-zero = service already gone, that's fine
-Write-Host "  ✓ Traefik removed" -ForegroundColor Green
+
+Complete-Group

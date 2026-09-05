@@ -43,13 +43,17 @@ Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
 Write-Host "  Service:    $serviceType  |  CPU: $($UserConfig.Resources.Limits.Cpu)  |  Memory: $($UserConfig.Resources.Limits.Memory)" -ForegroundColor Gray
 Write-Host ""
 
-Start-Group -Title "Preparation"
-
+# Runs — and, if anything is actually found, opens/closes its own group —
+# before "Preparation" starts, rather than as the first (ungrouped-looking)
+# action inside it. See 11-ingress-nginx/Uninstall.ps1 for why: it used to
+# print flat Write-Host lines squeezed under "▸ Preparation" with no group
+# marker of its own (user-flagged 2026-09-05).
 if (Test-Path $otherUninstall) {
     & $otherUninstall -Platform $Platform @extraArgs
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to remove NGINX ingress controller"; exit 1 }
-    Write-GroupLine "✓ NGINX controller removed (if present)" -ForegroundColor Green
 }
+
+Start-Group -Title "Preparation"
 
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "traefik", $Repository, "--force-update") -ShowOutput:$verbose
