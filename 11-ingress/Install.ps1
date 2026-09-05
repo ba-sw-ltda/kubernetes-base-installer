@@ -14,6 +14,7 @@ param(
 )
 
 $BaseDir = Split-Path $PSScriptRoot -Parent
+Import-Module "$BaseDir\_lib\Installer.Ui.psm1" -Force -Verbose:$false
 $verbose = $VerbosePreference -eq 'Continue'
 $extraArgs = if ($verbose) { @{ Verbose = $true } } else { @{} }
 
@@ -28,6 +29,8 @@ if (-not (Test-Path $installScript)) {
 $dnsArgs = if ($DnsLabel) { @{ DnsLabel = $DnsLabel } } else { @{} }
 & $installScript -Platform $Platform @extraArgs @dnsArgs
 if ($LASTEXITCODE -ne 0) { exit 1 }
+
+Start-Group -Title "Ingress class sync"
 
 # Patch all existing Ingress resources to use the new IngressClass.
 # Needed when switching controllers (nginx ↔ traefik) so existing Ingresses
@@ -45,5 +48,9 @@ foreach ($ing in $existingIngresses['items']) {
     }
 }
 if ($updated -gt 0) {
-    Write-Host "  ✓ $updated Ingress resource(s) updated to ingressClassName=$IngressController" -ForegroundColor Green
+    Write-GroupLine "✓ $updated Ingress resource(s) updated to ingressClassName=$IngressController" -ForegroundColor Green
+} else {
+    Write-GroupLine "· No Ingress resources needed updating" -ForegroundColor DarkGray
 }
+
+Complete-Group
