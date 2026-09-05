@@ -30,7 +30,10 @@ $Namespace  = $FullConfig.Namespace
 Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Configuration"
+
 Install-NetworkPolicyBaseline -Namespace $Namespace
+Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 
 # CoreDNS must be reachable from literally every namespace in the cluster, so
 # this ingress rule is intentionally NOT label-gated (namespaceSelector: {}) —
@@ -111,7 +114,7 @@ $podSelectorYaml
 "@
 $dnsIngressYaml | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "  ✓ CoreDNS ingress-from-anywhere rule applied" -ForegroundColor Green
+    Write-GroupLine "✓ CoreDNS ingress-from-anywhere rule applied" -ForegroundColor Green
 } else {
     Write-Error "Failed to apply CoreDNS ingress rule in '$Namespace'"
     exit 1
@@ -168,11 +171,13 @@ spec:
 "@
 $httpsEgressYaml | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "  ✓ Cloud-provider API egress rule applied" -ForegroundColor Green
+    Write-GroupLine "✓ Cloud-provider API egress rule applied" -ForegroundColor Green
 } else {
     Write-Error "Failed to apply cloud-provider API egress rule in '$Namespace'"
     exit 1
 }
+
+Complete-Group
 
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "  Installation Complete" -ForegroundColor Cyan
