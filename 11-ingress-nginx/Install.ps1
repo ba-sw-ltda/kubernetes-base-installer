@@ -168,20 +168,30 @@ if ($verbose) {
 
 Complete-Group
 
-Start-Group -Title "Housekeeping"
-
+# Three separate groups instead of one catch-all "Housekeeping" — see
+# 11-ingress-traefik/Install.ps1 for why (duplicate Grafana confirmation
+# line + user-flagged "shouldn't NetworkPolicy get its own group?",
+# 2026-09-05). "Monitoring" is the deliberate name, not "Grafana" —
+# Prometheus alerting rules for this component will join the same group
+# once that work starts.
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
     Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
 # Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
 # Grafana's dashboard sidecar (see 66-grafana/Install.ps1 sidecar.dashboards.*
 # Helm flags). Order-independent, no NetworkPolicy involved — same pattern as
-# 21-longhorn/Install.ps1.
+# 21-longhorn/Install.ps1. Register-GrafanaDashboard prints its own "✓ ...
+# registered" confirmation line — nothing more to print here.
+Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "ingress-nginx" `
     -JsonPath "$ScriptRoot\dashboards\ingress-nginx.json" -Folder "Networking"
-Write-GroupLine "✓ Grafana dashboard registered" -ForegroundColor Green
+Complete-Group
+
+Start-Group -Title "Network Policy"
 
 # Every component that wants ingress traffic registers itself — see its own
 # Install.ps1 (Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace <self>).
