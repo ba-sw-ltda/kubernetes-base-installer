@@ -175,6 +175,13 @@ if ($FullConfig.RancherProject) {
 Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "traefik" `
     -JsonPath "$ScriptRoot\dashboards\traefik.json" -Folder "Networking"
+
+# Prometheus alerting rules: vendored from the official Traefik Grafana
+# mixin (see prometheusrules/traefik.yaml for source/provenance). Same
+# order-independence as the dashboard above — Register-PrometheusRule prints
+# its own confirmation line, nothing more to print here.
+Register-PrometheusRule -Namespace $Namespace -Name "traefik" `
+    -YamlPath "$ScriptRoot\prometheusrules\traefik.yaml"
 Complete-Group
 
 Start-Group -Title "Network Policy"

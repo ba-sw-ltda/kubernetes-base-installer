@@ -189,6 +189,13 @@ if ($FullConfig.RancherProject) {
 Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "ingress-nginx" `
     -JsonPath "$ScriptRoot\dashboards\ingress-nginx.json" -Folder "Networking"
+
+# Prometheus alerting rules: vendored from the community ingress-nginx-mixin
+# (see prometheusrules/ingress-nginx.yaml for source/provenance). Same
+# order-independence as the dashboard above — Register-PrometheusRule prints
+# its own confirmation line, nothing more to print here.
+Register-PrometheusRule -Namespace $Namespace -Name "ingress-nginx" `
+    -YamlPath "$ScriptRoot\prometheusrules\ingress-nginx.yaml"
 Complete-Group
 
 Start-Group -Title "Network Policy"
