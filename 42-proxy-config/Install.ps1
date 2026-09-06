@@ -53,10 +53,12 @@ Write-Host "  HTTPS_PROXY:  $HttpsProxy" -ForegroundColor Gray
 Write-Host "  NO_PROXY:     $noProxy" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Configuration"
+
 # Create namespace
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 
 # Create or update the proxy Secret, annotated for Reflector auto-sync to all namespaces
 $secretYaml = @"
@@ -80,16 +82,23 @@ stringData:
 
 $applyOutput = $secretYaml | & kubectl apply -f - 2>&1
 if ($LASTEXITCODE -ne 0) {
-    foreach ($line in $applyOutput) { Write-Host $line -ForegroundColor Red }
+    foreach ($line in $applyOutput) { Write-GroupLine "$line" -ForegroundColor Red }
     Write-Error "Failed to apply proxy Secret"; exit 1
 }
-Write-Host "  ✓ Secret '$($UserConfig.SecretName)' created in '$Namespace'" -ForegroundColor Green
+Write-GroupLine "✓ Secret '$($UserConfig.SecretName)' created in '$Namespace'" -ForegroundColor Green
+
+Complete-Group
 
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
+Start-Group -Title "Network Policy"
 Install-NetworkPolicyBaseline -Namespace $Namespace
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
