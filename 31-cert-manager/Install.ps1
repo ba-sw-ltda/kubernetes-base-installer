@@ -126,6 +126,14 @@ if ($FullConfig.RancherProject) {
 Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "cert-manager" `
     -JsonPath "$ScriptRoot\dashboards\cert-manager.json" -Folder "Security"
+
+# Prometheus alerting rules — vendored from the community cert-manager mixin
+# (see prometheusrules/cert-manager.yaml for source/provenance and the
+# jsonnet-to-PromQL resolution notes). Same order-independence as the
+# dashboard above — Register-PrometheusRule prints its own confirmation
+# line, nothing more to print here.
+Register-PrometheusRule -Namespace $Namespace -Name "cert-manager" `
+    -YamlPath "$ScriptRoot\prometheusrules\cert-manager.yaml"
 Complete-Group
 
 Start-Group -Title "Network Policy"
