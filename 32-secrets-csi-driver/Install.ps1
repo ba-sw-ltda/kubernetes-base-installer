@@ -72,7 +72,7 @@ if ($exitCode -ne 0) { Write-Error "CSI Driver DaemonSet did not become ready"; 
 Complete-Group
 
 if ($FullConfig.RancherProject) {
-    Start-Group -Title "Housekeeping"
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
     Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
     Complete-Group

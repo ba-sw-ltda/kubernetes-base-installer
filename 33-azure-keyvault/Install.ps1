@@ -246,7 +246,7 @@ Write-GroupLine "✓ State saved to $aksStatePath" -ForegroundColor Green
 Complete-Group
 
 if ($FullConfig.RancherProject) {
-    Start-Group -Title "Housekeeping"
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $FullConfig.Namespace -ProjectName $FullConfig.RancherProject
     Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
     Complete-Group
