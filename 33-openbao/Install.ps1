@@ -375,6 +375,28 @@ if ($HAEnabled) {
     for ($i = 1; $i -lt $HAReplicas; $i++) {
         $podName = "openbao-$i"
 
+        # This StatefulSet uses the default OrderedReady pod management policy:
+        # pod $i isn't even created until pod $i-1 passes its readiness probe
+        # (bao status, which fails while sealed) — so right after unsealing the
+        # previous pod, this one may not exist for anywhere from a few seconds
+        # to a few minutes yet. `kubectl wait` doesn't tolerate that: it errors
+        # immediately with NotFound instead of polling for the object to appear
+        # (confirmed live 2026-09-06 — the loop raced ahead of the StatefulSet
+        # controller and gave up on openbao-1/openbao-2 before they existed).
+        # Poll for existence first; only then hand off to kubectl wait below
+        # for the actual Running condition.
+        $existElapsed = 0
+        $podExists = $false
+        while ($existElapsed -lt 300) {
+            $existCheck = & kubectl get pod/$podName -n $Namespace --ignore-not-found --request-timeout=5s 2>$null
+            if ($existCheck) { $podExists = $true; break }
+            Start-Sleep -Seconds 5; $existElapsed += 5
+        }
+        if (-not $podExists) {
+            Write-Warning "  $podName was never created by the StatefulSet — check: kubectl describe statefulset openbao -n $Namespace"
+            continue
+        }
+
         $exitCode = Invoke-WithSpinner -Message "Waiting for $podName..." -Executable "kubectl" `
             -Arguments @("wait", "pod/$podName", "-n", $Namespace,
                          "--for=jsonpath={.status.phase}=Running", "--timeout=5m") `
