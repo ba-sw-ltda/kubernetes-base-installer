@@ -336,22 +336,39 @@ if ($existingState -and $existingState.ContainsKey('Mode')) {
     $previousMode = "standalone"
 }
 
-$haHint = if ($previousMode) {
-    "⚠ DATA LOSS ON SWITCH: this install currently runs in '$previousMode' mode. " +
+$dataLossHint = "⚠ DATA LOSS ON SWITCH: this install currently runs in '$previousMode' mode. " +
     "OpenBao has no in-place migration between file and Raft storage — choosing an " +
     "answer that changes the mode wipes all existing data (PKIs, secrets, Authelia " +
     "config, MQTT client certs) and reinitializes with a fresh unseal key/root token."
-} else {
-    "Switches storage from single-node file to Raft integrated storage across 3 pods. " +
-    "Fresh install — nothing is at risk yet."
-}
 
-$haEnabled = Read-YesNo `
-    -Title "Enable High Availability (Raft, 3 replicas)?" `
-    -DefaultYes $false `
-    -ContextTitle "Security/OpenBao — $Platform" `
-    -ContextHint $haHint `
-    -ContextCurrent $(if ($previousMode) { [ordered]@{ "Current mode" = $previousMode } })
+if ($previousMode -eq "ha") {
+    # Already HA: phrase the question about *leaving* HA, not entering it, and
+    # keep the safe default (No == stay in HA). Asking "Enable HA?" with
+    # DefaultYes $false here would mean the safe/fast "no" answer silently
+    # switches an existing HA install back to standalone — the exact
+    # accidental-downgrade risk this branch exists to avoid.
+    $switchToSingle = Read-YesNo `
+        -Title "Switch back to single-node storage (disable HA)?" `
+        -DefaultYes $false `
+        -ContextTitle "Security/OpenBao — $Platform" `
+        -ContextHint $dataLossHint `
+        -ContextCurrent ([ordered]@{ "Current mode" = $previousMode })
+    $haEnabled = -not $switchToSingle
+} else {
+    $haHint = if ($previousMode) {
+        $dataLossHint
+    } else {
+        "Switches storage from single-node file to Raft integrated storage across 3 pods. " +
+        "Fresh install — nothing is at risk yet."
+    }
+
+    $haEnabled = Read-YesNo `
+        -Title "Enable High Availability (Raft, 3 replicas)?" `
+        -DefaultYes $false `
+        -ContextTitle "Security/OpenBao — $Platform" `
+        -ContextHint $haHint `
+        -ContextCurrent $(if ($previousMode) { [ordered]@{ "Current mode" = $previousMode } })
+}
 
 # ── OpenBao hostname ──────────────────────────────────────────────
 $defaultHostname = "vault.$Domain"
