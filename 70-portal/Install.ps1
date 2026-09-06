@@ -60,10 +60,12 @@ Write-Host "  Hostname:   $Hostname" -ForegroundColor Gray
 Write-Host "  Title:      $Title" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 # ── 1. Namespace ──────────────────────────────────────────────────────────────
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 
 # ── 2. RBAC — sidecar reads ConfigMaps within the portal namespace ─────────────
 $rbacYaml = @"
@@ -99,7 +101,7 @@ roleRef:
 "@
 $rbacYaml | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to apply RBAC for portal"; exit 1 }
-Write-Host "  ✓ RBAC ready" -ForegroundColor Green
+Write-GroupLine "✓ RBAC ready" -ForegroundColor Green
 
 # ── 3. Sidecar sync script ConfigMap ─────────────────────────────────────────
 # Single-quoted here-string: no PowerShell interpolation — $ belongs to the shell.
@@ -221,7 +223,9 @@ try {
     Remove-Item $scriptTmp -Force -ErrorAction SilentlyContinue
 }
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create sidecar script ConfigMap"; exit 1 }
-Write-Host "  ✓ Sidecar script ConfigMap ready" -ForegroundColor Green
+Write-GroupLine "✓ Sidecar script ConfigMap ready" -ForegroundColor Green
+
+Complete-Group
 
 # The config-sync container reads sync.sh once at process start; updating the
 # ConfigMap alone doesn't restart the pod, so a re-applied script would sit
@@ -230,6 +234,8 @@ Write-Host "  ✓ Sidecar script ConfigMap ready" -ForegroundColor Green
 $syncScriptHash = [System.BitConverter]::ToString(
     [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($syncScript))
 ) -replace '-', ''
+
+Start-Group -Title "Deploy"
 
 # ── 4. Deployment ─────────────────────────────────────────────────────────────
 $deployYaml = @"
@@ -298,7 +304,7 @@ spec:
 "@
 $deployYaml | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to apply Homer Deployment"; exit 1 }
-Write-Host "  ✓ Deployment applied" -ForegroundColor Green
+Write-GroupLine "✓ Deployment applied" -ForegroundColor Green
 
 # ── 5. Service ────────────────────────────────────────────────────────────────
 $serviceYaml = @"
@@ -316,14 +322,14 @@ spec:
 "@
 $serviceYaml | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to apply Homer Service"; exit 1 }
-Write-Host "  ✓ Service ready" -ForegroundColor Green
+Write-GroupLine "✓ Service ready" -ForegroundColor Green
 
 # ── 6. Rollout ────────────────────────────────────────────────────────────────
 $exitCode = Invoke-WithSpinner -Message "Waiting for rollout..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/homer", "-n", $Namespace, "--timeout=5m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Homer rollout did not complete — check cluster state"; exit 1 }
-Write-Host "  ✓ Homer ready" -ForegroundColor Green
+Write-GroupLine "✓ Homer ready" -ForegroundColor Green
 
 # Components installed before Portal existed on this cluster couldn't write
 # into a "portal" namespace they had no business creating, so their
@@ -332,6 +338,9 @@ Write-Host "  ✓ Homer ready" -ForegroundColor Green
 # component already wrote on its own ConfigMaps, not a list of components,
 # so nothing here needs updating as components are added.
 Resolve-PendingPortalEntries
+
+Complete-Group
+Start-Group -Title "Ingress"
 
 # ── 7. Ingress ────────────────────────────────────────────────────────────────
 $protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform -BaseDir $BaseDir
@@ -361,18 +370,30 @@ $($protect.TlsBlock)
               number: 8080
 "@
 $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
-if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
+if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Ingress configured ($Hostname)" -ForegroundColor Green }
 else { Write-Warning "  Could not apply Ingress — check cluster ingress controller" }
 
-# ── 8. Rancher project ────────────────────────────────────────────────────────
+Complete-Group
+
+# Three separate groups instead of one catch-all "Housekeeping" — see
+# 11-ingress-traefik/Install.ps1 for why (2026-09-05). No "Monitoring" group
+# here — Homer isn't instrumented for Prometheus (no metrics endpoint), so
+# there's nothing to register.
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
+
+Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 $portalPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "homer"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $portalPort
 Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $portalPort
+
+Complete-Group
 
 $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
 
