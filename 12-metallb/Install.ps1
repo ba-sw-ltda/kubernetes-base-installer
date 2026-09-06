@@ -263,13 +263,11 @@ Complete-Group
 Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 # Metrics scrape port (controller+speaker :7472), label-gated via the same
 # provider-ingress pattern as 21-longhorn/Install.ps1 — inert until
 # `prometheus` is labeled as a consumer (deferred to the weekend NetworkPolicy
 # fix, see project_rke2_ingress_namespace_mismatch).
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 7472
-Write-GroupLine "✓ Metrics scrape port allowed" -ForegroundColor Green
 
 Complete-Group
 

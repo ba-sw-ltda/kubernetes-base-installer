@@ -33,7 +33,6 @@ Write-Host ""
 Start-Group -Title "Configuration"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 
 # CoreDNS must be reachable from literally every namespace in the cluster, so
 # this ingress rule is intentionally NOT label-gated (namespaceSelector: {}) —

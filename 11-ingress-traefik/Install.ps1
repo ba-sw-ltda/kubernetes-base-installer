@@ -190,7 +190,6 @@ Start-Group -Title "Network Policy"
 # Install.ps1 (Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace <self>).
 # This namespace only sets up its own baseline; it doesn't know or care who's behind it.
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 
 # Install-NetworkPolicyBaseline's default-deny-all has no concept of "this
 # namespace is a public entrypoint" — it treats every namespace the same.
@@ -289,7 +288,6 @@ if ($LASTEXITCODE -eq 0) {
 # same deliberate gap as 21-longhorn/Install.ps1 (see its NOTE on why
 # `prometheus`'s own egress side is deferred to the weekend NetworkPolicy fix).
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 9100
-Write-GroupLine "✓ Metrics scrape port allowed" -ForegroundColor Green
 
 Complete-Group
 

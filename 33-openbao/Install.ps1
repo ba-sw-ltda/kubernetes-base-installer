@@ -654,13 +654,11 @@ if ($FullConfig.RancherProject) {
 }
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 # Only the external-facing "http" port (8200) — 8201 is OpenBao's internal
 # cluster/Raft-replication port between its own pods, not something other
 # namespaces need to reach.
 $openbaoIngressPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "openbao" -ServicePortName "http"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $openbaoIngressPort
-Write-GroupLine "✓ NetworkPolicy provider-ingress rule applied (port $openbaoIngressPort)" -ForegroundColor Green
 # Consumer-side counterpart, missing until 2026-08-20 (confirmed live on
 # Magalu: vault.<hostname> gave a Traefik Gateway Timeout — "ingress" never
 # had the "network.k8s/allow-openbao" label, so default-deny-all silently
@@ -671,7 +669,6 @@ Write-GroupLine "✓ NetworkPolicy provider-ingress rule applied (port $openbaoI
 # to register as a consumer of.
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
     Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $openbaoIngressPort
-    Write-GroupLine "✓ NetworkPolicy consumer-egress rule applied (ingress → $Namespace)" -ForegroundColor Green
 }
 
 Complete-Group

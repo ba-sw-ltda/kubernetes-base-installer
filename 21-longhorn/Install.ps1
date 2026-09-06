@@ -241,7 +241,6 @@ Register-GrafanaDashboard -Namespace $Namespace -Name "longhorn" `
 Write-GroupLine "✓ Grafana dashboard registered" -ForegroundColor Green
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 # NetworkPolicy `ports` matches the pod's real destination port after the
 # Service's DNAT rewrite, not the Service's externally-advertised port — the
 # longhorn-frontend Service exposes 80 but its container listens on 8000
@@ -256,7 +255,6 @@ $longhornPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "lon
 # can actually be scraped, not just defined.
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port ($longhornPort + 9500)
 Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $longhornPort
-Write-GroupLine "✓ Metrics scrape port allowed (ingress consumer egress wired)" -ForegroundColor Green
 # NOTE: the `prometheus` namespace is NOT labeled here via
 # Set-NetworkPolicyConsumerEgress — that function also creates an Egress-only
 # NetworkPolicy object in the *source* namespace, and `prometheus` currently

@@ -389,12 +389,9 @@ if ($FullConfig.RancherProject) {
 # same port-mismatch bug class already found and fixed in
 # 11-ingress-traefik/Install.ps1's allow-public-web-ingress rule.
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 $autheliaPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "authelia"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $autheliaPort
-Write-GroupLine "✓ NetworkPolicy provider-ingress rule applied (port $autheliaPort)" -ForegroundColor Green
 Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $autheliaPort
-Write-GroupLine "✓ NetworkPolicy consumer-egress rule applied (ingress → $Namespace)" -ForegroundColor Green
 
 Complete-Group
 

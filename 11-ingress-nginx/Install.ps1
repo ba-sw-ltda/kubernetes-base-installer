@@ -204,7 +204,6 @@ Start-Group -Title "Network Policy"
 # Install.ps1 (Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace <self>).
 # This namespace only sets up its own baseline; it doesn't know or care who's behind it.
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 
 # Metrics scrape port — the chart creates a dedicated
 # "<release>-controller-metrics" Service (not the main controller Service)
@@ -217,7 +216,6 @@ Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 $ingressNginxMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "ingress-nginx-controller-metrics" -ServicePortName "metrics"
 if (-not $ingressNginxMetricsPort) { $ingressNginxMetricsPort = @(10254) }
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $ingressNginxMetricsPort
-Write-GroupLine "✓ Metrics scrape port allowed" -ForegroundColor Green
 
 Complete-Group
 

@@ -119,13 +119,11 @@ Register-GrafanaDashboard -Namespace $Namespace -Name "cert-manager" `
 Write-GroupLine "✓ Grafana dashboard registered" -ForegroundColor Green
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
-Write-GroupLine "✓ NetworkPolicy baseline installed" -ForegroundColor Green
 # Metrics scrape port (cert-manager:9402), label-gated via the same
 # provider-ingress pattern as 21-longhorn/Install.ps1 — inert until
 # `prometheus` is labeled as a consumer (deferred to the weekend NetworkPolicy
 # fix, see project_rke2_ingress_namespace_mismatch).
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 9402
-Write-GroupLine "✓ Metrics scrape port allowed" -ForegroundColor Green
 # Resolved dynamically against OpenBao's real container port rather than
 # hardcoded — see Resolve-ServiceRealPorts for why (NetworkPolicy `ports`
 # matches the pod's real destination port after Service DNAT, not the
