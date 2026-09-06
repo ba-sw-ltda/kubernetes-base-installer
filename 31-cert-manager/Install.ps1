@@ -104,19 +104,31 @@ if ($verbose) {
 }
 
 Complete-Group
-Start-Group -Title "Housekeeping"
+Complete-Group
 
+# Three separate groups instead of one catch-all "Housekeeping" — see
+# 11-ingress-traefik/Install.ps1 for why (duplicate Grafana confirmation
+# line + user-flagged "shouldn't NetworkPolicy get its own group?",
+# 2026-09-05). "Monitoring" is the deliberate name, not "Grafana" —
+# Prometheus alerting rules for this component will join the same group
+# once that work starts.
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
     Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
 # Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
 # Grafana's dashboard sidecar. Order-independent, no NetworkPolicy involved —
-# same pattern as 21-longhorn/Install.ps1.
+# same pattern as 21-longhorn/Install.ps1. Register-GrafanaDashboard prints
+# its own "✓ ... registered" confirmation line — nothing more to print here.
+Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "cert-manager" `
     -JsonPath "$ScriptRoot\dashboards\cert-manager.json" -Folder "Security"
-Write-GroupLine "✓ Grafana dashboard registered" -ForegroundColor Green
+Complete-Group
+
+Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # Metrics scrape port (cert-manager:9402), label-gated via the same
@@ -144,7 +156,6 @@ if ($openbaoPort.Count -eq 0) {
     $openbaoPort = @(8200)
 }
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "openbao" -Port $openbaoPort
-Write-GroupLine "✓ Egress to OpenBao allowed" -ForegroundColor Green
 
 # The default-deny above also blocks the kube-apiserver's admission-webhook
 # calls into this namespace (every Certificate/ClusterIssuer create or update,
