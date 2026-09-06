@@ -138,6 +138,15 @@ $HelmArgs = @(
     "--namespace", $Namespace,
     "--version", $ChartVersion,
     "--set", "configMap.disabled=true",
+    # configMap.disabled=true above means the chart never renders its own
+    # config ConfigMap, but these three values are read independently by the
+    # Service/ServiceMonitor templates regardless — see the "telemetry"
+    # stanza Sync-AutheliaConfiguration adds to the manually-rendered
+    # configuration.yaml (in _lib\Installer.Ui.psm1) for why metrics is
+    # actually enabled at the app level.
+    "--set", "configMap.telemetry.metrics.enabled=true",
+    "--set", "configMap.telemetry.metrics.serviceMonitor.enabled=true",
+    "--set", "configMap.telemetry.metrics.serviceMonitor.labels.release=prometheus",
     "--set", "rbac.enabled=true",
     "--set", "pod.kind=Deployment",
     "--set", "pod.command[0]=authelia",
@@ -373,13 +382,29 @@ Complete-Group
 Complete-Group
 
 # Two separate groups instead of one catch-all "Housekeeping" — see
-# 11-ingress-traefik/Install.ps1 for why (2026-09-05). No "Monitoring" group
-# here — Authelia has no Grafana dashboard, and no usable Prometheus
-# alerting rules exist to vendor either: checked monitoring.mixins.dev (no
-# Authelia mixin), samber/awesome-prometheus-alerts (not one of its listed
-# services), and Authelia's own metrics docs (lists metric names only, no
-# example alert rules) — nothing to wire, deliberately left as-is
-# (2026-09-06).
+# 11-ingress-traefik/Install.ps1 for why (2026-09-05).
+#
+# Monitoring: metrics + the ServiceMonitor are wired via the
+# configMap.telemetry.metrics.* --set flags above (chart docs:
+# https://deepwiki.com/authelia/chartrepo) and the "telemetry" stanza
+# Sync-AutheliaConfiguration writes into configuration.yaml (Authelia's own
+# docs: https://www.authelia.com/configuration/telemetry/metrics/) — both
+# needed since configMap.disabled=true means the chart's own ConfigMap
+# template (which those --set flags would otherwise feed) never renders.
+# The Service gains a "metrics" port (9959) automatically once enabled
+# (confirmed against the chart's service.yaml — gated on
+# telemetry.metrics.enabled and app version >=4.36.0, and this repo's
+# pinned chart version 0.11.6 resolves to appVersion 4.39.20), so the
+# existing Resolve-ServiceRealPorts call below (no port-name filter) picks
+# it up on its own — no separate NetworkPolicy rule needed. No dedicated
+# Start-Group here since there's nothing to Write-GroupLine about beyond
+# what Helm already reports; there's still no Grafana dashboard and no
+# usable Prometheus alerting rules to vendor for Authelia: checked
+# monitoring.mixins.dev (no Authelia mixin), samber/awesome-prometheus-alerts
+# (not one of its listed services — confirmed twice, no path under its repo
+# tree contains "authelia"), grafana.com's dashboard search (no results),
+# and Authelia's own metrics docs (lists metric names only, no example alert
+# rules) — that part of the 2026-09-06 verdict still holds.
 if ($FullConfig.RancherProject) {
     Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject

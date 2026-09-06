@@ -528,6 +528,20 @@ storage:
 notifier:
   filesystem:
     filename: /config/notification.txt
+
+# Prometheus metrics exporter (https://www.authelia.com/configuration/telemetry/metrics/).
+# Chart-native config generation is disabled (configMap.disabled=true above
+# this function, in 35-authelia/Install.ps1) so this has to be set here
+# rather than via a --set configMap.telemetry.metrics.enabled=true — that
+# Helm value only feeds the chart's own ConfigMap template, which we never
+# render. address defaults to tcp://:9959/metrics, left unset. The
+# ServiceMonitor template itself reads configMap.telemetry.metrics.enabled/
+# .serviceMonitor.enabled directly (not gated on configMap.disabled) — those
+# two --set flags still belong in Install.ps1, this just makes the port the
+# ServiceMonitor scrapes actually come alive.
+telemetry:
+  metrics:
+    enabled: true
 $oidcBlock
 "@
 
