@@ -30,27 +30,9 @@ $dnsArgs = if ($DnsLabel) { @{ DnsLabel = $DnsLabel } } else { @{} }
 & $installScript -Platform $Platform @extraArgs @dnsArgs
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-Start-Group -Title "Ingress class sync"
-
-# Patch all existing Ingress resources to use the new IngressClass.
-# Needed when switching controllers (nginx ↔ traefik) so existing Ingresses
-# don't keep pointing at the now-removed controller.
-$existingIngresses = & kubectl get ingress -A -o json 2>$null | ConvertFrom-Json -AsHashtable
-$updated = 0
-foreach ($ing in $existingIngresses['items']) {
-    if ($ing['spec']['ingressClassName'] -ne $IngressController) {
-        $name = $ing['metadata']['name']
-        $ns   = $ing['metadata']['namespace']
-        & kubectl patch ingress $name -n $ns `
-            -p "{`"spec`":{`"ingressClassName`":`"$IngressController`"}}" `
-            --type=merge 2>$null | Out-Null
-        $updated++
-    }
-}
-if ($updated -gt 0) {
-    Write-GroupLine "✓ $updated Ingress resource(s) updated to ingressClassName=$IngressController" -ForegroundColor Green
-} else {
-    Write-GroupLine "· No Ingress resources needed updating" -ForegroundColor DarkGray
-}
-
-Complete-Group
+# Ingress-class sync used to run here, as its own group, but that meant it
+# executed after $installScript had already exited and printed its own
+# "Installation Complete" banner — so its output landed outside that block
+# instead of inside it (user-flagged 2026-09-05). Moved into each specific
+# controller's own Install.ps1 (11-ingress-traefik, 11-ingress-nginx) instead,
+# right before that script's own "Installation Complete" banner.

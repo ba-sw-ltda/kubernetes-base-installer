@@ -214,6 +214,37 @@ Write-GroupLine "✓ Metrics scrape port allowed" -ForegroundColor Green
 
 Complete-Group
 
+# Was the orchestrator's (11-ingress/Install.ps1) job — but it ran after
+# this script already exited, so its output landed after "Installation
+# Complete" instead of inside it (user-flagged 2026-09-05: "wir haben nichts
+# mehr ausserhalb der Installing und Installation Complete Blöcke"). Moved
+# here (and duplicated into 11-ingress-traefik/Install.ps1) so it's the same
+# fix on both sides of a controller switch, whichever direction runs.
+Start-Group -Title "Ingress class sync"
+
+# Patch all existing Ingress resources to use this controller's IngressClass.
+# Needed when switching controllers (nginx <-> traefik) so existing Ingresses
+# don't keep pointing at the now-removed controller.
+$existingIngresses = & kubectl get ingress -A -o json 2>$null | ConvertFrom-Json -AsHashtable
+$updatedIngressCount = 0
+foreach ($ing in $existingIngresses['items']) {
+    if ($ing['spec']['ingressClassName'] -ne "nginx") {
+        $ingName = $ing['metadata']['name']
+        $ingNs   = $ing['metadata']['namespace']
+        & kubectl patch ingress $ingName -n $ingNs `
+            -p '{"spec":{"ingressClassName":"nginx"}}' `
+            --type=merge 2>$null | Out-Null
+        $updatedIngressCount++
+    }
+}
+if ($updatedIngressCount -gt 0) {
+    Write-GroupLine "✓ $updatedIngressCount Ingress resource(s) updated to ingressClassName=nginx" -ForegroundColor Green
+} else {
+    Write-GroupLine "· No Ingress resources needed updating" -ForegroundColor DarkGray
+}
+
+Complete-Group
+
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 Write-Host "  Quick Reference" -ForegroundColor White
