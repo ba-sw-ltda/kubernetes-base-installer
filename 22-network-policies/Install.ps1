@@ -50,17 +50,29 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 # reachable only from within kube-system itself (default-deny-all +
 # allow-intra-namespace) and unreachable from every other namespace.
 # Instead of guessing, read the real selector straight off whichever
-# Service actually fronts DNS in this namespace — every platform we
-# support publishes it under one of the two conventional names
-# ("kube-dns" or "coredns"), so its .spec.selector is always the ground
-# truth for whatever labels that platform's CoreDNS pods actually carry.
+# Service actually fronts DNS in this namespace. Originally this matched by
+# Service *name* ("kube-dns"/"coredns"), on the assumption every platform
+# publishes it under one of those two literal names — wrong on RKE2, whose
+# rke2-coredns Helm chart names the Service "rke2-coredns-rke2-coredns"
+# (release name prefixed onto the chart name), so the name-based lookup
+# always missed it there, silently falling through to the fallback below
+# on every single RKE2 run (confirmed live 2026-09-06 — the fallback's
+# hardcoded k8s-app values happened to still be correct, so the policy was
+# never actually wrong, just the discovery step and its Write-Warning were
+# noise on a completely healthy run). Matching on the Service *port*
+# instead of its name sidesteps the whole naming question: whatever a
+# platform calls its DNS Service, kubelet's --cluster-dns points at its
+# ClusterIP expecting port 53, so that's the one platform-independent
+# signal every conventional DNS Service actually has to expose.
 $dnsSvcJson = & kubectl get svc -n $Namespace -o json 2>$null
 $dnsPodSelector = $null
 if ($LASTEXITCODE -eq 0 -and $dnsSvcJson) {
     $dnsSvc = ($dnsSvcJson | ConvertFrom-Json).items |
-        Where-Object { $_.metadata.name -in @('kube-dns', 'coredns') } |
+        Where-Object {
+            $_.spec.selector -and ($_.spec.ports | Where-Object { $_.port -eq 53 })
+        } |
         Select-Object -First 1
-    if ($dnsSvc -and $dnsSvc.spec.selector) {
+    if ($dnsSvc) {
         $dnsPodSelector = $dnsSvc.spec.selector
     }
 }
@@ -71,7 +83,10 @@ if ($dnsPodSelector) {
     }) -join "`n"
     $podSelectorYaml = "  podSelector:`n    matchLabels:`n$matchLabelsYaml"
 } else {
-    Write-Warning "Could not discover the DNS Service's selector in '$Namespace' (no 'kube-dns' or 'coredns' Service found) — falling back to known label conventions."
+    # Genuinely unusual at this point — no port-53 Service found at all in
+    # this namespace — so still worth flagging rather than silently
+    # guessing; the platforms this repo supports have never hit this path.
+    Write-Warning "Could not discover a DNS Service (port 53) in '$Namespace' — falling back to known label conventions."
     $podSelectorYaml = @"
   podSelector:
     matchExpressions:
