@@ -102,6 +102,26 @@ $storageClassLine
     requests:
       cpu: $($UserConfig.Resources.Requests.Cpu)
       memory: $($UserConfig.Resources.Requests.Memory)
+  standalone:
+    config: |
+      ui = true
+
+      listener "tcp" {
+        tls_disable = 1
+        address = "[::]:8200"
+        cluster_address = "[::]:8201"
+        telemetry {
+          unauthenticated_metrics_access = "true"
+        }
+      }
+      storage "file" {
+        path = "/openbao/data"
+      }
+
+      telemetry {
+        prometheus_retention_time = "30s"
+        disable_hostname = true
+      }
 ui:
   enabled: true
 injector:
@@ -110,6 +130,12 @@ csi:
   enabled: true
   extraArgs:
     - --endpoint=/provider/vault.sock
+global:
+  serverTelemetry:
+    prometheusOperator: true
+serverTelemetry:
+  serviceMonitor:
+    enabled: true
 "@
 
 $valuesFile = New-TemporaryFile
@@ -648,18 +674,26 @@ $($protect.TlsBlock)
 Complete-Group
 Complete-Group
 
-# Two separate groups instead of one catch-all "Housekeeping" — see
-# 11-ingress-traefik/Install.ps1 for why (2026-09-05). No "Monitoring" group
-# here — OpenBao has no Grafana dashboard, and no usable Prometheus
-# alerting rules exist to vendor either: the monitoring.mixins.dev Vault
-# mixin (github.com/grafana/jsonnet-libs/vault-mixin) turned out to be
-# dashboard-only — its mixin.libsonnet imports no alerts.libsonnet and its
-# generated prometheus_alerts.yaml is empty; the openbao-helm chart's own
-# values.yaml ships two commented-out "example" rules that duplicate the
-# same alert name and rely on an unverified quantile-labeled metric, not a
-# maintained rule set; samber/awesome-prometheus-alerts has no Vault/
-# OpenBao section either — nothing usable to wire, deliberately left as-is
-# (2026-09-06).
+# Reverses the "nothing usable" verdict from earlier on 2026-09-06 (that
+# pass only checked the monitoring.mixins.dev Vault mixin — dashboard-only,
+# no alerts.libsonnet — and the chart's own commented-out example rules).
+# Two real, mutually-corroborating alerting-rules sources turned up after
+# the user pointed at them: see prometheusrules/openbao.yaml for the full
+# provenance. Metrics telemetry + the chart-native ServiceMonitor are
+# enabled above (server.standalone.config's telemetry stanzas,
+# global.serverTelemetry.prometheusOperator, serverTelemetry.serviceMonitor)
+# — both default to the `release: prometheus` label this cluster's
+# Prometheus Operator requires, confirmed against the chart's own
+# prometheus-servicemonitor.yaml template. No Grafana dashboard yet: a
+# community one exists (grafana.com 23725) but needs `${DS_PROMXY}`/
+# `${metrics_prefix}` template-variable resolution work not done in this
+# pass — deliberately deferred, same unresolved-datasource-variable
+# situation this repo already ships as-is for 31-cert-manager's dashboard.
+Start-Group -Title "Monitoring"
+Register-PrometheusRule -Namespace $Namespace -Name "openbao" `
+    -YamlPath "$ScriptRoot\prometheusrules\openbao.yaml"
+Complete-Group
+
 if ($FullConfig.RancherProject) {
     Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject

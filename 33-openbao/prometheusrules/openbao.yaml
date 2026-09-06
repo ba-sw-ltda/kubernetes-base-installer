@@ -1,0 +1,91 @@
+# Vendored Prometheus alerting rules for OpenBao (Vault-compatible metric
+# namespace — OpenBao is a fork of HashiCorp Vault and keeps the same
+# `vault_*` metric names). Reverses the "nothing usable" verdict recorded
+# here on 2026-09-06 (this file's own history / commit that added the old
+# comment) — that pass missed two real sources, both cross-checked against
+# each other below and found to agree.
+#
+# Sources (fetched 2026-09-06, both raw GitHub, not the rendered doc sites):
+#   - cloudducoeur/collection-prometheus-alerting-rules
+#     https://raw.githubusercontent.com/cloudducoeur/collection-prometheus-alerting-rules/main/src/openbao-exporter/README.md
+#   - samber/awesome-prometheus-alerts, "Hashicorp Vault" category
+#     https://raw.githubusercontent.com/samber/awesome-prometheus-alerts/master/dist/rules/hashicorp-vault/embedded-exporter.yml
+# Both list the exact same 4 alerts under the exact same names, with
+# matching (in one case slightly refined) expressions — independent
+# corroboration, not just one source's guess. samber's version of
+# VaultClusterHealth adds an `and count(vault_core_active) > 0` guard
+# (avoids a 0/0 division producing a false-positive NaN comparison when no
+# `vault_core_active` series exists yet, e.g. right after install before
+# the ServiceMonitor's first scrape) — used here since it's strictly safer;
+# the two sets are otherwise identical.
+#
+# All 4 alerts use raw `vault_*` metric names, not `up{job="..."}"` — no
+# job-label match caveat like this repo's cert-manager/traefik rules have.
+# None of these are Raft/HA-specific (no `vault_autopilot_*` or
+# `vault_raft_*` metrics used), so all 4 are fully live on this repo's
+# current single-node standalone deployment — nothing here goes dormant
+# when the separate, not-yet-built OpenBao HA commit lands.
+#
+# `release: prometheus` required — this repo's kube-prometheus-stack leaves
+# ruleSelectorNilUsesHelmValues at its chart default (true). Applied
+# namespace-less (no metadata.namespace) — the caller supplies -n via
+# Register-PrometheusRule.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: openbao-alerts
+  labels:
+    release: prometheus
+spec:
+  groups:
+  - name: openbao
+    rules:
+    - alert: VaultSealed
+      expr: vault_core_unsealed == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Vault sealed (instance {{ $labels.instance }})"
+        description: >-
+          Vault instance is sealed on {{ $labels.instance }}.
+          VALUE = {{ $value }}
+          LABELS = {{ $labels }}
+    - alert: VaultTooManyPendingTokens
+      expr: avg(vault_token_create_count - vault_token_store_count) > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Vault too many pending tokens (instance {{ $labels.instance }})"
+        description: >-
+          Too many pending tokens on {{ $labels.instance }}: {{ $value }}
+          tokens created but not yet stored.
+          VALUE = {{ $value }}
+          LABELS = {{ $labels }}
+    - alert: VaultTooManyInfinityTokens
+      expr: vault_token_count_by_ttl{creation_ttl="+Inf"} > 3
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Vault too many infinity tokens (instance {{ $labels.instance }})"
+        description: >-
+          Too many non-expiring tokens on {{ $labels.instance }}:
+          {{ $value }} tokens with infinite TTL.
+          VALUE = {{ $value }}
+          LABELS = {{ $labels }}
+    - alert: VaultClusterHealth
+      expr: >-
+        sum(vault_core_active) / count(vault_core_active) <= 0.5
+        and count(vault_core_active) > 0
+      for: 0m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Vault cluster health (instance {{ $labels.instance }})"
+        description: >-
+          Vault cluster is not healthy: only
+          {{ $value | humanizePercentage }} of nodes are active.
+          VALUE = {{ $value }}
+          LABELS = {{ $labels }}
