@@ -406,16 +406,22 @@ if ($HAEnabled) {
             continue
         }
 
-        $peerStatus = Invoke-ScriptBlockWithSpinner -Message "Waiting for $podName listener..." -ShowElapsed `
+        $peerStatus = Invoke-ScriptBlockWithSpinner -Message "Waiting for $podName to join Raft..." -ShowElapsed `
             -ArgumentList @($Namespace, $podName) -ScriptBlock {
                 param($Namespace, $podName)
                 $elapsed = 0
-                while ($elapsed -lt 60) {
+                while ($elapsed -lt 120) {
                     $raw = & kubectl exec $podName -n $Namespace -- bao status -format=json 2>$null
                     $jsonStart = if ($raw) { $raw.IndexOf('{') } else { -1 }
                     if ($jsonStart -ge 0) {
                         $parsed = $raw.Substring($jsonStart) | ConvertFrom-Json -AsHashtable -ErrorAction SilentlyContinue
-                        if ($parsed) { return $parsed }
+                        # The listener answers (a parseable status response) well
+                        # before auto-join has actually pulled the Raft snapshot
+                        # from the leader — until that finishes, the node reports
+                        # sealed: true but initialized: false, and unsealing it
+                        # fails with "Vault is not initialized" (confirmed live
+                        # 2026-09-06). Wait for initialized too, not just parseable.
+                        if ($parsed -and $parsed['initialized']) { return $parsed }
                     }
                     Start-Sleep -Seconds 3; $elapsed += 3
                 }
@@ -423,14 +429,23 @@ if ($HAEnabled) {
             }
 
         if (-not $peerStatus) {
-            Write-Warning "  $podName listener did not respond after 60s — check pod logs: kubectl logs $podName -n $Namespace"
+            Write-Warning "  $podName did not finish joining Raft after 120s — check pod logs: kubectl logs $podName -n $Namespace"
             continue
         }
 
         if ($peerStatus['sealed']) {
-            Invoke-WithSpinner -Message "Unsealing $podName..." -Executable "kubectl" `
+            # Exit code was previously discarded (piped to Out-Null), so the
+            # "✓ joined and unsealed" line printed unconditionally even when this
+            # command failed outright — confirmed live 2026-09-06, where the
+            # unseal call errored ("Vault is not initialized", now fixed above)
+            # but the script still reported success. Check it for real.
+            $unsealExit = Invoke-WithSpinner -Message "Unsealing $podName..." -Executable "kubectl" `
                 -Arguments @("exec", $podName, "-n", $Namespace, "--",
-                             "bao", "operator", "unseal", $unsealKey) | Out-Null
+                             "bao", "operator", "unseal", $unsealKey)
+            if ($unsealExit -ne 0) {
+                Write-Warning "  Failed to unseal $podName — check: kubectl exec $podName -n $Namespace -- bao status"
+                continue
+            }
             Write-GroupLine "✓ $podName joined and unsealed" -ForegroundColor Green
         } else {
             Write-GroupLine "✓ $podName already unsealed" -ForegroundColor Green
