@@ -30,7 +30,7 @@ $Namespace  = $FullConfig.Namespace
 Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
 Write-Host ""
 
-Start-Group -Title "Configuration"
+Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 
