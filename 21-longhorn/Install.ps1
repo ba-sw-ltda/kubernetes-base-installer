@@ -222,23 +222,31 @@ if ($verbose) {
 }
 
 Complete-Group
-Start-Group -Title "Housekeeping"
 
+# Three separate groups instead of one catch-all "Housekeeping" — see
+# 11-ingress-traefik/Install.ps1 for why (duplicate Grafana confirmation
+# line + user-flagged "shouldn't NetworkPolicy get its own group?",
+# 2026-09-05). "Monitoring" is the deliberate name, not "Grafana" —
+# Prometheus alerting rules for this component will join the same group
+# once that work starts.
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
     Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
 # Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
 # Grafana's dashboard sidecar (see 66-grafana/Install.ps1 sidecar.dashboards.*
-# Helm flags) via its own K8s API watch. Order-independent by design — unlike
-# Register-PortalEntry / Set-RancherProjectAssignment this needs no
-# pending/resolver mechanism: the ConfigMap can exist before Grafana does and
-# will simply be picked up once the sidecar starts. Stays in this namespace,
-# no NetworkPolicy involved.
+# Helm flags) via its own K8s API watch. Order-independent, no NetworkPolicy
+# involved. Register-GrafanaDashboard prints its own "✓ ... registered"
+# confirmation line — nothing more to print here.
+Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "longhorn" `
     -JsonPath "$ScriptRoot\dashboards\longhorn.json" -Folder "Storage"
-Write-GroupLine "✓ Grafana dashboard registered" -ForegroundColor Green
+Complete-Group
+
+Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # NetworkPolicy `ports` matches the pod's real destination port after the
