@@ -1,0 +1,109 @@
+# Vendored from the official SUSE Storage (Longhorn) documentation's
+# "Alert Rule Examples" page, fetched 2026-09-06 from
+# https://documentation.suse.com/cloudnative/storage/1.11/en/observability/alert-rule-examples.html
+# — checked monitoring.mixins.dev first (per user request); no Longhorn
+# mixin is cataloged there, so this SUSE-published set is the best
+# available source, same category as this repo's other vendored rules.
+#
+# One correction applied vs. the source: LonghornVolumeStatusCritical's
+# annotation text said "Fault for more than 2 minutes" while its own
+# `for:` was already 5m in the same source snippet — copy-paste
+# inconsistency in the upstream doc, description text aligned to match
+# the actual condition, behavior unchanged.
+#
+# `release: prometheus` is required — this repo's kube-prometheus-stack
+# leaves ruleSelectorNilUsesHelmValues at its chart default (true), so an
+# unlabeled PrometheusRule is silently never picked up, same as an
+# unlabeled ServiceMonitor. Applied namespace-less (no metadata.namespace)
+# — the caller supplies -n via Register-PrometheusRule.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: longhorn-alerts
+  labels:
+    release: prometheus
+spec:
+  groups:
+  - name: longhorn.rules
+    rules:
+    - alert: LonghornVolumeActualSpaceUsedWarning
+      expr: (longhorn_volume_actual_size_bytes / longhorn_volume_capacity_bytes) * 100 > 90
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: The actual used space of a Longhorn volume is over 90% of the capacity.
+        description: >-
+          The actual space used by Longhorn volume {{ $labels.volume }} on
+          {{ $labels.node }} is at {{ $value }}% capacity for more than 5 minutes.
+    - alert: LonghornVolumeStatusCritical
+      expr: longhorn_volume_robustness == 3
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: A Longhorn volume is Faulted.
+        description: >-
+          Longhorn volume {{ $labels.volume }} on {{ $labels.node }} is
+          Faulted for more than 5 minutes.
+    - alert: LonghornVolumeStatusWarning
+      expr: longhorn_volume_robustness == 2
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: A Longhorn volume is Degraded.
+        description: >-
+          Longhorn volume {{ $labels.volume }} on {{ $labels.node }} is
+          Degraded for more than 5 minutes.
+    - alert: LonghornNodeStorageWarning
+      expr: (longhorn_node_storage_usage_bytes / longhorn_node_storage_capacity_bytes) * 100 > 70
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: The used storage of a Longhorn node is over 70% of the capacity.
+        description: >-
+          The used storage of node {{ $labels.node }} is at {{ $value }}%
+          capacity for more than 5 minutes.
+    - alert: LonghornDiskStorageWarning
+      expr: (longhorn_disk_usage_bytes / longhorn_disk_capacity_bytes) * 100 > 70
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: The used storage of a Longhorn disk is over 70% of the capacity.
+        description: >-
+          The used storage of disk {{ $labels.disk }} on node
+          {{ $labels.node }} is at {{ $value }}% capacity for more than 5 minutes.
+    - alert: LonghornNodeDown
+      expr: (avg(longhorn_node_count_total) or on() vector(0)) - (count(longhorn_node_status{condition="ready"} == 1) or on() vector(0)) > 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: One or more Longhorn nodes are offline.
+        description: >-
+          There are {{ $value }} Longhorn nodes which have been offline
+          for more than 5 minutes.
+    - alert: LonghornInstanceManagerCPUUsageWarning
+      expr: (longhorn_instance_manager_cpu_usage_millicpu / longhorn_instance_manager_cpu_requests_millicpu) * 100 > 300
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: A Longhorn instance manager is consuming 3x its CPU request.
+        description: >-
+          Longhorn instance manager {{ $labels.instance_manager }} on
+          {{ $labels.node }} has CPU usage / CPU request at {{ $value }}%
+          for more than 5 minutes.
+    - alert: LonghornNodeCPUUsageWarning
+      expr: (longhorn_node_cpu_usage_millicpu / longhorn_node_cpu_capacity_millicpu) * 100 > 90
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: A Longhorn node has high CPU pressure.
+        description: >-
+          Longhorn node {{ $labels.node }} has CPU usage / CPU capacity at
+          {{ $value }}% for more than 5 minutes.

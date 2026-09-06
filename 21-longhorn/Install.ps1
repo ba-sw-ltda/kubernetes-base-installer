@@ -244,6 +244,14 @@ if ($FullConfig.RancherProject) {
 Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "longhorn" `
     -JsonPath "$ScriptRoot\dashboards\longhorn.json" -Folder "Storage"
+
+# Prometheus alerting rules: vendored from the official SUSE Storage
+# (Longhorn) docs (see prometheusrules/longhorn.yaml for source/provenance
+# and the one description-text correction applied). Same order-independence
+# as the dashboard above — Register-PrometheusRule prints its own
+# confirmation line, nothing more to print here.
+Register-PrometheusRule -Namespace $Namespace -Name "longhorn" `
+    -YamlPath "$ScriptRoot\prometheusrules\longhorn.yaml"
 Complete-Group
 
 Start-Group -Title "Network Policy"
