@@ -618,10 +618,15 @@ foreach ($pki in $PKIs) {
             "BAO_TOKEN=$rootToken bao secrets tune -max-lease-ttl=87600h $mountPath"
     }
 
-    # Check if CA already exists on this mount (expected to return non-0 when CA not yet created)
+    # Check if CA already exists on this mount. A non-0 exit here is a normal,
+    # expected outcome the first time a PKI is created (there's no CA yet) —
+    # not a failure — so -ExpectedNonZero keeps the step green/✓ instead of
+    # rendering as an alarming ✗ (and suppresses the harmless stderr echo)
+    # while $caCheckExit still carries the real exit code for the branch below.
     $caCheckExit = Invoke-WithSpinner -Message "Checking CA on $mountPath..." -Executable "kubectl" `
         -Arguments @("exec", "openbao-0", "-n", $Namespace, "--", "sh", "-c",
-                     "BAO_TOKEN=$rootToken bao read -field=certificate $mountPath/cert/ca 2>/dev/null")
+                     "BAO_TOKEN=$rootToken bao read -field=certificate $mountPath/cert/ca 2>/dev/null") `
+        -ExpectedNonZero
     $caExists = $caCheckExit -eq 0
 
     if (-not $caExists) {
