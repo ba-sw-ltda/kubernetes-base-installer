@@ -116,9 +116,12 @@ if ($stsExists) {
 # here — discovered live, same dynamic-lookup approach Reset-RKE2.ps1
 # already uses for the same PVCs during a full teardown.
 if ($modeSwitch) {
-    Write-Host ""
-    Write-Warning "  Storage mode changing ($previousMode -> $requestedMode) — OpenBao has no in-place migration between file and Raft storage. Wiping existing data for a fresh reinit (PKIs/secrets stored in OpenBao will be lost)."
-    Write-Host ""
+    # The user already made this call and saw its consequences at Prompt.ps1
+    # time (see the HA toggle's ContextHint there) — nothing can be done in
+    # reaction to it here, since every input runs upfront and Install.ps1
+    # never prompts mid-run. This just reports what's happening, so it's a
+    # plain status line rather than an alarming runtime warning.
+    Write-GroupLine "ℹ Storage mode changing ($previousMode → $requestedMode) — wiping existing data for a fresh reinit (no in-place migration)" -ForegroundColor Yellow
 
     & kubectl delete pods -n $Namespace --all --force --grace-period=0 --request-timeout=10s 2>$null | Out-Null
 

@@ -324,11 +324,34 @@ if ($pkis.Count -eq 0) {
 } while ($restartPkiLoop)  # outer do-while: re-runs the management loop if user goes back
 
 # ── High Availability ─────────────────────────────────────────────
+# Whichever answer is given here is final — Install.ps1 runs unattended and
+# never prompts, so this is the only point where the user can still react to
+# a storage-mode switch's data loss. Reuses $existingState (already parsed
+# above for PKI seeding) rather than re-reading the state file; a state file
+# that predates the Mode field is pre-HA and therefore always "standalone".
+$previousMode = $null
+if ($existingState -and $existingState.ContainsKey('Mode')) {
+    $previousMode = $existingState['Mode']
+} elseif ($existingState) {
+    $previousMode = "standalone"
+}
+
+$haHint = if ($previousMode) {
+    "⚠ DATA LOSS ON SWITCH: this install currently runs in '$previousMode' mode. " +
+    "OpenBao has no in-place migration between file and Raft storage — choosing an " +
+    "answer that changes the mode wipes all existing data (PKIs, secrets, Authelia " +
+    "config, MQTT client certs) and reinitializes with a fresh unseal key/root token."
+} else {
+    "Switches storage from single-node file to Raft integrated storage across 3 pods. " +
+    "Fresh install — nothing is at risk yet."
+}
+
 $haEnabled = Read-YesNo `
     -Title "Enable High Availability (Raft, 3 replicas)?" `
     -DefaultYes $false `
     -ContextTitle "Security/OpenBao — $Platform" `
-    -ContextHint "Switches storage from single-node file to Raft integrated storage across 3 pods. Switching modes on an existing install wipes and reinitializes OpenBao (fresh unseal keys/root token; PKIs/secrets are lost) — no in-place migration."
+    -ContextHint $haHint `
+    -ContextCurrent $(if ($previousMode) { [ordered]@{ "Current mode" = $previousMode } })
 
 # ── OpenBao hostname ──────────────────────────────────────────────
 $defaultHostname = "vault.$Domain"
