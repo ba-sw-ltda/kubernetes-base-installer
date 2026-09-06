@@ -36,6 +36,8 @@ Write-Host "  Chart:      $ChartName v$ChartVersion" -ForegroundColor Gray
 Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "emberstack", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
@@ -43,7 +45,10 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
+Write-GroupLine "✓ Repository ready" -ForegroundColor Green
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 $HelmArgs = @(
     "upgrade", "--install", "reflector", "emberstack/$ChartName",
@@ -60,21 +65,26 @@ Reset-StuckHelmRelease -ReleaseName "reflector" -Namespace $Namespace
 $exitCode = Invoke-WithSpinner -Message "Deploying Reflector..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Reflector (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
+Write-GroupLine "✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for rollout..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/reflector", "-n", $Namespace, "--timeout=5m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout did not complete — check cluster state"; exit 1 }
-Write-Host "  ✓ Reflector ready" -ForegroundColor Green
+Write-GroupLine "✓ Reflector ready" -ForegroundColor Green
 
 if ($verbose) {
     Write-Host ""
     & kubectl get pods -n $Namespace -l app.kubernetes.io/name=reflector
 }
 
+Complete-Group
+
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
 Write-Host ""
