@@ -31,10 +31,12 @@ if ([string]::IsNullOrWhiteSpace($RegistrationUrl)) {
 Write-Host "  Registration URL: $RegistrationUrl" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Deploy"
 $exitCode = Invoke-WithSpinner -Message "Applying Rancher registration manifest..." -Executable "kubectl" `
     -Arguments @("apply", "-f", $RegistrationUrl) -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to apply Rancher registration manifest (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Rancher Agent deployed" -ForegroundColor Green
+Write-GroupLine "✓ Rancher Agent deployed" -ForegroundColor Green
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
