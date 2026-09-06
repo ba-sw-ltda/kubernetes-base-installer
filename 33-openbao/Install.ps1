@@ -184,13 +184,16 @@ $modeYaml = if ($HAEnabled) {
         storage "raft" {
           path = "/openbao/data"
           retry_join {
-            # No spaces in the label_selector value (comma-separated), so it
-            # needs no inner quoting — go-discover's config parser splits
-            # this whole string on whitespace, and quoting an already
-            # space-free value would just risk being taken literally
-            # instead of stripped, depending on parser behavior not worth
-            # gambling on here.
-            auto_join = "provider=k8s namespace=$Namespace label_selector=app.kubernetes.io/name=openbao,app.kubernetes.io/instance=openbao,component=server"
+            # The label_selector value is itself comma-separated key=value
+            # pairs (standard k8s selector syntax), so it contains embedded
+            # "=" characters. go-discover's own config-string parser reads
+            # this whole auto_join string as space-separated key=value
+            # tokens and requires any value containing "=" to be enclosed
+            # in double quotes, or it errors and silently drops retry_join
+            # entirely — confirmed live 2026-09-06 (openbao-1 looped
+            # "equals in key's value, enclosing double-quote needed" and
+            # could never join Raft, no matter how long it waited).
+            auto_join = "provider=k8s namespace=$Namespace label_selector=\"app.kubernetes.io/name=openbao,app.kubernetes.io/instance=openbao,component=server\""
             auto_join_scheme = "http"
             auto_join_port = 8200
           }
