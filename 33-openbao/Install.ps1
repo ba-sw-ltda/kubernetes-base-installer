@@ -646,12 +646,20 @@ $($protect.TlsBlock)
 }
 
 Complete-Group
-Start-Group -Title "Housekeeping"
+Complete-Group
 
+# Two separate groups instead of one catch-all "Housekeeping" — see
+# 11-ingress-traefik/Install.ps1 for why (2026-09-05). No "Monitoring" group
+# here yet — OpenBao has no Grafana dashboard or Prometheus alerting rules
+# registered today (separate gap, not this pass).
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
     Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
+
+Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # Only the external-facing "http" port (8200) — 8201 is OpenBao's internal
