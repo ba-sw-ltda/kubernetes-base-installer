@@ -43,8 +43,10 @@ Write-Host "  Feeds:     $($Feeds.Count)" -ForegroundColor Gray
 Write-Host "  Namespace: $Namespace  (source — other namespaces opt-in via annotation)" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Configuration"
+
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
-Write-Host "  ✓ Namespace '$Namespace' ready" -ForegroundColor Green
+Write-GroupLine "✓ Namespace '$Namespace' ready" -ForegroundColor Green
 
 # K8s resource names: lowercase alphanumeric + hyphens only, no leading/trailing hyphen.
 function ConvertTo-FeedSlug {
@@ -64,7 +66,7 @@ foreach ($feed in $Feeds) {
     $configName = "registry-$slug-config"
     $hasAuth    = -not [string]::IsNullOrWhiteSpace($feed.User) -and -not [string]::IsNullOrWhiteSpace($feed.Password)
 
-    Write-Host "  Feed '$($feed.Name)':" -ForegroundColor Gray
+    Write-GroupLine "Feed '$($feed.Name)':" -ForegroundColor Gray
 
     if ($hasAuth) {
         # One vault path per feed — each feed's credentials are its own thing,
@@ -73,8 +75,8 @@ foreach ($feed in $Feeds) {
             user     = $feed.User
             password = $feed.Password
         }
-        if ($writeOk) { Write-Host "    ✓ Credentials stored in vault" -ForegroundColor Green }
-        else { Write-Host "    ⚠ No vault configured — credentials stored as K8s secret only" -ForegroundColor Yellow }
+        if ($writeOk) { Write-GroupLine "  ✓ Credentials stored in vault" -ForegroundColor Green }
+        else { Write-GroupLine "  ⚠ No vault configured — credentials stored as K8s secret only" -ForegroundColor Yellow }
 
         $authB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("$($feed.User):$($feed.Password)"))
         $dockerConfig = @{
@@ -102,12 +104,12 @@ data:
 "@
         $secretYaml | & kubectl apply -f - 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "    ✓ imagePullSecret '$secretName' created" -ForegroundColor Green
+            Write-GroupLine "  ✓ imagePullSecret '$secretName' created" -ForegroundColor Green
         } else {
             Write-Error "Failed to create imagePullSecret '$secretName'"; exit 1
         }
     } else {
-        Write-Host "    (anonymous feed — no imagePullSecret needed)" -ForegroundColor Gray
+        Write-GroupLine "  (anonymous feed — no imagePullSecret needed)" -ForegroundColor Gray
     }
 
     $configMapYaml = @"
@@ -126,7 +128,7 @@ data:
 "@
     $configMapYaml | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "    ✓ ConfigMap '$configName' created" -ForegroundColor Green
+        Write-GroupLine "  ✓ ConfigMap '$configName' created" -ForegroundColor Green
     } else {
         Write-Error "Failed to create ConfigMap '$configName'"; exit 1
     }
@@ -138,11 +140,18 @@ data:
     }) | Out-Null
 }
 
+Complete-Group
+
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
+Start-Group -Title "Network Policy"
 Install-NetworkPolicyBaseline -Namespace $Namespace
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
