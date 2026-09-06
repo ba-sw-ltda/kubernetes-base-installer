@@ -388,51 +388,84 @@ if ($HAEnabled) {
         # controller and gave up on openbao-1/openbao-2 before they existed).
         # Poll for existence first; only then hand off to kubectl wait below
         # for the actual Running condition.
-        $existElapsed = 0
-        $podExists = $false
-        while ($existElapsed -lt 300) {
-            $existCheck = & kubectl get pod/$podName -n $Namespace --ignore-not-found --request-timeout=5s 2>$null
-            if ($existCheck) { $podExists = $true; break }
-            Start-Sleep -Seconds 5; $existElapsed += 5
-        }
-        if (-not $podExists) {
-            Write-Warning "  $podName was never created by the StatefulSet — check: kubectl describe statefulset openbao -n $Namespace"
-            continue
-        }
-
-        $exitCode = Invoke-WithSpinner -Message "Waiting for $podName..." -Executable "kubectl" `
-            -Arguments @("wait", "pod/$podName", "-n", $Namespace,
-                         "--for=jsonpath={.status.phase}=Running", "--timeout=5m") `
-            -ShowOutput:$verbose
-        if ($exitCode -ne 0) {
-            Write-Warning "  $podName did not start — check pod logs: kubectl logs $podName -n $Namespace"
-            continue
-        }
-
-        $peerStatus = Invoke-ScriptBlockWithSpinner -Message "Waiting for $podName to join Raft..." -ShowElapsed `
-            -ArgumentList @($Namespace, $podName) -ScriptBlock {
-                param($Namespace, $podName)
-                $elapsed = 0
-                while ($elapsed -lt 120) {
-                    $raw = & kubectl exec $podName -n $Namespace -- bao status -format=json 2>$null
-                    $jsonStart = if ($raw) { $raw.IndexOf('{') } else { -1 }
-                    if ($jsonStart -ge 0) {
-                        $parsed = $raw.Substring($jsonStart) | ConvertFrom-Json -AsHashtable -ErrorAction SilentlyContinue
-                        # The listener answers (a parseable status response) well
-                        # before auto-join has actually pulled the Raft snapshot
-                        # from the leader — until that finishes, the node reports
-                        # sealed: true but initialized: false, and unsealing it
-                        # fails with "Vault is not initialized" (confirmed live
-                        # 2026-09-06). Wait for initialized too, not just parseable.
-                        if ($parsed -and $parsed['initialized']) { return $parsed }
-                    }
-                    Start-Sleep -Seconds 3; $elapsed += 3
+        $joined = $false
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
+            if ($attempt -eq 1) {
+                $existElapsed = 0
+                $podExists = $false
+                while ($existElapsed -lt 300) {
+                    $existCheck = & kubectl get pod/$podName -n $Namespace --ignore-not-found --request-timeout=5s 2>$null
+                    if ($existCheck) { $podExists = $true; break }
+                    Start-Sleep -Seconds 5; $existElapsed += 5
                 }
-                return $null
+                if (-not $podExists) {
+                    Write-Warning "  $podName was never created by the StatefulSet — check: kubectl describe statefulset openbao -n $Namespace"
+                    break
+                }
+            } else {
+                # First attempt's Raft-join wait timed out. A Running-but-stuck
+                # replica is often just executing whatever config existed when
+                # its pod was created — Helm upgrades the ConfigMap in place,
+                # but OpenBao only reads config at process start, so a pod left
+                # over from an earlier attempt (or created moments before this
+                # run's `helm upgrade` landed) keeps retrying auto-join against
+                # a stale rendered config forever (confirmed live 2026-09-06:
+                # the ConfigMap already held the corrected retry_join string,
+                # but the running process kept logging the old parse error
+                # until the pod itself was restarted). One forced restart picks
+                # up whatever config is current before giving up for good.
+                Write-GroupLine "↻ $podName still not joined — restarting pod to pick up current config" -ForegroundColor Yellow
+                & kubectl delete pod/$podName -n $Namespace --ignore-not-found --request-timeout=10s 2>$null | Out-Null
+
+                $existElapsed = 0
+                $podExists = $false
+                while ($existElapsed -lt 300) {
+                    $existCheck = & kubectl get pod/$podName -n $Namespace --ignore-not-found --request-timeout=5s 2>$null
+                    if ($existCheck) { $podExists = $true; break }
+                    Start-Sleep -Seconds 5; $existElapsed += 5
+                }
+                if (-not $podExists) {
+                    Write-Warning "  $podName was never recreated after restart — check: kubectl describe statefulset openbao -n $Namespace"
+                    break
+                }
             }
 
-        if (-not $peerStatus) {
-            Write-Warning "  $podName did not finish joining Raft after 120s — check pod logs: kubectl logs $podName -n $Namespace"
+            $exitCode = Invoke-WithSpinner -Message "Waiting for $podName..." -Executable "kubectl" `
+                -Arguments @("wait", "pod/$podName", "-n", $Namespace,
+                             "--for=jsonpath={.status.phase}=Running", "--timeout=5m") `
+                -ShowOutput:$verbose
+            if ($exitCode -ne 0) {
+                Write-Warning "  $podName did not start — check pod logs: kubectl logs $podName -n $Namespace"
+                break
+            }
+
+            $peerStatus = Invoke-ScriptBlockWithSpinner -Message "Waiting for $podName to join Raft..." -ShowElapsed `
+                -ArgumentList @($Namespace, $podName) -ScriptBlock {
+                    param($Namespace, $podName)
+                    $elapsed = 0
+                    while ($elapsed -lt 120) {
+                        $raw = & kubectl exec $podName -n $Namespace -- bao status -format=json 2>$null
+                        $jsonStart = if ($raw) { $raw.IndexOf('{') } else { -1 }
+                        if ($jsonStart -ge 0) {
+                            $parsed = $raw.Substring($jsonStart) | ConvertFrom-Json -AsHashtable -ErrorAction SilentlyContinue
+                            # The listener answers (a parseable status response) well
+                            # before auto-join has actually pulled the Raft snapshot
+                            # from the leader — until that finishes, the node reports
+                            # sealed: true but initialized: false, and unsealing it
+                            # fails with "Vault is not initialized" (confirmed live
+                            # 2026-09-06). Wait for initialized too, not just parseable.
+                            if ($parsed -and $parsed['initialized']) { return $parsed }
+                        }
+                        Start-Sleep -Seconds 3; $elapsed += 3
+                    }
+                    return $null
+                }
+
+            if ($peerStatus) { $joined = $true; break }
+        }
+
+        if (-not $joined) {
+            Write-Warning "  $podName did not finish joining Raft after two attempts — check pod logs: kubectl logs $podName -n $Namespace"
             continue
         }
 
