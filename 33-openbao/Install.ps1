@@ -21,6 +21,11 @@
     If empty/omitted, a single "ingress" Root CA is created for backward compat.
 .PARAMETER ConfigPath
     Path to custom configuration file (optional)
+.PARAMETER HAEnabled
+    Enable High Availability (Raft integrated storage, 3 replicas) instead of
+    single-node file storage (from Prompt.ps1). Switching modes on an
+    existing install has no in-place migration — see the mode-switch wipe
+    logic below.
 #>
 [CmdletBinding()]
 param(
@@ -28,8 +33,11 @@ param(
     [string]$Hostname,
     [string]$Domain,
     [array] $PKIs = @(),
-    [string]$ConfigPath
+    [string]$ConfigPath,
+    [bool]  $HAEnabled = $false
 )
+
+$HAReplicas = 3
 
 $ScriptRoot = $PSScriptRoot
 $BaseDir    = Split-Path $ScriptRoot -Parent
@@ -50,8 +58,29 @@ $Namespace    = $FullConfig.Namespace
 $UserConfig   = $FullConfig.UserConfig
 $StateFile    = Get-OpenBaoStateFile -BaseDir $BaseDir -Platform $Platform
 
+# ── Storage-mode switch detection ────────────────────────────────
+# OpenBao/Vault has no in-place migration between "file" and "raft"
+# storage — this is a deliberate fresh-reinit design (user-confirmed
+# 2026-09-06: full reinstalls are already routine practice on every
+# platform, including the persistent RKE2 cluster). "Mode" is persisted
+# in the same state JSON Save-OpenBaoPkis already read-merges into, so no
+# separate state file is needed.
+$requestedMode = if ($HAEnabled) { "ha" } else { "standalone" }
+$previousMode  = $null
+if (Test-Path $StateFile) {
+    $existingState = Get-Content $StateFile -Raw | ConvertFrom-Json -ErrorAction SilentlyContinue
+    if ($existingState) {
+        # Pre-HA state files predate the Mode field — every install before
+        # this feature was standalone-only, so its absence here safely
+        # means "standalone", not "unknown"/skip.
+        $previousMode = if ($existingState.Mode) { $existingState.Mode } else { "standalone" }
+    }
+}
+$modeSwitch = (-not [string]::IsNullOrWhiteSpace($previousMode)) -and ($previousMode -ne $requestedMode)
+
 Write-Host "  Chart:      openbao v$ChartVersion" -ForegroundColor Gray
 Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
+Write-Host "  Mode:       $requestedMode$(if ($HAEnabled) { " ($HAReplicas replicas)" })" -ForegroundColor Gray
 Write-Host "  Storage:    $($UserConfig.StorageSize)" -ForegroundColor Gray
 if ($PKIs.Count -gt 0) {
     Write-Host "  PKIs:       $($PKIs.Count) defined ($( ($PKIs | ForEach-Object { $_.Name }) -join ', '))" -ForegroundColor Gray
@@ -80,28 +109,99 @@ if ($stsExists) {
     if ($exitCode -ne 0) { Write-Warning "  Could not delete StatefulSet — upgrade may fail" }
 }
 
+# Storage-mode switch (standalone <-> ha): no in-place migration exists, so
+# force a fresh reinit — wipe PVC(s), the unseal-key Secret, and the state
+# file, then fall through to the normal "not yet initialized" path below.
+# PVC names come from the chart's volumeClaimTemplate and aren't hardcoded
+# here — discovered live, same dynamic-lookup approach Reset-RKE2.ps1
+# already uses for the same PVCs during a full teardown.
+if ($modeSwitch) {
+    Write-Host ""
+    Write-Warning "  Storage mode changing ($previousMode -> $requestedMode) — OpenBao has no in-place migration between file and Raft storage. Wiping existing data for a fresh reinit (PKIs/secrets stored in OpenBao will be lost)."
+    Write-Host ""
+
+    & kubectl delete pods -n $Namespace --all --force --grace-period=0 --request-timeout=10s 2>$null | Out-Null
+
+    $obaoPvcLines = & kubectl get pvc -n $Namespace --no-headers --request-timeout=5s 2>$null
+    foreach ($line in @($obaoPvcLines | Where-Object { $_ })) {
+        $pvcName = ($line -split '\s+')[0]
+        & kubectl delete pvc $pvcName -n $Namespace --wait=false --request-timeout=10s 2>$null | Out-Null
+        $pvcElapsed = 0
+        while ($pvcElapsed -lt 15) {
+            $pvcCheck = & kubectl get pvc $pvcName -n $Namespace --ignore-not-found --request-timeout=5s 2>$null
+            if (-not $pvcCheck) { break }
+            Start-Sleep -Seconds 3; $pvcElapsed += 3
+        }
+        if ($pvcElapsed -ge 15) {
+            Write-Warning "  PVC '$pvcName' still terminating after 15s — Helm's re-deploy may fail if it's not gone yet"
+        } else {
+            Write-GroupLine "✓ PVC '$pvcName' wiped" -ForegroundColor Yellow
+        }
+    }
+
+    & kubectl delete secret openbao-unseal-keys -n $Namespace --ignore-not-found --request-timeout=5s 2>$null | Out-Null
+    Remove-Item $StateFile -Force -ErrorAction SilentlyContinue
+    Write-GroupLine "✓ Unseal-key Secret and state file removed" -ForegroundColor Yellow
+}
+
 Complete-Group
 
 $storageClassLine = if ($UserConfig.StorageClass) { "    storageClass: $($UserConfig.StorageClass)" } else { "" }
 
-$HelmValues = @"
-server:
-  enabled: true
-  dev:
-    enabled: false
+# HA branch: Raft integrated storage across $HAReplicas pods. The chart
+# templates no peer-join logic of its own (verified against its own source —
+# no init container/postStart hook writes retry_join) so auto_join uses
+# go-discover's "k8s" provider to find sibling pods by label at runtime,
+# rather than hardcoding N static leader_api_addr entries. RBAC for this
+# (get/watch/list pods) is already granted by the chart's own
+# server-discovery-role.yaml whenever mode=ha, since
+# server.serviceAccount.serviceDiscovery.enabled defaults to true — no
+# extra Role/RoleBinding needed here.
+# Label selector matches this release's own server pods exactly (chart's
+# server-statefulset.yaml pod-template labels, release name "openbao"):
+# app.kubernetes.io/name=openbao,app.kubernetes.io/instance=openbao,component=server
+$modeYaml = if ($HAEnabled) {
+    @"
+  ha:
+    enabled: true
+    replicas: $HAReplicas
+    raft:
+      enabled: true
+      config: |
+        ui = true
+
+        listener "tcp" {
+          tls_disable = 1
+          address = "[::]:8200"
+          cluster_address = "[::]:8201"
+          telemetry {
+            unauthenticated_metrics_access = "true"
+          }
+        }
+        storage "raft" {
+          path = "/openbao/data"
+          retry_join {
+            # No spaces in the label_selector value (comma-separated), so it
+            # needs no inner quoting — go-discover's config parser splits
+            # this whole string on whitespace, and quoting an already
+            # space-free value would just risk being taken literally
+            # instead of stripped, depending on parser behavior not worth
+            # gambling on here.
+            auto_join = "provider=k8s namespace=$Namespace label_selector=app.kubernetes.io/name=openbao,app.kubernetes.io/instance=openbao,component=server"
+            auto_join_scheme = "http"
+            auto_join_port = 8200
+          }
+        }
+
+        telemetry {
+          prometheus_retention_time = "30s"
+          disable_hostname = true
+        }
+"@
+} else {
+    @"
   ha:
     enabled: false
-  dataStorage:
-    enabled: true
-    size: $($UserConfig.StorageSize)
-$storageClassLine
-  resources:
-    limits:
-      cpu: $($UserConfig.Resources.Limits.Cpu)
-      memory: $($UserConfig.Resources.Limits.Memory)
-    requests:
-      cpu: $($UserConfig.Resources.Requests.Cpu)
-      memory: $($UserConfig.Resources.Requests.Memory)
   standalone:
     config: |
       ui = true
@@ -122,6 +222,26 @@ $storageClassLine
         prometheus_retention_time = "30s"
         disable_hostname = true
       }
+"@
+}
+
+$HelmValues = @"
+server:
+  enabled: true
+  dev:
+    enabled: false
+$modeYaml
+  dataStorage:
+    enabled: true
+    size: $($UserConfig.StorageSize)
+$storageClassLine
+  resources:
+    limits:
+      cpu: $($UserConfig.Resources.Limits.Cpu)
+      memory: $($UserConfig.Resources.Limits.Memory)
+    requests:
+      cpu: $($UserConfig.Resources.Requests.Cpu)
+      memory: $($UserConfig.Resources.Requests.Memory)
 ui:
   enabled: true
 injector:
@@ -208,7 +328,7 @@ if (-not $baoStatus['initialized']) {
     $unsealKey  = $initResult['unseal_keys_b64'][0]
     $rootToken  = $initResult['root_token']
 
-    @{ UnsealKey = $unsealKey; RootToken = $rootToken } |
+    @{ UnsealKey = $unsealKey; RootToken = $rootToken; Mode = $requestedMode } |
         ConvertTo-Json | Set-Content -Path $StateFile -Encoding UTF8
     Write-GroupLine "✓ Initialized — state saved to $StateFile" -ForegroundColor Green
 
@@ -240,6 +360,57 @@ if ($baoStatus['sealed']) {
     Write-GroupLine "✓ Unsealed" -ForegroundColor Green
 } else {
     Write-GroupLine "✓ Already unsealed" -ForegroundColor Green
+}
+
+# ── 2b. Join + unseal remaining HA replicas ──────────────────────
+# retry_join/auto_join (go-discover "k8s" provider, configured above in
+# $modeYaml) joins each replica's Raft storage to the cluster automatically
+# at pod startup — no manual "bao operator raft join" needed here. What
+# auto-join does NOT do is unseal: every replica ships sealed and needs the
+# same Shamir key applied to it individually, same as pod-0 above.
+if ($HAEnabled) {
+    for ($i = 1; $i -lt $HAReplicas; $i++) {
+        $podName = "openbao-$i"
+
+        $exitCode = Invoke-WithSpinner -Message "Waiting for $podName..." -Executable "kubectl" `
+            -Arguments @("wait", "pod/$podName", "-n", $Namespace,
+                         "--for=jsonpath={.status.phase}=Running", "--timeout=5m") `
+            -ShowOutput:$verbose
+        if ($exitCode -ne 0) {
+            Write-Warning "  $podName did not start — check pod logs: kubectl logs $podName -n $Namespace"
+            continue
+        }
+
+        $peerStatus = Invoke-ScriptBlockWithSpinner -Message "Waiting for $podName listener..." -ShowElapsed `
+            -ArgumentList @($Namespace, $podName) -ScriptBlock {
+                param($Namespace, $podName)
+                $elapsed = 0
+                while ($elapsed -lt 60) {
+                    $raw = & kubectl exec $podName -n $Namespace -- bao status -format=json 2>$null
+                    $jsonStart = if ($raw) { $raw.IndexOf('{') } else { -1 }
+                    if ($jsonStart -ge 0) {
+                        $parsed = $raw.Substring($jsonStart) | ConvertFrom-Json -AsHashtable -ErrorAction SilentlyContinue
+                        if ($parsed) { return $parsed }
+                    }
+                    Start-Sleep -Seconds 3; $elapsed += 3
+                }
+                return $null
+            }
+
+        if (-not $peerStatus) {
+            Write-Warning "  $podName listener did not respond after 60s — check pod logs: kubectl logs $podName -n $Namespace"
+            continue
+        }
+
+        if ($peerStatus['sealed']) {
+            Invoke-WithSpinner -Message "Unsealing $podName..." -Executable "kubectl" `
+                -Arguments @("exec", $podName, "-n", $Namespace, "--",
+                             "bao", "operator", "unseal", $unsealKey) | Out-Null
+            Write-GroupLine "✓ $podName joined and unsealed" -ForegroundColor Green
+        } else {
+            Write-GroupLine "✓ $podName already unsealed" -ForegroundColor Green
+        }
+    }
 }
 
 Complete-Group
@@ -579,6 +750,19 @@ if ($pkiResults.Count -gt 0) {
 }
 
 # ── 6. Auto-Unsealer Deployment ───────────────────────────────────
+# Under standalone this is just the one pod, same as before. Under HA, the
+# load-balanced "openbao" ClusterIP Service round-robins across all 3 pods —
+# polling only it could keep landing on the already-unsealed replicas and
+# never notice a sealed one. Target each pod individually instead, via its
+# stable per-pod DNS name on the chart's headless "-internal" Service
+# (server-headless-service.yaml: name "{{ fullname }}-internal", resolves
+# to "openbao-internal" for this release), which unifies standalone/HA into
+# one address-list-driven loop rather than two separate code paths.
+$replicaCount = if ($HAEnabled) { $HAReplicas } else { 1 }
+$unsealAddrs  = (0..($replicaCount - 1) | ForEach-Object {
+    "http://openbao-$_.openbao-internal.$Namespace.svc.cluster.local:8200"
+}) -join " "
+
 $unsealerYaml = @"
 apiVersion: apps/v1
 kind: Deployment
@@ -602,14 +786,16 @@ spec:
         command: ["/bin/sh", "-c"]
         args:
         - |
-          BAO_ADDR=http://openbao.$($Namespace).svc.cluster.local:8200
+          ADDRS="$unsealAddrs"
           while true; do
-            CODE=`$(curl -s -o /dev/null -w "%{http_code}" `$BAO_ADDR/v1/sys/health 2>/dev/null || echo "000")
-            if [ "`$CODE" = "503" ]; then
-              KEY=`$(head -n1 /var/run/secrets/unseal/unseal-key)
-              curl -sf -X PUT `$BAO_ADDR/v1/sys/unseal -d "{\"key\":\"`$KEY\"}" -o /dev/null
-              echo "Unsealed OpenBao"
-            fi
+            for ADDR in `$ADDRS; do
+              CODE=`$(curl -s -o /dev/null -w "%{http_code}" `$ADDR/v1/sys/health 2>/dev/null || echo "000")
+              if [ "`$CODE" = "503" ]; then
+                KEY=`$(head -n1 /var/run/secrets/unseal/unseal-key)
+                curl -sf -X PUT `$ADDR/v1/sys/unseal -d "{\"key\":\"`$KEY\"}" -o /dev/null
+                echo "Unsealed `$ADDR"
+              fi
+            done
             sleep 30
           done
         resources:
@@ -625,7 +811,7 @@ spec:
           secretName: openbao-unseal-keys
 "@
 $unsealerYaml | & kubectl apply -f - 2>&1 | Out-Null
-if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Auto-unsealer deployed" -ForegroundColor Green }
+if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Auto-unsealer deployed ($replicaCount replica(s))" -ForegroundColor Green }
 
 # ── 7. Ingress ────────────────────────────────────────────────────
 # TLS terminates at the ingress (same convention as Grafana/Rancher/etc.) —
@@ -705,8 +891,10 @@ Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # Only the external-facing "http" port (8200) — 8201 is OpenBao's internal
-# cluster/Raft-replication port between its own pods, not something other
-# namespaces need to reach.
+# cluster port between its own pods (request forwarding under standalone;
+# under HA it also carries real Raft peer-to-peer replication traffic once
+# HAEnabled is set — see $modeYaml above), never something other
+# namespaces need to reach, so this stays unaffected by HA either way.
 $openbaoIngressPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "openbao" -ServicePortName "http"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $openbaoIngressPort
 # Consumer-side counterpart, missing until 2026-08-20 (confirmed live on

@@ -21,10 +21,26 @@
 #
 # All 4 alerts use raw `vault_*` metric names, not `up{job="..."}"` — no
 # job-label match caveat like this repo's cert-manager/traefik rules have.
-# None of these are Raft/HA-specific (no `vault_autopilot_*` or
-# `vault_raft_*` metrics used), so all 4 are fully live on this repo's
-# current single-node standalone deployment — nothing here goes dormant
-# when the separate, not-yet-built OpenBao HA commit lands.
+# None of these 4 are Raft/HA-specific — VaultClusterHealth's
+# sum(vault_core_active)/count(vault_core_active) is a no-op under
+# standalone (always evaluates to exactly 1, a single node is always its
+# own "active" member) and only starts actually testing anything once the
+# 2026-09-06 HA commit is deployed with 3 replicas.
+#
+# The 3 alerts below (VaultAutopilotUnhealthy, VaultRaftNodeUnhealthy,
+# VaultRaftPeerCountLow) were added with that same 2026-09-06 HA commit.
+# Metric names + types verified verbatim against OpenBao's own docs (not
+# samber/cloudducoeur, which predate HA support in this repo and don't
+# cover it): https://openbao.org/docs/internals/telemetry/metrics/raft/
+#   vault_autopilot_healthy      (gauge) "Indicates whether all nodes are healthy"
+#   vault_autopilot_node_healthy (gauge) "Indicates whether the active node is healthy"
+#   vault_raft_peers             (gauge) "The number of peers in the raft cluster configuration"
+# All three are Raft-only metrics — they simply don't exist as time series
+# under standalone mode (storage "file", no raft stanza), so these 3 alerts
+# stay silently dormant there rather than misfiring; only live once HA is
+# enabled. The "< 3" peer-count threshold is hardcoded rather than templated
+# because 33-openbao/Install.ps1 also hardcodes $HAReplicas=3 (no per-count
+# prompt exists) — revisit both together if that ever becomes configurable.
 #
 # `release: prometheus` required — this repo's kube-prometheus-stack leaves
 # ruleSelectorNilUsesHelmValues at its chart default (true). Applied
@@ -87,5 +103,44 @@ spec:
         description: >-
           Vault cluster is not healthy: only
           {{ $value | humanizePercentage }} of nodes are active.
+          VALUE = {{ $value }}
+          LABELS = {{ $labels }}
+    - alert: VaultAutopilotUnhealthy
+      expr: vault_autopilot_healthy == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Vault Raft cluster unhealthy per autopilot (instance {{ $labels.instance }})"
+        description: >-
+          Raft autopilot reports not all nodes are healthy on
+          {{ $labels.instance }}. Only present under HA (storage "raft");
+          check `bao operator raft list-peers` / pod logs for the affected
+          replica.
+          VALUE = {{ $value }}
+          LABELS = {{ $labels }}
+    - alert: VaultRaftNodeUnhealthy
+      expr: vault_autopilot_node_healthy == 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Vault Raft active node unhealthy (instance {{ $labels.instance }})"
+        description: >-
+          Raft autopilot reports the active node is unhealthy on
+          {{ $labels.instance }}. Only present under HA (storage "raft").
+          VALUE = {{ $value }}
+          LABELS = {{ $labels }}
+    - alert: VaultRaftPeerCountLow
+      expr: vault_raft_peers < 3
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Vault Raft cluster has too few peers (instance {{ $labels.instance }})"
+        description: >-
+          Raft cluster configuration on {{ $labels.instance }} reports only
+          {{ $value }} peers, below the expected 3-replica HA quorum. A node
+          may be down or has failed to (re)join the cluster.
           VALUE = {{ $value }}
           LABELS = {{ $labels }}

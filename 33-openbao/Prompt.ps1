@@ -323,6 +323,13 @@ if ($pkis.Count -eq 0) {
 }
 } while ($restartPkiLoop)  # outer do-while: re-runs the management loop if user goes back
 
+# ── High Availability ─────────────────────────────────────────────
+$haEnabled = Read-YesNo `
+    -Title "Enable High Availability (Raft, 3 replicas)?" `
+    -DefaultYes $false `
+    -ContextTitle "Security/OpenBao — $Platform" `
+    -ContextHint "Switches storage from single-node file to Raft integrated storage across 3 pods. Switching modes on an existing install wipes and reinitializes OpenBao (fresh unseal keys/root token; PKIs/secrets are lost) — no in-place migration."
+
 # ── OpenBao hostname ──────────────────────────────────────────────
 $defaultHostname = "vault.$Domain"
 $hostname = Read-Plain `
@@ -336,7 +343,8 @@ $hostname = Read-Plain `
     })
 
 return @{
-    Hostname = $hostname.Trim()
-    Domain   = $Domain
-    PKIs     = @($pkis | ForEach-Object { [hashtable]$_ })
+    Hostname  = $hostname.Trim()
+    Domain    = $Domain
+    PKIs      = @($pkis | ForEach-Object { [hashtable]$_ })
+    HAEnabled = $haEnabled
 }
