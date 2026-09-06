@@ -1036,7 +1036,15 @@ function Start-Installation {
     # it. Get-PreinstalledGroups prints its own ✓/- line per group as each
     # check completes (see InstallerFunctions.psm1), so nothing more to print
     # here.
-    $preinstalledGroups = Get-PreinstalledGroups -Platform $platform
+    #
+    # Temporarily short-circuited (user request 2026-09-05): each group check
+    # shells out to helm status per member, which adds ~25-30s to every
+    # re-run while iterating on installer changes. Falling back to an empty
+    # set reproduces pre-feature behavior (every mandatory group stays
+    # locked/checked) rather than skipping anything silently. Restore the
+    # call below once this round of testing settles.
+    $preinstalledGroups = [System.Collections.Generic.HashSet[string]]::new()
+    # $preinstalledGroups = Get-PreinstalledGroups -Platform $platform
 
     Write-Host "`nCluster environment ready for $platform." -ForegroundColor Green
     Start-Sleep -Seconds 1
@@ -1164,15 +1172,22 @@ function Start-Installation {
     # rather than silently always-on. Already-installed ones are the one
     # exception: still shown, but unlocked and unchecked by default, so a
     # re-run testing a later group doesn't force reinstalling them too.
+    #
+    # Temporarily disabled (user request 2026-09-05): locking these forced
+    # every mandatory group into the same install run, which stood in the
+    # way of testing one group at a time. Leaving $disabledGroups empty
+    # unlocks every checkbox, mandatory or not, so any single group can be
+    # selected/deselected on its own. Restore the block below once this
+    # round of group-by-group testing settles.
     $disabledGroups = @{}
-    if (-not $preinstalledGroups.Contains("Ingress & Load Balancing")) { $disabledGroups[$ingressLabel] = $true }
-    if (-not $preinstalledGroups.Contains("Network Segmentation"))     { $disabledGroups[$networkPolLabel] = $true }
-    if (-not $preinstalledGroups.Contains("Security & Certificates"))  { $disabledGroups[$securityLabel] = $true }
-    if (-not $preinstalledGroups.Contains("Configuration Management")) { $disabledGroups[$configMgmtLabel] = $true }
-    if ($platform -eq "RKE2 (On-Premise)" -and -not $preinstalledGroups.Contains("Storage (Longhorn)")) {
-        $disabledGroups[$storageLabel] = $true
-    }
-    $disabledGroups["95 - Network Policy Safety Net"] = $true
+    # if (-not $preinstalledGroups.Contains("Ingress & Load Balancing")) { $disabledGroups[$ingressLabel] = $true }
+    # if (-not $preinstalledGroups.Contains("Network Segmentation"))     { $disabledGroups[$networkPolLabel] = $true }
+    # if (-not $preinstalledGroups.Contains("Security & Certificates"))  { $disabledGroups[$securityLabel] = $true }
+    # if (-not $preinstalledGroups.Contains("Configuration Management")) { $disabledGroups[$configMgmtLabel] = $true }
+    # if ($platform -eq "RKE2 (On-Premise)" -and -not $preinstalledGroups.Contains("Storage (Longhorn)")) {
+    #     $disabledGroups[$storageLabel] = $true
+    # }
+    # $disabledGroups["95 - Network Policy Safety Net"] = $true
 
     $selectedComponentGroups = Read-MultiSelectValues `
         -Title "Select Optional Component Groups" `
