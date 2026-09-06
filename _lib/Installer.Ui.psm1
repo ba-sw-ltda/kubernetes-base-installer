@@ -700,6 +700,7 @@ $__exportFunctions = @(
   'Unregister-PortalEntry'
   'Resolve-PendingPortalEntries'
   'Register-GrafanaDashboard'
+  'Register-PrometheusRule'
   'Read-ComponentSelectionScreen'
   'Install-NetworkPolicyBaseline'
   'Resolve-ServiceRealPorts'
