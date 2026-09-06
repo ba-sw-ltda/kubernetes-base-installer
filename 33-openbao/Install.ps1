@@ -650,8 +650,16 @@ Complete-Group
 
 # Two separate groups instead of one catch-all "Housekeeping" — see
 # 11-ingress-traefik/Install.ps1 for why (2026-09-05). No "Monitoring" group
-# here yet — OpenBao has no Grafana dashboard or Prometheus alerting rules
-# registered today (separate gap, not this pass).
+# here — OpenBao has no Grafana dashboard, and no usable Prometheus
+# alerting rules exist to vendor either: the monitoring.mixins.dev Vault
+# mixin (github.com/grafana/jsonnet-libs/vault-mixin) turned out to be
+# dashboard-only — its mixin.libsonnet imports no alerts.libsonnet and its
+# generated prometheus_alerts.yaml is empty; the openbao-helm chart's own
+# values.yaml ships two commented-out "example" rules that duplicate the
+# same alert name and rely on an unverified quantile-labeled metric, not a
+# maintained rule set; samber/awesome-prometheus-alerts has no Vault/
+# OpenBao section either — nothing usable to wire, deliberately left as-is
+# (2026-09-06).
 if ($FullConfig.RancherProject) {
     Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject

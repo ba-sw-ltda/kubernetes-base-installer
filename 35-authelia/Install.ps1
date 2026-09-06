@@ -374,8 +374,12 @@ Complete-Group
 
 # Two separate groups instead of one catch-all "Housekeeping" — see
 # 11-ingress-traefik/Install.ps1 for why (2026-09-05). No "Monitoring" group
-# here yet — Authelia has no Grafana dashboard or Prometheus alerting rules
-# registered today (separate gap, not this pass).
+# here — Authelia has no Grafana dashboard, and no usable Prometheus
+# alerting rules exist to vendor either: checked monitoring.mixins.dev (no
+# Authelia mixin), samber/awesome-prometheus-alerts (not one of its listed
+# services), and Authelia's own metrics docs (lists metric names only, no
+# example alert rules) — nothing to wire, deliberately left as-is
+# (2026-09-06).
 if ($FullConfig.RancherProject) {
     Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
