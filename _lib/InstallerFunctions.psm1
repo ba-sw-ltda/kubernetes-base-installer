@@ -136,4 +136,11 @@ function Get-PreinstalledGroups {
     return ,$installed
 }
 
-Export-ModuleMember -Function Test-CommandExists, Install-Kubectl, Install-Helm, Install-RancherCli, Install-PlatformTools, Initialize-Rke2Cluster, Initialize-ClusterEnvironment, Update-HostsFile, Get-AksIngressIp, Get-EksIngressIp, Confirm-KubectlContext, Reset-StuckHelmRelease, Get-IngressClass, Set-RancherProjectAssignment, Resolve-PendingRancherProjectAssignments, Get-PreinstalledGroups, Get-PortalIconDataUri, Test-Rke2SecretsEncryptionStatus, Test-Rke2AuditLoggingStatus, Get-Rke2ServerNodes, Enable-Rke2SecretsEncryption, Enable-Rke2AuditLogging
+# Wildcard on purpose: this module wraps PowerShellClusterBootstrap (imported
+# above) plus Get-PreinstalledGroups defined locally in this file. A
+# hand-curated allowlist here has to be kept in sync by hand every time a
+# function is added upstream, which repeatedly got forgotten and broke
+# Install.ps1 scripts with "term not recognized" errors. The nested module
+# already curates its own public surface via its .psd1 FunctionsToExport, so
+# re-curating it here added no safety, only drift.
+Export-ModuleMember -Function *
