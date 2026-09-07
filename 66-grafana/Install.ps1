@@ -568,6 +568,10 @@ Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $grafanaPort
 # Safe because 11-ingress-* always applies its own baseline before any later
 # component (numeric order 11 < 66) gets here.
 Set-NetworkPolicyConsumerEgress -Namespace $ingressNamespace -TargetNamespace $Namespace -Port $grafanaPort
+# Self-register Grafana as a Prometheus scrape target too (it exposes its
+# own /metrics) instead of Prometheus enumerating every ServiceMonitor'd
+# namespace centrally (compliance finding #1 fix).
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port $grafanaPort
 $prometheusPort = Resolve-ServiceRealPorts -Namespace "prometheus" -ServiceName "prometheus-kube-prometheus-prometheus" -ServicePortName "http-web"
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "prometheus" -Port $prometheusPort
 $lokiPort = Resolve-ServiceRealPorts -Namespace "loki" -ServiceName "loki" -ServicePortName "http-metrics"
