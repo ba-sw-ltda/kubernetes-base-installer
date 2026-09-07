@@ -51,6 +51,8 @@ Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
 Write-Host "  Bucket:     $BucketName" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 # ── Credentials — generate once, persist in Vault, reuse on re-install ──
 # Root creds: full MinIO admin access, used only by this script to provision
 # the scoped Velero user below — never handed to Velero itself.
@@ -90,13 +92,15 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
 if ($CreateNamespace) {
     & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-    Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+    Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 }
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 # Pre-flight: if the MinIO pod is not Running, clean up stale Longhorn attachment
 # state that blocks a Longhorn volume from leaving creating/attaching/faulted state.
@@ -114,19 +118,19 @@ if ($minioPodPhase -ne 'Running') {
                     Where-Object { $_.spec.volume -eq $pvName -and $_.status.readyToUse -eq $false }
             } catch { @() }
             foreach ($snap in @($lhSnapshots)) {
-                Write-Host "  ⚠ Removing stuck Longhorn Snapshot '$($snap.metadata.name)'..." -ForegroundColor Yellow
+                Write-GroupLine "⚠ Removing stuck Longhorn Snapshot '$($snap.metadata.name)'..." -ForegroundColor Yellow
                 & kubectl delete snapshot.longhorn.io $snap.metadata.name -n longhorn-system 2>$null | Out-Null
             }
 
             & kubectl get volumeattachment.longhorn.io $pvName -n longhorn-system 2>$null | Out-Null
             if ($LASTEXITCODE -eq 0) {
-                Write-Host "  ⚠ Removing stuck Longhorn VolumeAttachment for '$pvName'..." -ForegroundColor Yellow
+                Write-GroupLine "⚠ Removing stuck Longhorn VolumeAttachment for '$pvName'..." -ForegroundColor Yellow
                 & kubectl delete volumeattachment.longhorn.io $pvName -n longhorn-system 2>$null | Out-Null
             }
 
             $allVas = try { (& kubectl get volumeattachment -o json 2>$null | ConvertFrom-Json).items } catch { @() }
             foreach ($va in @($allVas | Where-Object { $_.spec.source.persistentVolumeName -eq $pvName })) {
-                Write-Host "  ⚠ Removing stuck K8s VolumeAttachment for '$pvName'..." -ForegroundColor Yellow
+                Write-GroupLine "⚠ Removing stuck K8s VolumeAttachment for '$pvName'..." -ForegroundColor Yellow
                 & kubectl delete volumeattachment $va.metadata.name 2>$null | Out-Null
             }
 
@@ -137,7 +141,7 @@ if ($minioPodPhase -ne 'Running') {
                 $volState       = $lhVol.status.state
                 if ($actualSize -eq 0 -and (-not $lastDegradedAt -or $lastDegradedAt -eq '') -and
                     $volState -in @('creating', 'attaching', 'detached', 'faulted')) {
-                    Write-Host "  ⚠ Longhorn volume '$pvName' has never held data (state=$volState) — deleting PVC for fresh provisioning..." -ForegroundColor Yellow
+                    Write-GroupLine "⚠ Longhorn volume '$pvName' has never held data (state=$volState) — deleting PVC for fresh provisioning..." -ForegroundColor Yellow
                     & kubectl delete pvc minio -n $Namespace 2>$null | Out-Null
                     Start-Sleep -Seconds 5
                 }
@@ -191,13 +195,14 @@ $exitCode = Invoke-WithSpinner -Message "Deploying MinIO..." -Executable "helm" 
     -Arguments $HelmArgs -ShowOutput:$verbose
 Remove-Item $tempMinioValues -Force -ErrorAction SilentlyContinue
 if ($exitCode -ne 0) { Write-Error "Failed to deploy MinIO (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for rollout..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/minio", "-n", $Namespace, "--timeout=5m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout did not complete — check cluster state"; exit 1 }
-Write-Host "  ✓ Rollout complete" -ForegroundColor Green
+
+Complete-Group
+Start-Group -Title "Provisioning"
 
 # ── Scoped Velero user + bucket-restricted policy — throwaway pod runs mc,
 # the tool's own CLI, same idiom as Get-HtpasswdHash/Get-AutheliaSecretHash ──
@@ -211,22 +216,42 @@ $mcScript = "mc alias set target http://minio.$Namespace.svc.cluster.local:9000 
 
 $podName = "minio-mc-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 & kubectl run $podName -n $Namespace --rm -i --restart=Never --quiet `
-    --image=minio/mc:latest --command -- sh -c $mcScript 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+    --image=minio/mc:latest --command -- sh -c $mcScript 2>&1 | ForEach-Object { Write-GroupLine "$_" -ForegroundColor DarkGray }
 if ($LASTEXITCODE -ne 0) {
     Write-Warning "  ⚠ Could not provision the scoped Velero MinIO user — check manually with 'mc admin user list'"
 } else {
-    Write-Host "  ✓ Velero user scoped to bucket '$BucketName'" -ForegroundColor Green
+    Write-GroupLine "✓ Velero user scoped to bucket '$BucketName'" -ForegroundColor Green
 }
 
+Complete-Group
+
+# Three separate groups instead of one catch-all "Housekeeping" — see
+# 11-ingress-traefik/Install.ps1 and 21-longhorn/Install.ps1 for why.
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
+# Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
+# Grafana's dashboard sidecar (see 66-grafana/Install.ps1 sidecar.dashboards.*
+# Helm flags). Order-independent, no NetworkPolicy involved — same pattern as
+# 21-longhorn/Install.ps1. Register-GrafanaDashboard prints its own
+# "✓ ... registered" confirmation line — nothing more to print here.
+Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "minio" -JsonPath "$ScriptRoot\dashboards\minio.json" -Folder "Storage"
+Complete-Group
+
+Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
+# Same Service/port serves both the S3 API and the metrics endpoint
+# (/minio/v2/metrics/cluster) — no separate metrics port to resolve.
 $minioPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "minio"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $minioPort
+
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
