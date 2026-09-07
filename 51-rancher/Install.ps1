@@ -207,6 +207,26 @@ Invoke-WithSpinner -Message "Configuring server URL..." -Executable "kubectl" `
                  "--type", "merge", "-p", "{`"value`":`"https://$Hostname`"}") | Out-Null
 Write-GroupLine "✓ Server URL configured (https://$Hostname)" -ForegroundColor Green
 
+# Rename the local break-glass admin so its username doesn't collide with
+# Authelia's own 'admin' account — two different auth systems sharing the
+# same login name is a mixup/phishing risk. Idempotent: skip if a user
+# named 'rancher-admin' already exists (previous run already renamed it).
+$rancherUsers = & kubectl get users.management.cattle.io -o json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+$alreadyRenamed = $rancherUsers.items | Where-Object { $_.username -eq "rancher-admin" }
+if (-not $alreadyRenamed) {
+    $bootstrapUser = $rancherUsers.items | Where-Object { $_.username -eq "admin" } | Select-Object -First 1
+    if ($bootstrapUser) {
+        Invoke-WithSpinner -Message "Renaming local admin to 'rancher-admin'..." -Executable "kubectl" `
+            -Arguments @("patch", "users.management.cattle.io", $bootstrapUser.metadata.name,
+                         "--type", "merge", "-p", "{`"username`":`"rancher-admin`"}") | Out-Null
+        Write-GroupLine "✓ Local admin renamed to 'rancher-admin' (avoids clash with Authelia's 'admin')" -ForegroundColor Green
+    } else {
+        Write-GroupLine "! Could not find local 'admin' user to rename" -ForegroundColor Yellow
+    }
+} else {
+    Write-GroupLine "✓ Local admin already renamed to 'rancher-admin'" -ForegroundColor Green
+}
+
 Complete-Group
 
 Start-Group "Single sign-on (Authelia)"
@@ -399,12 +419,13 @@ Write-Host "  Access:  https://$Hostname" -ForegroundColor Yellow
 if ($oidc) {
     Write-Host "  Login:   Single Sign-On via Authelia (admin/<your Authelia password>)" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  A local 'admin' bootstrap account also exists as a break-glass" -ForegroundColor Gray
-    Write-Host "  fallback for first login — normal day-to-day login is via Authelia" -ForegroundColor Gray
-    Write-Host "  above:" -ForegroundColor Gray
-    Write-Host "    admin / $BootstrapPassword" -ForegroundColor Yellow
+    Write-Host "  A local 'rancher-admin' bootstrap account also exists as a break-glass" -ForegroundColor Gray
+    Write-Host "  fallback for first login (renamed from 'admin' to avoid clashing with" -ForegroundColor Gray
+    Write-Host "  Authelia's own 'admin' account) — normal day-to-day login is via" -ForegroundColor Gray
+    Write-Host "  Authelia above:" -ForegroundColor Gray
+    Write-Host "    rancher-admin / $BootstrapPassword" -ForegroundColor Yellow
 } else {
-    Write-Host "  Login:   admin / $BootstrapPassword" -ForegroundColor Yellow
+    Write-Host "  Login:   rancher-admin / $BootstrapPassword" -ForegroundColor Yellow
 }
 Write-Host ""
 if ($secretsBackendInstalled) {
