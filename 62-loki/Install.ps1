@@ -38,13 +38,43 @@ Write-Host "  Retention:  $($UserConfig.Retention)" -ForegroundColor Gray
 Write-Host "  Storage:    $($UserConfig.StorageSize)" -ForegroundColor Gray
 Write-Host ""
 
-& kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-Write-Host "  ✓ Namespace ready" -ForegroundColor Green
-
 Import-Module "$BaseDir\_lib\InstallerFunctions.psm1" -Force -Verbose:$false
 
-Reset-StuckHelmRelease -ReleaseName "loki" -Namespace $Namespace
+Start-Group -Title "Preparation"
+
+& kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
+Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
+
+$exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
+    -Arguments @("repo", "add", "grafana", $Repository, "--force-update") -ShowOutput:$verbose
+if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
+
+$exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
+    -Arguments @("repo", "update") -ShowOutput:$verbose
+if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
+
+# Pull proxy Secret via Reflector if proxy-config exists
+& kubectl get secret proxy-config -n proxy-config 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    $reflectedSecret = @"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: proxy-config
+  namespace: $Namespace
+  annotations:
+    reflector.v1.k8s.emberstack.com/reflects: "proxy-config/proxy-config"
+type: Opaque
+"@
+    $reflectedSecret | & kubectl apply -f - 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-GroupLine "✓ Proxy Secret reflected into $Namespace" -ForegroundColor Green
+    }
+}
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 # Pre-flight: if the Loki pod is not Running, clean up stale attachment state that
 # blocks Longhorn from advancing a volume out of creating/attaching state.
@@ -68,21 +98,21 @@ if ($lokiPhase -ne 'Running') {
                 Where-Object { $_.spec.volume -eq $pvName -and $_.status.readyToUse -eq $false }
         } catch { @() }
         foreach ($snap in @($lhSnapshots)) {
-            Write-Host "  ⚠ Removing stuck Longhorn Snapshot '$($snap.metadata.name)' for PV '$pvName'..." -ForegroundColor Yellow
+            Write-GroupLine "⚠ Removing stuck Longhorn Snapshot '$($snap.metadata.name)' for PV '$pvName'..." -ForegroundColor Yellow
             & kubectl delete snapshot.longhorn.io $snap.metadata.name -n longhorn-system 2>$null | Out-Null
         }
 
         # 2. Longhorn VolumeAttachment CRD in longhorn-system
         & kubectl get volumeattachment.longhorn.io $pvName -n longhorn-system 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "  ⚠ Removing stuck Longhorn VolumeAttachment for PV '$pvName'..." -ForegroundColor Yellow
+            Write-GroupLine "⚠ Removing stuck Longhorn VolumeAttachment for PV '$pvName'..." -ForegroundColor Yellow
             & kubectl delete volumeattachment.longhorn.io $pvName -n longhorn-system 2>$null | Out-Null
         }
 
         # 3. K8s cluster-scoped VolumeAttachments
         $allVas = try { (& kubectl get volumeattachment -o json 2>$null | ConvertFrom-Json).items } catch { @() }
         foreach ($va in @($allVas | Where-Object { $_.spec.source.persistentVolumeName -eq $pvName })) {
-            Write-Host "  ⚠ Removing stuck K8s VolumeAttachment for PV '$pvName' (was on $($va.spec.nodeName))..." -ForegroundColor Yellow
+            Write-GroupLine "⚠ Removing stuck K8s VolumeAttachment for PV '$pvName' (was on $($va.spec.nodeName))..." -ForegroundColor Yellow
             & kubectl delete volumeattachment $va.metadata.name 2>$null | Out-Null
         }
 
@@ -95,8 +125,8 @@ if ($lokiPhase -ne 'Running') {
             $volState       = $lhVol.status.state
             if ($actualSize -eq 0 -and (-not $lastDegradedAt -or $lastDegradedAt -eq '') -and
                 $volState -in @('creating', 'attaching', 'detached')) {
-                Write-Host "  ⚠ Longhorn volume '$pvName' has never held data (actualSize=0, state=$volState)." -ForegroundColor Yellow
-                Write-Host "    Deleting PVC '$pvcName' so the StatefulSet can provision a fresh volume..." -ForegroundColor Yellow
+                Write-GroupLine "⚠ Longhorn volume '$pvName' has never held data (actualSize=0, state=$volState)." -ForegroundColor Yellow
+                Write-GroupLine "  Deleting PVC '$pvcName' so the StatefulSet can provision a fresh volume..." -ForegroundColor Yellow
                 & kubectl delete pvc $pvcName -n $Namespace 2>$null | Out-Null
                 # Give K8s a moment to recreate the PVC before Helm install proceeds
                 Start-Sleep -Seconds 5
@@ -105,33 +135,7 @@ if ($lokiPhase -ne 'Running') {
     }
 }
 
-$exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
-    -Arguments @("repo", "add", "grafana", $Repository, "--force-update") -ShowOutput:$verbose
-if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
-
-$exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
-    -Arguments @("repo", "update") -ShowOutput:$verbose
-if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
-
-# Pull proxy Secret via Reflector if proxy-config exists
-& kubectl get secret proxy-config -n proxy-config 2>&1 | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    $reflectedSecret = @"
-apiVersion: v1
-kind: Secret
-metadata:
-  name: proxy-config
-  namespace: $Namespace
-  annotations:
-    reflector.v1.k8s.emberstack.com/reflects: "proxy-config/proxy-config"
-type: Opaque
-"@
-    $reflectedSecret | & kubectl apply -f - 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✓ Proxy Secret reflected into $Namespace" -ForegroundColor Green
-    }
-}
+Reset-StuckHelmRelease -ReleaseName "loki" -Namespace $Namespace
 
 $isSingleBinary = $UserConfig.DeploymentMode -eq "SingleBinary"
 
@@ -180,7 +184,6 @@ $HelmArgs = @(
 $exitCode = Invoke-WithSpinner -Message "Deploying Loki..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Loki (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 if ($isSingleBinary) {
     $exitCode = Invoke-WithSpinner -Message "Waiting for loki (up to 10m)..." -Executable "kubectl" `
@@ -208,19 +211,26 @@ if ($isSingleBinary) {
         -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Rollout of loki-read did not complete"; exit 1 }
 }
-Write-Host "  ✓ Loki ready" -ForegroundColor Green
 
-if ($verbose) {
-    Write-Host ""
-    & kubectl get pods -n $Namespace
-}
+Complete-Group
 
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
+# Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
+# Grafana's dashboard sidecar (see 66-grafana/Install.ps1 sidecar.dashboards.*
+# Helm flags). Order-independent, no NetworkPolicy involved — same pattern as
+# 11-ingress-traefik/Install.ps1. Register-GrafanaDashboard prints its own
+# "✓ ... registered" confirmation line — nothing more to print here.
+Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "loki" -JsonPath "$ScriptRoot\dashboards\loki.json" -Folder "Observability"
+Complete-Group
 
+Start-Group -Title "Network Policy"
 Install-NetworkPolicyBaseline -Namespace $Namespace
 $lokiIngressPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "loki" -ServicePortName "http-metrics"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $lokiIngressPort
@@ -228,6 +238,12 @@ Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $lokiIngressPort
 # enumerating every ServiceMonitor'd namespace centrally (compliance finding
 # #1 fix).
 Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port $lokiIngressPort
+Complete-Group
+
+if ($verbose) {
+    Write-Host ""
+    & kubectl get pods -n $Namespace
+}
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
