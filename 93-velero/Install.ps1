@@ -283,12 +283,14 @@ Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "minio" -
 # Metrics scrape port (velero:8085/metrics), bundled separately since
 # Velero previously had no provider-ingress rule of its own — only the
 # consumer-egress rule above (toward MinIO, for the backup target).
-# Label-gated on the network.k8s/allow-$Namespace consumer contract, inert
-# until `prometheus` is labeled as a consumer, same deliberate gap as
-# 21-longhorn/Install.ps1.
 $veleroMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "velero" -ServicePortName "http-monitoring"
 if (-not $veleroMetricsPort) { $veleroMetricsPort = @(8085) }
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $veleroMetricsPort
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix). If `prometheus` doesn't exist yet, this parks a pending marker
+# that 61-prometheus/Install.ps1 resolves once it does.
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port $veleroMetricsPort
 
 Complete-Group
 
