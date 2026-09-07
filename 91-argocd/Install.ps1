@@ -44,6 +44,8 @@ Write-Host "  Service:    $serviceType  |  CPU: $($UserConfig.Resources.Limits.C
 if ($Hostname) { Write-Host "  Hostname:   $Hostname" -ForegroundColor Gray }
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "argo", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
@@ -51,12 +53,11 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
 if ($CreateNamespace) {
     & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-    Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+    Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 }
 
 # Pull proxy Secret from proxy-config namespace via Reflector (only when proxy-config source exists)
@@ -74,9 +75,12 @@ type: Opaque
 "@
     $reflectedSecret | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✓ Proxy Secret reflected into $Namespace" -ForegroundColor Green
+        Write-GroupLine "✓ Proxy Secret reflected into $Namespace" -ForegroundColor Green
     }
 }
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 $issuerName    = Get-ClusterIssuerName -Platform $Platform -BaseDir $BaseDir
 $tlsSecretName = if ($Hostname) { "argocd-$($Hostname -replace '\.', '-')-tls" } else { "" }
@@ -131,7 +135,6 @@ Reset-StuckHelmRelease -ReleaseName "argocd" -Namespace $Namespace
 $exitCode = Invoke-WithSpinner -Message "Deploying ArgoCD..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy ArgoCD (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $deployments = @("argocd-server", "argocd-repo-server", "argocd-applicationset-controller", "argocd-notifications-controller")
 foreach ($dep in $deployments) {
@@ -139,8 +142,10 @@ foreach ($dep in $deployments) {
         -Arguments @("rollout", "status", "deployment/$dep", "-n", $Namespace, "--timeout=10m") `
         -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Rollout of $dep did not complete — check cluster state"; exit 1 }
-    Write-Host "  ✓ $dep ready" -ForegroundColor Green
 }
+
+Complete-Group
+Start-Group -Title "Single sign-on (Authelia)"
 
 # ── OIDC: register ArgoCD as Authelia client, patch argocd-cm / argocd-secret ─
 $oidcConfig = $null
@@ -174,11 +179,11 @@ if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
                     if ($caCert) {
                         $indentedCert = ($caCert -split "`r?`n" | Where-Object { $_ } | ForEach-Object { "    $_" }) -join "`n"
                         $rootCaYaml   = "`nrootCA: |`n$indentedCert"
-                        Write-Host "  ✓ OpenBao root CA trusted by ArgoCD OIDC ($caMount)" -ForegroundColor Green
+                        Write-GroupLine "✓ OpenBao root CA trusted by ArgoCD OIDC ($caMount)" -ForegroundColor Green
                     }
                 }
             } else {
-                Write-Host "  · Default PKI isn't a self-signed Root CA — skipping CA-trust workaround" -ForegroundColor DarkGray
+                Write-GroupLine "· Default PKI isn't a self-signed Root CA — skipping CA-trust workaround" -ForegroundColor DarkGray
             }
 
             # $oidc.clientSecret is ArgoCD's own template reference to argocd-secret, not a PS variable
@@ -192,7 +197,7 @@ if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
                 "scopes"         = "[groups, email]"
             }} | ConvertTo-Json -Compress -Depth 5
             & kubectl patch configmap argocd-rbac-cm -n $Namespace --type merge -p $rbacPatch 2>&1 | Out-Null
-            Write-Host "  ✓ Authelia OIDC registered" -ForegroundColor Green
+            Write-GroupLine "✓ Authelia OIDC registered" -ForegroundColor Green
 
             # argocd-server itself calls Authelia's OIDC discovery/token endpoints over
             # the same public hostname browsers use — cluster DNS must resolve it to
@@ -213,7 +218,7 @@ if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
                     $hostAliasPatch = "{`"spec`":{`"template`":{`"spec`":{`"hostAliases`":[{`"ip`":`"$traefikClusterIp`",`"hostnames`":[`"$autheliaHost`"]}]}}}}"
                     & kubectl patch deployment argocd-server -n $Namespace --type merge -p $hostAliasPatch 2>&1 | Out-Null
                     if ($LASTEXITCODE -eq 0) {
-                        Write-Host "  ✓ argocd-server pod resolves $autheliaHost internally (hostAliases -> $traefikClusterIp)" -ForegroundColor Green
+                        Write-GroupLine "✓ argocd-server pod resolves $autheliaHost internally (hostAliases -> $traefikClusterIp)" -ForegroundColor Green
                     } else {
                         Write-Warning "Could not patch argocd-server's Deployment with a hostAliases entry for $autheliaHost — ArgoCD's OIDC calls to Authelia may fail with a DNS lookup error."
                     }
@@ -221,7 +226,7 @@ if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
                     Write-Warning "Could not resolve Traefik's ClusterIP in the 'ingress' namespace — skipping the hostAliases entry for $autheliaHost. If the cluster's DNS can't resolve this hostname on its own (e.g. a synthetic domain that only exists in a client's hosts file), ArgoCD's OIDC calls to Authelia will fail with a DNS lookup error."
                 }
             } else {
-                Write-Host "  · $autheliaHost already resolves correctly from inside the cluster — skipping hostAliases workaround" -ForegroundColor DarkGray
+                Write-GroupLine "· $autheliaHost already resolves correctly from inside the cluster — skipping hostAliases workaround" -ForegroundColor DarkGray
             }
 
             $exitCode = Invoke-WithSpinner -Message "Restarting argocd-server for OIDC..." -Executable "kubectl" `
@@ -229,10 +234,12 @@ if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
             $exitCode = Invoke-WithSpinner -Message "Waiting for argocd-server restart..." -Executable "kubectl" `
                 -Arguments @("rollout", "status", "deployment/argocd-server", "-n", $Namespace, "--timeout=3m") -ShowOutput:$verbose
             if ($exitCode -ne 0) { Write-Warning "  ⚠ argocd-server restart timed out — OIDC may not be active yet" }
-            else { Write-Host "  ✓ argocd-server restarted" -ForegroundColor Green }
         }
     }
 }
+
+Complete-Group
+Start-Group -Title "Ingress & Portal"
 
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
     $issuerAnnotation = if ($issuerName) { "`n    cert-manager.io/cluster-issuer: $issuerName" } else { "" }
@@ -265,27 +272,48 @@ ${tlsBlock}  rules:
 "@
     $applyOut = $ingressYaml | & kubectl apply -f - 2>&1
     if ($LASTEXITCODE -ne 0) {
-        foreach ($line in $applyOut) { Write-Host $line -ForegroundColor Red }
+        foreach ($line in $applyOut) { Write-GroupLine "$line" -ForegroundColor Red }
         Write-Error "Failed to create ArgoCD Ingress"; exit 1
     }
-    Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green
+    Write-GroupLine "✓ Ingress configured ($Hostname)" -ForegroundColor Green
+}
+
+$scheme = if ($issuerName -and $Hostname) { "https" } else { "http" }
+if ($Hostname) {
+    $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
+    Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" -Category "Utilities" `
+        -Namespace $Namespace -Subtitle $FullConfig.PortalSubtitle -Order 91 `
+        -InternalUrl "http://argocd-server.argocd.svc.cluster.local" `
+        -LogoUrl $portalIcon
 }
 
 if ($verbose) {
-    Write-Host ""
+    Write-GroupLine ""
     & kubectl get pods -n $Namespace
 }
 
+Complete-Group
+
+# Three separate groups instead of one catch-all "Housekeeping" — see
+# 11-ingress-traefik/Install.ps1 and 21-longhorn/Install.ps1 for why.
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
 # Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
 # Grafana's dashboard sidecar (see 66-grafana/Install.ps1 sidecar.dashboards.*
 # Helm flags). Order-independent, no NetworkPolicy involved — same pattern as
-# 21-longhorn/Install.ps1.
+# 21-longhorn/Install.ps1. Register-GrafanaDashboard prints its own
+# "✓ ... registered" confirmation line — nothing more to print here.
+Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "argocd" `
     -JsonPath "$ScriptRoot\dashboards\argocd.json" -Folder "CI/CD"
+Complete-Group
+
+Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # NetworkPolicy `ports` matches the pod's real destination port after the
@@ -300,9 +328,7 @@ $argocdPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "argoc
 # own), created once controller.metrics.enabled is on above. Bundled into the
 # same provider-ingress rule as argocd-server's http port rather than a
 # separate call, mirroring how every other component in this rollout adds its
-# metrics port. `prometheus` is labeled as a consumer of this namespace by
-# 61-prometheus/Install.ps1 (compliance finding #1, NetworkPolicy audit
-# 2026-09-05), not here — see that file's "Network Policy" group.
+# metrics port.
 $argocdMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "argocd-metrics" -ServicePortName "metrics"
 if (-not $argocdMetricsPort) { $argocdMetricsPort = @(8082) }
 
@@ -330,14 +356,7 @@ if ($oidcConfig) {
     }
 }
 
-$scheme = if ($issuerName -and $Hostname) { "https" } else { "http" }
-if ($Hostname) {
-    $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
-    Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" -Category "Utilities" `
-        -Namespace $Namespace -Subtitle $FullConfig.PortalSubtitle -Order 91 `
-        -InternalUrl "http://argocd-server.argocd.svc.cluster.local" `
-        -LogoUrl $portalIcon
-}
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
