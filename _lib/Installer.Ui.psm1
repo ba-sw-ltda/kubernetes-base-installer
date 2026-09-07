@@ -21,6 +21,52 @@ $script:InstallerPlatform    = ""
 # $env:INSTALLER_LAST_CONTEXT tracks last set context across module reloads (survives -Force reimport)
 
 # -------------------------
+# Standalone-run domain fallback
+# When a component's Install.ps1 is invoked directly (not through Install-Base.ps1),
+# it has no $domain from the full flow's per-platform resolution (Install-Base.ps1's
+# own $domain = if ($platform -eq ...) block) and must guess one itself before calling
+# its own Prompt.ps1. Every platform's state file already carries this domain — either
+# directly as .Domain (Kind/EKS/GKE/RKE2/Magalu) or derivable from ClusterName+Location
+# (AKS, which stores no .Domain field). Resolve it the same way Install-Base.ps1 does,
+# keyed on $Platform, so a standalone re-run picks up the real cluster domain instead of
+# silently defaulting to "kubernetes.local" for every non-AKS platform.
+# -------------------------
+function Resolve-ClusterDomain {
+    param(
+        [string]$Platform,
+        [string]$BaseDir = $script:InstallerBaseDir,
+        [string]$Fallback = "kubernetes.local"
+    )
+
+    $stateFile = switch ($Platform) {
+        "RKE2 (On-Premise)" { ".rke2-state.json" }
+        "Kind (Local)"      { ".kind-state.json" }
+        "AWS EKS"           { ".eks-state.json" }
+        "Google GKE"        { ".gke-state.json" }
+        "Magalu Cloud"      { ".magalu-state.json" }
+        "Azure AKS"         { ".aks-state.json" }
+        default             { $null }
+    }
+    if (-not $stateFile) { return $Fallback }
+
+    $path = Join-Path $BaseDir $stateFile
+    if (-not (Test-Path $path)) { return $Fallback }
+    $state = Get-Content $path | ConvertFrom-Json
+
+    $resolved = if ($Platform -eq "Azure AKS") {
+        if ($state.ClusterName -and $state.Location) {
+            $label = ($state.ClusterName -replace '[^a-z0-9-]', '-').ToLower()
+            "$label.$($state.Location).cloudapp.azure.com"
+        } else { $null }
+    } else {
+        $state.Domain
+    }
+
+    if ([string]::IsNullOrWhiteSpace($resolved)) { return $Fallback }
+    return $resolved
+}
+
+# -------------------------
 # High-level: Install Identity
 # - Simulation: SIM + ProjectCode (no separator)
 # - Generic: Name

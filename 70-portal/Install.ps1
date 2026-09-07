@@ -31,13 +31,7 @@ Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
 # Standalone: prompt if called directly without parameters
 if ([string]::IsNullOrWhiteSpace($Hostname)) {
-    $aksState = if (Test-Path (Join-Path $BaseDir ".aks-state.json")) {
-        Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json
-    } else { $null }
-    $domain = if ($aksState) {
-        $label = ($aksState.ClusterName -replace '[^a-z0-9-]', '-').ToLower()
-        "$label.$($aksState.Location).cloudapp.azure.com"
-    } else { "kubernetes.local" }
+    $domain = Resolve-ClusterDomain -Platform $Platform -BaseDir $BaseDir
     $inputs = & "$ScriptRoot\Prompt.ps1" -Platform $Platform -Domain $domain
     if (-not $inputs) { Write-Host "  Aborted." -ForegroundColor Red; exit 0 }
     $Hostname = $inputs.Hostname
