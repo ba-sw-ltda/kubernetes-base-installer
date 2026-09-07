@@ -240,7 +240,7 @@
       "repeatDirection": "h",
       "targets": [
         {
-          "expr": "sum(argocd_app_info{namespace=~\"$namespace\",dest_server=~\"$cluster\",health_status=~\"$health_status\",sync_status=~\"$sync_status\"})",
+          "expr": "sum(argocd_app_info{exported_namespace=~\"$namespace\",dest_server=~\"$cluster\",health_status=~\"$health_status\",sync_status=~\"$sync_status\"})",
           "format": "time_series",
           "instant": false,
           "intervalFactor": 1,
@@ -306,7 +306,7 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "count(count by (repo) (argocd_app_info{namespace=~\"$namespace\"}))",
+          "expr": "count(count by (repo) (argocd_app_info{exported_namespace=~\"$namespace\"}))",
           "format": "time_series",
           "instant": false,
           "intervalFactor": 1,
@@ -379,7 +379,7 @@
       "repeatDirection": "h",
       "targets": [
         {
-          "expr": "sum(argocd_app_info{namespace=~\"$namespace\",dest_server=~\"$cluster\",operation!=\"\"})",
+          "expr": "sum(argocd_app_info{exported_namespace=~\"$namespace\",dest_server=~\"$cluster\",operation!=\"\"})",
           "format": "time_series",
           "instant": true,
           "intervalFactor": 1,
@@ -450,11 +450,11 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "sum(argocd_app_info{namespace=~\"$namespace\",dest_server=~\"$cluster\",health_status=~\"$health_status\",sync_status=~\"$sync_status\"}) by (namespace)",
+          "expr": "sum(argocd_app_info{exported_namespace=~\"$namespace\",dest_server=~\"$cluster\",health_status=~\"$health_status\",sync_status=~\"$sync_status\"}) by (exported_namespace)",
           "format": "time_series",
           "instant": false,
           "intervalFactor": 1,
-          "legendFormat": "{{namespace}}",
+          "legendFormat": "{{exported_namespace}}",
           "refId": "A"
         }
       ],
@@ -575,7 +575,7 @@
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum(argocd_app_info{namespace=~\"$namespace\",dest_server=~\"$cluster\",health_status=~\"$health_status\",sync_status=~\"$sync_status\",health_status!=\"\"}) by (health_status)",
+              "expr": "sum(argocd_app_info{exported_namespace=~\"$namespace\",dest_server=~\"$cluster\",health_status=~\"$health_status\",sync_status=~\"$sync_status\",health_status!=\"\"}) by (health_status)",
               "format": "time_series",
               "instant": false,
               "intervalFactor": 1,
@@ -686,7 +686,7 @@
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum(argocd_app_info{namespace=~\"$namespace\",dest_server=~\"$cluster\",health_status=~\"$health_status\",sync_status=~\"$sync_status\",health_status!=\"\"}) by (sync_status)",
+              "expr": "sum(argocd_app_info{exported_namespace=~\"$namespace\",dest_server=~\"$cluster\",health_status=~\"$health_status\",sync_status=~\"$sync_status\",health_status!=\"\"}) by (sync_status)",
               "format": "time_series",
               "instant": false,
               "intervalFactor": 1,
@@ -805,7 +805,7 @@
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum(round(increase(argocd_app_sync_total{namespace=~\"$namespace\",dest_server=~\"$cluster\"}[$interval]))) by ($grouping)",
+              "expr": "sum(round(increase(argocd_app_sync_total{exported_namespace=~\"$namespace\",dest_server=~\"$cluster\"}[$interval]))) by ($grouping)",
               "format": "time_series",
               "intervalFactor": 1,
               "legendFormat": "{{$grouping}}",
@@ -905,7 +905,7 @@
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum(round(increase(argocd_app_sync_total{namespace=~\"$namespace\",phase=~\"Error|Failed\",dest_server=~\"$cluster\"}[$interval]))) by ($grouping, phase)",
+              "expr": "sum(round(increase(argocd_app_sync_total{exported_namespace=~\"$namespace\",phase=~\"Error|Failed\",dest_server=~\"$cluster\"}[$interval]))) by ($grouping, phase)",
               "format": "time_series",
               "intervalFactor": 1,
               "legendFormat": "{{phase}}: {{$grouping}}",
@@ -1020,7 +1020,7 @@
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum(increase(argocd_app_reconcile_count{namespace=~\"$namespace\",dest_server=~\"$cluster\"}[$interval])) by ($grouping)",
+              "expr": "sum(increase(argocd_app_reconcile_count{exported_namespace=~\"$namespace\",dest_server=~\"$cluster\"}[$interval])) by ($grouping)",
               "format": "time_series",
               "intervalFactor": 1,
               "legendFormat": "{{$grouping}}",
@@ -1101,7 +1101,7 @@
           "reverseYBuckets": false,
           "targets": [
             {
-              "expr": "sum(increase(argocd_app_reconcile_bucket{namespace=~\"$namespace\"}[$interval])) by (le)",
+              "expr": "sum(increase(argocd_app_reconcile_bucket{exported_namespace=~\"$namespace\"}[$interval])) by (le)",
               "format": "heatmap",
               "instant": false,
               "intervalFactor": 10,
@@ -1186,7 +1186,7 @@
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum(increase(argocd_app_k8s_request_total{namespace=~\"$namespace\",server=~\"$cluster\"}[$interval])) by (verb, resource_kind)",
+              "expr": "sum(increase(argocd_app_k8s_request_total{exported_namespace=~\"$namespace\",server=~\"$cluster\"}[$interval])) by (verb, resource_kind)",
               "format": "time_series",
               "instant": false,
               "intervalFactor": 1,
@@ -3775,7 +3775,7 @@
         "current": {
           "selected": true,
           "text": "namespace",
-          "value": "namespace"
+          "value": "exported_namespace"
         },
         "description": null,
         "error": null,
@@ -3788,7 +3788,7 @@
           {
             "selected": true,
             "text": "namespace",
-            "value": "namespace"
+            "value": "exported_namespace"
           },
           {
             "selected": false,
@@ -3801,7 +3801,7 @@
             "value": "project"
           }
         ],
-        "query": "namespace,name,project",
+        "query": "namespace : exported_namespace,name,project",
         "skipUrlSync": false,
         "type": "custom"
       },
