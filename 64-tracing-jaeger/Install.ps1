@@ -43,9 +43,11 @@ Write-Host "  Mode:       $($UserConfig.DeploymentMode)" -ForegroundColor Gray
 if ($Hostname) { Write-Host "  Hostname:   $Hostname" -ForegroundColor Gray }
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 
 $otherUninstall = Join-Path $BaseDir "64-tracing-tempo\Uninstall.ps1"
 if (Test-Path $otherUninstall) { & $otherUninstall -Platform $Platform @extraArgs }
@@ -57,7 +59,9 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 $HelmArgs = @(
     "upgrade", "--install", "--force", "jaeger", "jaegertracing/$ChartName",
@@ -104,7 +108,6 @@ if ($existingSs) {
 $exitCode = Invoke-WithSpinner -Message "Deploying Jaeger..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Jaeger (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 # Detect what the chart actually created — allInOne can be Deployment or StatefulSet
 # depending on chart version and persistence settings.
@@ -126,7 +129,9 @@ if ($ssName) {
     exit 1
 }
 if ($exitCode -ne 0) { Write-Error "Rollout of Jaeger did not complete"; exit 1 }
-Write-Host "  ✓ Jaeger ready" -ForegroundColor Green
+
+Complete-Group
+Start-Group -Title "Ingress & Portal"
 
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
     $protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform -BaseDir $BaseDir
@@ -156,7 +161,7 @@ $($protect.TlsBlock)
               number: 16686
 "@
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
+    if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Ingress configured ($Hostname)" -ForegroundColor Green }
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
     Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
@@ -165,9 +170,16 @@ $($protect.TlsBlock)
         -LogoUrl $portalIcon
 }
 
+Complete-Group
+
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
+
+Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # Jaeger isn't deployed on any cluster this was verified against yet — resolved
@@ -199,6 +211,8 @@ Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namesp
 # finding #2, NetworkPolicy audit 2026-09-05; see project_rke2_ingress_namespace_mismatch memory).
 $ingressNamespace = Resolve-IngressNamespace
 Set-NetworkPolicyConsumerEgress -Namespace $ingressNamespace -TargetNamespace $Namespace -Port $jaegerQueryPort
+
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
