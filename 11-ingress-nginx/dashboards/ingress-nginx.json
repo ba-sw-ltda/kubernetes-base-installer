@@ -13,7 +13,7 @@
       {
         "datasource": "Prometheus",
         "enable": true,
-        "expr": "sum(changes(nginx_ingress_controller_config_last_reload_successful_timestamp_seconds{instance!=\"unknown\",controller_class=~\"$controller_class\",namespace=~\"$namespace\"}[30s])) by (controller_class)",
+        "expr": "sum(changes(nginx_ingress_controller_config_last_reload_successful_timestamp_seconds{instance!=\"unknown\",controller_class=~\"$controller_class\",controller_namespace=~\"$namespace\"}[30s])) by (controller_class)",
         "hide": false,
         "iconColor": "rgba(255, 96, 96, 1)",
         "limit": 100,
@@ -94,7 +94,7 @@
       "tableColumn": "",
       "targets": [
         {
-          "expr": "round(sum(irate(nginx_ingress_controller_requests{controller_pod=~\"$controller\",controller_class=~\"$controller_class\",namespace=~\"$namespace\"}[2m])), 0.001)",
+          "expr": "round(sum(irate(nginx_ingress_controller_requests{controller_pod=~\"$controller\",controller_class=~\"$controller_class\",controller_namespace=~\"$namespace\"}[2m])), 0.001)",
           "format": "time_series",
           "intervalFactor": 1,
           "refId": "A",
@@ -259,7 +259,7 @@
       "tableColumn": "",
       "targets": [
         {
-          "expr": "sum(rate(nginx_ingress_controller_requests{controller_pod=~\"$controller\",controller_class=~\"$controller_class\",namespace=~\"$namespace\",status!~\"[4-5].*\"}[2m])) / sum(rate(nginx_ingress_controller_requests{controller_pod=~\"$controller\",controller_class=~\"$controller_class\",namespace=~\"$namespace\"}[2m]))",
+          "expr": "sum(rate(nginx_ingress_controller_requests{controller_pod=~\"$controller\",controller_class=~\"$controller_class\",controller_namespace=~\"$namespace\",status!~\"[4-5].*\"}[2m])) / sum(rate(nginx_ingress_controller_requests{controller_pod=~\"$controller\",controller_class=~\"$controller_class\",controller_namespace=~\"$namespace\"}[2m]))",
           "format": "time_series",
           "intervalFactor": 1,
           "refId": "A",
@@ -607,7 +607,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "sum(rate(nginx_ingress_controller_requests{controller_pod=~\"$controller\",controller_class=~\"$controller_class\",namespace=~\"$namespace\",ingress=~\"$ingress\",status!~\"[4-5].*\"}[2m])) by (ingress) / sum(rate(nginx_ingress_controller_requests{controller_pod=~\"$controller\",controller_class=~\"$controller_class\",namespace=~\"$namespace\",ingress=~\"$ingress\"}[2m])) by (ingress)",
+          "expr": "sum(rate(nginx_ingress_controller_requests{controller_pod=~\"$controller\",controller_class=~\"$controller_class\",controller_namespace=~\"$namespace\",ingress=~\"$ingress\",status!~\"[4-5].*\"}[2m])) by (ingress) / sum(rate(nginx_ingress_controller_requests{controller_pod=~\"$controller\",controller_class=~\"$controller_class\",controller_namespace=~\"$namespace\",ingress=~\"$ingress\"}[2m])) by (ingress)",
           "format": "time_series",
           "instant": false,
           "interval": "10s",
@@ -1270,7 +1270,7 @@
       ],
       "targets": [
         {
-          "expr": "avg(nginx_ingress_controller_ssl_expire_time_seconds{kubernetes_pod_name=~\"$controller\",namespace=~\"$namespace\",ingress=~\"$ingress\"}) by (host) - time()",
+          "expr": "avg(nginx_ingress_controller_ssl_expire_time_seconds{kubernetes_pod_name=~\"$controller\",controller_namespace=~\"$namespace\",ingress=~\"$ingress\"}) by (host) - time()",
           "format": "time_series",
           "intervalFactor": 1,
           "legendFormat": "{{ host }}",
