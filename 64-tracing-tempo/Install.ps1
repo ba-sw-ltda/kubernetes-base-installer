@@ -167,6 +167,10 @@ $tempoIngesterPort      = Resolve-ServiceRealPorts -Namespace $Namespace -Servic
 $tempoQuerierPort       = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "tempo-querier" -ServicePortName "http-metrics"
 $tempoPorts = @($tempoQueryFrontendPort + $tempoDistributorPorts + $tempoCompactorPort + $tempoIngesterPort + $tempoQuerierPort | Select-Object -Unique)
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $tempoPorts
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix).
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port $tempoPorts
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

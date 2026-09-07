@@ -224,6 +224,10 @@ Register-GrafanaDashboard -Namespace $Namespace -Name "loki" -JsonPath "$ScriptR
 Install-NetworkPolicyBaseline -Namespace $Namespace
 $lokiIngressPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "loki" -ServicePortName "http-metrics"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $lokiIngressPort
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix).
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port $lokiIngressPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

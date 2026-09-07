@@ -988,6 +988,11 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 # namespaces need to reach, so this stays unaffected by HA either way.
 $openbaoIngressPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "openbao" -ServicePortName "http"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $openbaoIngressPort
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix). If `prometheus` doesn't exist yet, this parks a pending marker
+# that 61-prometheus/Install.ps1 resolves once it does.
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port $openbaoIngressPort
 # Consumer-side counterpart, missing until 2026-08-20 (confirmed live on
 # Magalu: vault.<hostname> gave a Traefik Gateway Timeout — "ingress" never
 # had the "network.k8s/allow-openbao" label, so default-deny-all silently

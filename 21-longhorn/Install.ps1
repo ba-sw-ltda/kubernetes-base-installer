@@ -270,18 +270,17 @@ $longhornPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "lon
 # ServiceMonitor added above (see $HelmArgs metrics.serviceMonitor.* flags)
 # can actually be scraped, not just defined.
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port ($longhornPort + 9500)
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix). If `prometheus` doesn't exist yet, this parks a pending marker
+# that 61-prometheus/Install.ps1 resolves once it does.
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port ($longhornPort + 9500)
 # Real namespace of whichever ingress controller is actually installed —
 # "ingress" on fresh installs, but pre-rename clusters (e.g. live RKE2) can
 # still have ingress-nginx in the legacy "ingress-nginx" namespace (compliance
 # finding #2, NetworkPolicy audit 2026-09-05; see project_rke2_ingress_namespace_mismatch memory).
 $ingressNamespace = Resolve-IngressNamespace
 Set-NetworkPolicyConsumerEgress -Namespace $ingressNamespace -TargetNamespace $Namespace -Port $longhornPort
-# NOTE: labeling the `prometheus` namespace as a consumer of longhorn-system
-# is no longer done ad hoc here — compliance finding #1 (NetworkPolicy audit
-# 2026-09-05) gave `prometheus` a real, comprehensive egress baseline
-# (including this longhorn-system rule) directly in 61-prometheus/Install.ps1,
-# resolved live the same way as every other provider in this repo. See that
-# file's "Network Policy" group.
 
 Complete-Group
 

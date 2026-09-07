@@ -210,12 +210,15 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 # when controller.metrics.service.enabled (default true once metrics are
 # on). Resolved dynamically rather than hardcoding 10254 so a future chart
 # bump can't silently reintroduce a mismatch (same reasoning as Traefik's
-# public-ingress port resolution above). Inert until `prometheus` is
-# labeled as a consumer — same deliberate gap as every other component in
-# this rollout, see 21-longhorn/Install.ps1's NOTE.
+# public-ingress port resolution above).
 $ingressNginxMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "ingress-nginx-controller-metrics" -ServicePortName "metrics"
 if (-not $ingressNginxMetricsPort) { $ingressNginxMetricsPort = @(10254) }
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $ingressNginxMetricsPort
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix). If `prometheus` doesn't exist yet, this parks a pending marker
+# that 61-prometheus/Install.ps1 resolves once it does.
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port $ingressNginxMetricsPort
 
 Complete-Group
 

@@ -158,6 +158,10 @@ Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -P
 # 21-longhorn/Install.ps1.
 $promtailMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "promtail" -ServicePortName "http-metrics"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $promtailMetricsPort
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix).
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port $promtailMetricsPort
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray

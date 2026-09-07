@@ -284,10 +284,13 @@ if ($LASTEXITCODE -eq 0) {
 # (0.0.0.0/0) for ports 80/443 only; /metrics must NOT be reachable from the
 # internet. Set-NetworkPolicyProviderIngress instead gates ingress on the
 # label-contract pattern (only namespaces labeled network.k8s/allow-$Namespace
-# may reach this port) — inert until `prometheus` is labeled as a consumer,
-# same deliberate gap as 21-longhorn/Install.ps1 (see its NOTE on why
-# `prometheus`'s own egress side is deferred to the weekend NetworkPolicy fix).
+# may reach this port).
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 9100
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix). If `prometheus` doesn't exist yet, this parks a pending marker
+# that 61-prometheus/Install.ps1 resolves once it does.
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port 9100
 
 Complete-Group
 

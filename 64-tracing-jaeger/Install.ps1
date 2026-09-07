@@ -189,6 +189,10 @@ $jaegerAdminPort = @(Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName
 $jaegerAdminPort = $jaegerAdminPort | Where-Object { $_ } | Select-Object -Unique
 if (-not $jaegerAdminPort) { $jaegerAdminPort = @(14269, 16687) }
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port ($jaegerQueryPort + $jaegerCollectorPort + $jaegerAdminPort)
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix).
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port ($jaegerQueryPort + $jaegerCollectorPort + $jaegerAdminPort)
 # Real namespace of whichever ingress controller is actually installed —
 # "ingress" on fresh installs, but pre-rename clusters (e.g. live RKE2) can
 # still have ingress-nginx in the legacy "ingress-nginx" namespace (compliance

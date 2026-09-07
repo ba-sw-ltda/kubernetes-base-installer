@@ -140,10 +140,13 @@ Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # Metrics scrape port (cert-manager:9402), label-gated via the same
-# provider-ingress pattern as 21-longhorn/Install.ps1 — inert until
-# `prometheus` is labeled as a consumer (deferred to the weekend NetworkPolicy
-# fix, see project_rke2_ingress_namespace_mismatch).
+# provider-ingress pattern as 21-longhorn/Install.ps1.
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port 9402
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix). If `prometheus` doesn't exist yet, this parks a pending marker
+# that 61-prometheus/Install.ps1 resolves once it does.
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port 9402
 # Resolved dynamically against OpenBao's real container port rather than
 # hardcoded — see Resolve-ServiceRealPorts for why (NetworkPolicy `ports`
 # matches the pod's real destination port after Service DNAT, not the
