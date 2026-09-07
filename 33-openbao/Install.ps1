@@ -559,6 +559,62 @@ if ($oldIssuerExists -and ($PKIs | Where-Object { "HTTP" -in @($_.Roles) -and $_
     Write-GroupLine "   Components migrate to 'openbao-pki-<name>' on their next re-install." -ForegroundColor DarkGray
 }
 
+# Forces cert-manager to reissue every Certificate that trusts a given
+# ClusterIssuer, by deleting its backing TLS Secret — cert-manager detects
+# the Secret is missing and reissues immediately, no cmctl dependency needed.
+# Only called right after a Root CA is freshly (re)generated on a mount
+# (fresh-reinit / storage-mode switch, see the mode-switch block above):
+# every Certificate previously issued against the OLD root becomes orphaned
+# the moment any consumer re-reads the mount's *current* CA (e.g.
+# 51-rancher's additionalTrustedCAs workaround), since the two no longer
+# chain to the same root — this surfaced live as Rancher's OIDC calls to
+# Authelia failing with "x509: certificate signed by unknown authority"
+# after a reinit, even though nothing about Rancher's own config changed.
+# A no-op on a genuine first install — nothing has been issued against
+# $IssuerName yet.
+function Set-OpenBaoCertificatesToReissue {
+    param([Parameter(Mandatory)][string]$IssuerName)
+
+    $certsRef = [ref]$null
+    Invoke-WithSpinner -Message "Finding Certificates issued by '$IssuerName'..." -Executable "kubectl" `
+        -Arguments @("get", "certificate", "-A", "-o", "json") `
+        -OutputVariable $certsRef | Out-Null
+    $certsJson = ($certsRef.Value -join "`n")
+    $jsonStart = $certsJson.IndexOf('{')
+    $items = @()
+    if ($jsonStart -ge 0) {
+        $parsed = $certsJson.Substring($jsonStart) | ConvertFrom-Json -ErrorAction SilentlyContinue
+        if ($parsed -and $parsed.items) { $items = @($parsed.items) }
+    }
+    $affected = @($items | Where-Object { $_.spec.issuerRef.name -eq $IssuerName })
+
+    if ($affected.Count -eq 0) {
+        Write-GroupLine "· No existing Certificates reference '$IssuerName' yet" -ForegroundColor DarkGray
+        return
+    }
+
+    Write-GroupLine "↻ Root CA was freshly (re)generated — forcing reissue of $($affected.Count) orphaned Certificate(s)" -ForegroundColor Yellow
+    foreach ($cert in $affected) {
+        $certNs     = $cert.metadata.namespace
+        $certName   = $cert.metadata.name
+        $secretName = $cert.spec.secretName
+
+        & kubectl delete secret $secretName -n $certNs --ignore-not-found 2>&1 | Out-Null
+
+        $ready = $false
+        for ($i = 0; $i -lt 24; $i++) {
+            Start-Sleep -Seconds 5
+            $status = & kubectl get certificate $certName -n $certNs -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>$null
+            if ($status -eq "True") { $ready = $true; break }
+        }
+        if ($ready) {
+            Write-GroupLine "  ✓ $certNs/$certName reissued" -ForegroundColor Green
+        } else {
+            Write-Warning "  $certNs/$certName did not become Ready within 2 minutes after forced reissue — check 'kubectl describe certificate $certName -n $certNs'"
+        }
+    }
+}
+
 # Helper: write a Vault policy via file + kubectl cp (avoids CRLF issues with heredocs)
 function Write-BaoPolicy {
     param([string]$PolicyName, [string]$PolicyHcl)
@@ -629,6 +685,7 @@ foreach ($pki in $PKIs) {
         -ExpectedNonZero
     $caExists = $caCheckExit -eq 0
 
+    $rootCaFreshlyCreated = $false
     if (-not $caExists) {
         if ($pkiType -eq "Root") {
             $cn = "$pkiName.$Domain"
@@ -639,6 +696,7 @@ foreach ($pki in $PKIs) {
                  "issuing_certificates='http://openbao.$Namespace.svc.cluster.local:8200/v1/$mountPath/ca' " +
                  "crl_distribution_points='http://openbao.$Namespace.svc.cluster.local:8200/v1/$mountPath/crl'")
             Write-GroupLine "✓ Root CA created (10y, CN=$cn)" -ForegroundColor Green
+            $rootCaFreshlyCreated = $true
         }
         elseif ($pkiType -eq "Intermediate") {
             $cn = "$pkiName-intermediate.$Domain"
@@ -817,6 +875,10 @@ spec:
             Write-GroupLine "✓ ClusterIssuer '$issuerName' ready" -ForegroundColor Green
         } else {
             Write-Warning "  ClusterIssuer '$issuerName' could not be created after retries: $applyOutput"
+        }
+
+        if ($rootCaFreshlyCreated -and $issuerApplied) {
+            Set-OpenBaoCertificatesToReissue -IssuerName $issuerName
         }
     }
 
