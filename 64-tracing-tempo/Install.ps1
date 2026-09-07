@@ -40,9 +40,11 @@ Write-Host "  Retention:  $($UserConfig.Retention)" -ForegroundColor Gray
 Write-Host "  Storage:    $($UserConfig.StorageSize)" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 
 $otherUninstall = Join-Path $BaseDir "64-tracing-jaeger\Uninstall.ps1"
 if (Test-Path $otherUninstall) { & $otherUninstall -Platform $Platform @extraArgs }
@@ -54,7 +56,9 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 $HelmArgs = @(
     "upgrade", "--install", "--force", "tempo", "grafana/$ChartName",
@@ -111,7 +115,6 @@ if ($LASTEXITCODE -eq 0) {
 $exitCode = Invoke-WithSpinner -Message "Deploying Tempo Distributed..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Tempo Distributed (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for ingester..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "statefulset/tempo-ingester", "-n", $Namespace, "--timeout=5m") `
@@ -124,10 +127,14 @@ foreach ($dep in @("tempo-distributor", "tempo-querier", "tempo-query-frontend",
         -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Rollout of $dep did not complete"; exit 1 }
 }
-Write-Host "  ✓ Tempo Distributed ready" -ForegroundColor Green
+
+Complete-Group
 
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
 # Official Tempo mixin "operational" dashboard (grafana/tempo repo,
@@ -141,7 +148,11 @@ if ($FullConfig.RancherProject) {
 # multi-tenant install — panels should still render since Prometheus
 # treats a missing label as an empty-string match. Not yet verified against
 # live data (ServiceMonitor isn't deployed yet).
+Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "tempo" -JsonPath "$ScriptRoot\dashboards\tempo.json" -Folder "Observability"
+Complete-Group
+
+Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # This provider-ingress rule covers the whole tempo namespace (podSelector:
@@ -171,6 +182,8 @@ Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $tempoPorts
 # enumerating every ServiceMonitor'd namespace centrally (compliance finding
 # #1 fix).
 Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port $tempoPorts
+
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
