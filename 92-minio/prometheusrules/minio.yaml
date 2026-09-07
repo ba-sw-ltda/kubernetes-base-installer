@@ -1,0 +1,79 @@
+# Vendored from samber/awesome-prometheus-alerts, "Minio" category, fetched
+# 2026-09-07 from
+# https://samber.github.io/awesome-prometheus-alerts/rules/storage/minio/
+# — checked monitoring.mixins.dev first (per user request); no MinIO mixin
+# is cataloged there, so this samber-published set is the best available
+# source, same category as this repo's other vendored rules (already the
+# source for openbao.yaml's cross-check). Cross-checked against MinIO's own
+# single published example
+# (github.com/minio/minio/blob/master/docs/metrics/prometheus/alerts.md,
+# "MinIOClusterTolerance") — same underlying condition
+# (minio_cluster_health_erasure_set_status < 1) as this set's
+# MinioClusterErasureSetQuorumLost, corroborating it.
+#
+# All 5 rules use cluster-wide `minio_cluster_*` metrics with no per-job
+# label filter needed — same shape as this repo's chart-native ServiceMonitor
+# (metrics.serviceMonitor, see Install.ps1), which scrapes a single MinIO
+# StatefulSet replica in this deployment.
+#
+# `release: prometheus` is required — this repo's kube-prometheus-stack
+# leaves ruleSelectorNilUsesHelmValues at its chart default (true), so an
+# unlabeled PrometheusRule is silently never picked up, same as an
+# unlabeled ServiceMonitor. Applied namespace-less (no metadata.namespace)
+# — the caller supplies -n via Register-PrometheusRule.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: minio-alerts
+  labels:
+    release: prometheus
+spec:
+  groups:
+  - name: minio
+    rules:
+    - alert: MinioClusterErasureSetQuorumLost
+      expr: minio_cluster_health_erasure_set_status < 1
+      for: 0m
+      labels:
+        severity: critical
+      annotations:
+        summary: MinIO cluster erasure set quorum lost ({{ $labels.instance }}).
+        description: >-
+          MinIO erasure set has lost quorum, meaning MinIO can no longer guarantee
+          reads or writes for objects in this pool/set until enough drives are restored.
+    - alert: MinioClusterDiskOffline
+      expr: minio_cluster_drive_offline_total > 0
+      for: 0m
+      labels:
+        severity: critical
+      annotations:
+        summary: MinIO cluster disk offline ({{ $labels.instance }}).
+        description: MinIO cluster disk is offline.
+    - alert: MinioNodeDiskOffline
+      expr: minio_cluster_nodes_offline_total > 0
+      for: 0m
+      labels:
+        severity: critical
+      annotations:
+        summary: MinIO node disk offline ({{ $labels.instance }}).
+        description: MinIO cluster node is offline.
+    - alert: MinioDiskSpaceUsage
+      expr: >-
+        minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes * 100 < 10
+        and minio_cluster_capacity_usable_total_bytes > 0
+      for: 0m
+      labels:
+        severity: warning
+      annotations:
+        summary: MinIO disk space usage ({{ $labels.instance }}).
+        description: MinIO available free space is low (< 10%).
+    - alert: MinioKMSUnavailable
+      expr: minio_cluster_kms_online == 0
+      for: 0m
+      labels:
+        severity: critical
+      annotations:
+        summary: MinIO KMS unavailable ({{ $labels.instance }}).
+        description: >-
+          MinIO KMS backend is offline; encryption and decryption of SSE-KMS objects
+          will fail until KMS connectivity is restored.

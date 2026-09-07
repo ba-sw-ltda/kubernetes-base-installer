@@ -241,6 +241,13 @@ if ($FullConfig.RancherProject) {
 # "✓ ... registered" confirmation line — nothing more to print here.
 Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "minio" -JsonPath "$ScriptRoot\dashboards\minio.json" -Folder "Storage"
+
+# Prometheus alerting rules: vendored from samber/awesome-prometheus-alerts
+# (see prometheusrules/minio.yaml for source/provenance and the
+# monitoring.mixins.dev cross-check). Same order-independence as the
+# dashboard above — Register-PrometheusRule prints its own confirmation
+# line, nothing more to print here.
+Register-PrometheusRule -Namespace $Namespace -Name "minio" -YamlPath "$ScriptRoot\prometheusrules\minio.yaml"
 Complete-Group
 
 Start-Group -Title "Network Policy"
