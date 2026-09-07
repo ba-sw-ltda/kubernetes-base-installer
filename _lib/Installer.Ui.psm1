@@ -655,75 +655,14 @@ function Clear-KubectlDiscoveryCache {
 
 
 # -------------------------
-# Export (single variant, robust)
+# Export
 # -------------------------
-$__exportFunctions = @(
-  'Test-CommandExists'
-  'ToSafeName'
-  'Write-Context'
-  'Write-Section'
-  'Read-SelectIndex'
-  'Read-SelectValue'
-  'Read-YesNo'
-  'Confirm-RetryOrExit'
-  'Read-MultiSelectValues'
-  'Read-Plain'
-  'Read-SecretPlain'
-  'Read-SecretPlainConfirm'
-  'Read-InstallIdentity'
-  'Read-DbSettings'
-  'ConvertTo-UiOptions'
-  'Invoke-WithSpinner'
-  'Invoke-ScriptBlockWithSpinner'
-  'Invoke-DownloadWithSpinner'
-  'Start-Group'
-  'Complete-Group'
-  'Write-GroupLine'
-  'Get-ComponentConfig'
-  'Merge-Config'
-  'Get-IngressClass'
-  'Reset-StuckHelmRelease'
-  'Set-ClusterContext'
-  'Clear-KubectlDiscoveryCache'
-  'Write-ClusterSecret'
-  'Write-OpenBaoSecret'
-  'Get-ClusterSecret'
-  'Get-OpenBaoSecret'
-  'Remove-ClusterSecret'
-  'Remove-OpenBaoSecret'
-  'Get-OpenBaoStateFile'
-  'Get-OpenBaoPkis'
-  'Save-OpenBaoPkis'
-  'Get-OpenBaoDefaultRootPki'
-  'Get-ClusterIssuerName'
-  'Write-AzureKeyVaultSecret'
-  'Write-AwsSecretsManagerSecret'
-  'Write-GcpSecretManagerSecret'
-  'Remove-AzureKeyVaultSecret'
-  'Remove-AwsSecretsManagerSecret'
-  'Remove-GcpSecretManagerSecret'
-  'New-CsiSecretMount'
-  'Remove-CsiSecretMount'
-  'Protect-ComponentIngress'
-  'Get-HtpasswdHash'
-  'Get-AutheliaSecretHash'
-  'Sync-AutheliaConfiguration'
-  'Register-AutheliaOidcClient'
-  'Test-AutheliaInstalled'
-  'Register-PortalEntry'
-  'Unregister-PortalEntry'
-  'Resolve-PendingPortalEntries'
-  'Register-GrafanaDashboard'
-  'Register-PrometheusRule'
-  'Read-ComponentSelectionScreen'
-  'Install-NetworkPolicyBaseline'
-  'Resolve-ServiceRealPorts'
-  'Test-HostnameNeedsClusterAlias'
-  'Set-NetworkPolicyProviderIngress'
-  'Set-NetworkPolicyConsumerEgress'
-  'Set-NetworkPolicyApiServerIngress'
-  'Wait-MagaluClusterDeleted'
-  'Remove-MagaluOrphanedVolumes'
-)
-
-Export-ModuleMember -Function $__exportFunctions
+# Wildcard on purpose: this module is a thin wrapper around
+# PowerShellClusterBootstrap (imported above) plus a handful of functions
+# defined locally in this file. A hand-curated allowlist here has to be kept
+# in sync by hand every time a function is added upstream, which repeatedly
+# got forgotten and broke Install.ps1 scripts with "term not recognized"
+# errors (e.g. Resolve-IngressNamespace). The nested module already curates
+# its own public surface via its .psd1 FunctionsToExport, so re-curating it
+# here added no safety, only drift.
+Export-ModuleMember -Function *
