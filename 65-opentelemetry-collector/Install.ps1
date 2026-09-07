@@ -133,6 +133,20 @@ $HelmArgs = @(
     # uses serviceMonitor.extraLabels rather than additionalLabels. CRD-only,
     # no NetworkPolicy effect by itself — the metrics port is bundled into
     # the existing provider-ingress rule below.
+    #
+    # ports.metrics.enabled — the chart's own values.yaml ships this port
+    # *disabled* by default (containerPort/servicePort both 8888) and says
+    # explicitly: "you need to enable the port in order to use the
+    # ServiceMonitor". Without this, serviceMonitor.enabled=true alone
+    # creates a ServiceMonitor that references a Service port named
+    # "metrics" which never exists — confirmed live 2026-09-07: the Service
+    # only exposed otlp/otlp-http/jaeger-*/zipkin, no "metrics" port at all,
+    # so self-metrics scraping silently never worked (and
+    # Resolve-ServiceRealPorts in every consumer, e.g. 61-prometheus, warned
+    # "no port named 'metrics'" and quietly dropped it from the egress rule
+    # instead of falling back — a separate, still-open gap in
+    # Resolve-ServiceRealPorts' partial-failure handling).
+    "--set", "ports.metrics.enabled=true",
     "--set", "serviceMonitor.enabled=true",
     "--set", "serviceMonitor.extraLabels.release=prometheus"
 )
