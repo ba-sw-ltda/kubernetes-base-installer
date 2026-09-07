@@ -37,9 +37,11 @@ Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
 Write-Host "  Loki URL:   $($UserConfig.LokiUrl)" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "grafana", $Repository, "--force-update") -ShowOutput:$verbose
@@ -48,7 +50,9 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 # Extra static scrape job for the RKE2 API audit log (Finding #9) —
 # mounted read-only from the host path RKE2 writes it to. Only present on
@@ -134,25 +138,31 @@ $exitCode = Invoke-WithSpinner -Message "Deploying Promtail..." -Executable "hel
     -Arguments $HelmArgs -ShowOutput:$verbose
 Remove-Item $tempValues -Force -ErrorAction SilentlyContinue
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Promtail (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for promtail..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "daemonset/promtail", "-n", $Namespace, "--timeout=10m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout of Promtail did not complete"; exit 1 }
-Write-Host "  ✓ Promtail ready" -ForegroundColor Green
 
-if ($verbose) {
-    Write-Host ""
-    & kubectl get pods -n $Namespace -l app.kubernetes.io/name=promtail
-}
+Complete-Group
 
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
+# Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
+# Grafana's dashboard sidecar (see 66-grafana/Install.ps1 sidecar.dashboards.*
+# Helm flags). Order-independent, no NetworkPolicy involved — same pattern as
+# 11-ingress-traefik/Install.ps1. Register-GrafanaDashboard prints its own
+# "✓ ... registered" confirmation line — nothing more to print here.
+Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "promtail" -JsonPath "$ScriptRoot\dashboards\promtail.json" -Folder "Observability"
+Complete-Group
 
+Start-Group -Title "Network Policy"
 Install-NetworkPolicyBaseline -Namespace $Namespace
 $lokiPort = Resolve-ServiceRealPorts -Namespace "loki" -ServiceName "loki" -ServicePortName "http-metrics"
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port $lokiPort
@@ -171,6 +181,12 @@ Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $promtailMetricsPor
 # enumerating every ServiceMonitor'd namespace centrally (compliance finding
 # #1 fix).
 Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port $promtailMetricsPort
+Complete-Group
+
+if ($verbose) {
+    Write-Host ""
+    & kubectl get pods -n $Namespace -l app.kubernetes.io/name=promtail
+}
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
