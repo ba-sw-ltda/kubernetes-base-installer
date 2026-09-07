@@ -343,6 +343,28 @@ if ($FullConfig.RancherProject) {
     Complete-Group
 }
 
+# General cluster-status dashboards — not tied to any single component, so
+# registered here rather than by whichever component happens to install
+# last. Both are vendored community dashboards (grafana.com) built against
+# kube-state-metrics + node-exporter, which this chart provisions directly:
+#   - cluster-overview: "Kubernetes / Views / Global" (dotdc, ID 15757) —
+#     CPU/memory/filesystem/pod-count at cluster level; wired as Grafana's
+#     default home dashboard in 66-grafana/Install.ps1 (grafana.ini
+#     [dashboards] default_home_dashboard_path).
+#   - node-exporter: "Node Exporter Full" (ID 1860) — per-node hardware/OS
+#     detail (disk, network, memory breakdown) the Global dashboard doesn't
+#     drill into.
+# Both use live "datasource"-type template variables (${datasource} /
+# ${ds_prometheus}) that Grafana resolves at render time against whichever
+# Prometheus datasource is provisioned — no per-install JSON patching needed,
+# same as every other vendored dashboard in this repo.
+Start-Group -Title "Monitoring"
+Register-GrafanaDashboard -Namespace $Namespace -Name "cluster-overview" `
+    -JsonPath "$ScriptRoot\dashboards\cluster-overview.json" -Folder "Cluster"
+Register-GrafanaDashboard -Namespace $Namespace -Name "node-exporter" `
+    -JsonPath "$ScriptRoot\dashboards\node-exporter.json" -Folder "Cluster"
+Complete-Group
+
 Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
