@@ -265,6 +265,13 @@ if ($FullConfig.RancherProject) {
 # "✓ ... registered" confirmation line — nothing more to print here.
 Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "velero" -JsonPath "$ScriptRoot\dashboards\velero.json" -Folder "Storage"
+
+# Prometheus alerting rules: vendored from Grafana Labs' official Velero
+# monitoring mixin (see prometheusrules/velero.yaml for source/provenance
+# and the two corrections applied). Same order-independence as the
+# dashboard above — Register-PrometheusRule prints its own confirmation
+# line, nothing more to print here.
+Register-PrometheusRule -Namespace $Namespace -Name "velero" -YamlPath "$ScriptRoot\prometheusrules\velero.yaml"
 Complete-Group
 
 Start-Group -Title "Network Policy"

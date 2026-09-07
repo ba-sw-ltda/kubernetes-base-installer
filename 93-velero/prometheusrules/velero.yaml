@@ -1,0 +1,82 @@
+# Vendored from Grafana Labs' official Velero monitoring mixin
+# (github.com/grafana/jsonnet-libs/tree/master/velero-2-mixin), fetched
+# 2026-09-07 from
+# https://raw.githubusercontent.com/grafana/jsonnet-libs/master/velero-2-mixin/prometheus_rules_out/prometheus_alerts.yaml
+# — found via monitoring.mixins.dev (checked first, per user request) which
+# lists this as the Velero entry. Grafana-Labs-published (better provenance
+# than most of this repo's other vendored rule sets, several of which are
+# community-maintained mixins).
+#
+# Two corrections applied vs. the source:
+#   - job="integrations/velero" -> job="velero": the source targets Grafana
+#     Cloud's "integrations/velero" Grafana Agent scrape job, which doesn't
+#     exist here — this repo's chart-native ServiceMonitor produces job
+#     "velero" instead (the metrics Service name, see Install.ps1's
+#     Resolve-ServiceRealPorts -ServiceName "velero" call). Not independently
+#     re-verified against a live scrape.
+#   - VeleroUpStatus's expr inverted `up{...} != 0` (true while the target IS
+#     up) to `up{...} == 0` — the source's condition is backwards for an
+#     alert named "Velero is down" whose own description says "cannot find
+#     any metrics related to Velero"; that only matches up==0. Same category
+#     of upstream copy/paste bug already corrected once in this repo (see
+#     longhorn.yaml's own correction note).
+#
+# `release: prometheus` is required — this repo's kube-prometheus-stack
+# leaves ruleSelectorNilUsesHelmValues at its chart default (true), so an
+# unlabeled PrometheusRule is silently never picked up, same as an
+# unlabeled ServiceMonitor. Applied namespace-less (no metadata.namespace)
+# — the caller supplies -n via Register-PrometheusRule.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: velero-alerts
+  labels:
+    release: prometheus
+spec:
+  groups:
+  - name: velero
+    rules:
+    - alert: VeleroBackupFailure
+      expr: increase(velero_backup_failure_total{job="velero"}[5m]) > 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: Velero backup failures detected.
+        description: >-
+          Backup failures detected on {{ $labels.instance }}. This could lead to data
+          loss or inability to recover in case of a disaster.
+    - alert: VeleroHighBackupDuration
+      expr: |
+        histogram_quantile(0.5, sum(rate(velero_backup_duration_seconds_bucket{job="velero"}[5m])) by (le, schedule))
+        >
+        1.2 * 1.2 * avg_over_time(histogram_quantile(0.5, sum(rate(velero_backup_duration_seconds_bucket{job="velero"}[48h])) by (le, schedule))[5m:])
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Velero backups taking longer than usual.
+        description: >-
+          Backup duration on {{ $labels.instance }} is higher than the average duration
+          over the past 48 hours. This could indicate performance issues or network
+          congestion. The current value is {{ $value | printf "%.2f" }} seconds.
+    - alert: VeleroHighRestoreFailureRate
+      expr: increase(velero_restore_failed_total{job="velero"}[5m]) > 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: Velero restore failures detected.
+        description: >-
+          Restore failures detected on {{ $labels.instance }}. This could prevent timely
+          data recovery and business continuity.
+    - alert: VeleroUpStatus
+      expr: up{job="velero"} == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: Velero is down.
+        description: >-
+          Cannot find any metrics related to Velero on {{ $labels.instance }}. This may
+          indicate further issues with Velero or the scraping agent.
