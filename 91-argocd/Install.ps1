@@ -311,6 +311,14 @@ if ($FullConfig.RancherProject) {
 Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "argocd" `
     -JsonPath "$ScriptRoot\dashboards\argocd.json" -Folder "CI/CD"
+
+# Prometheus alerting rules: vendored from the community ArgoCD mixin (see
+# prometheusrules/argocd.yaml for source/provenance and the dropped
+# dashboard_url annotations). Same order-independence as the dashboard
+# above — Register-PrometheusRule prints its own confirmation line,
+# nothing more to print here.
+Register-PrometheusRule -Namespace $Namespace -Name "argocd" `
+    -YamlPath "$ScriptRoot\prometheusrules\argocd.yaml"
 Complete-Group
 
 Start-Group -Title "Network Policy"
