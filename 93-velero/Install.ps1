@@ -87,6 +87,8 @@ if (-not $minioCred -or -not $minioCred["accessKey"]) { Write-Error "Could not r
 $minioEndpoint = "http://minio.minio.svc.cluster.local:9000"
 $minioBucket   = "velero-backups"
 
+Start-Group -Title "Preparation"
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "velero", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
@@ -94,13 +96,15 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
 if ($CreateNamespace) {
     & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-    Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+    Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 }
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 # ── CSI VolumeSnapshot prerequisite — vanilla RKE2/Kind ship no
 # external-snapshotter CRDs/controller at all (unlike most managed cloud
@@ -109,24 +113,23 @@ if ($CreateNamespace) {
 $snapshotCrdExists = & kubectl get crd volumesnapshotclasses.snapshot.storage.k8s.io --ignore-not-found 2>$null
 if (-not $snapshotCrdExists) {
     $snapVersion = $UserConfig.SnapshotterVersion
-    Write-Host "  Installing VolumeSnapshot CRDs..." -ForegroundColor Gray
+    Write-GroupLine "Installing VolumeSnapshot CRDs..." -ForegroundColor Gray
     & kubectl kustomize "https://github.com/kubernetes-csi/external-snapshotter/client/config/crd?ref=$snapVersion" 2>&1 |
         & kubectl apply --server-side --force-conflicts -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to install VolumeSnapshot CRDs"; exit 1 }
-    Write-Host "  ✓ VolumeSnapshot CRDs installed" -ForegroundColor Green
+    Write-GroupLine "✓ VolumeSnapshot CRDs installed" -ForegroundColor Green
 
     & kubectl kustomize "https://github.com/kubernetes-csi/external-snapshotter/deploy/kubernetes/snapshot-controller?ref=$snapVersion" 2>&1 |
         & kubectl apply -n kube-system -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Error "Failed to install the snapshot-controller"; exit 1 }
-    Write-Host "  ✓ snapshot-controller installed" -ForegroundColor Green
+    Write-GroupLine "✓ snapshot-controller installed" -ForegroundColor Green
 
     $exitCode = Invoke-WithSpinner -Message "Waiting for snapshot-controller..." -Executable "kubectl" `
         -Arguments @("rollout", "status", "deployment/snapshot-controller", "-n", "kube-system", "--timeout=3m") `
         -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "snapshot-controller rollout did not complete"; exit 1 }
-    Write-Host "  ✓ snapshot-controller ready" -ForegroundColor Green
 } else {
-    Write-Host "  ✓ VolumeSnapshot CRDs already present" -ForegroundColor Green
+    Write-GroupLine "✓ VolumeSnapshot CRDs already present" -ForegroundColor Green
 }
 
 # velero.io/csi-volumesnapshot-class label is required — it's how Velero's
@@ -144,7 +147,7 @@ deletionPolicy: Delete
 "@
 $vscYaml | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create the Longhorn VolumeSnapshotClass"; exit 1 }
-Write-Host "  ✓ VolumeSnapshotClass ready (driver.longhorn.io)" -ForegroundColor Green
+Write-GroupLine "✓ VolumeSnapshotClass ready (driver.longhorn.io)" -ForegroundColor Green
 
 # ── Credentials file for the aws plugin — written to a temp file only for
 # the duration of the Helm call (--set-file needs a real path), then removed ──
@@ -202,7 +205,6 @@ try {
     $exitCode = Invoke-WithSpinner -Message "Deploying Velero..." -Executable "helm" `
         -Arguments $HelmArgs -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Failed to deploy Velero (exit code $exitCode)"; exit 1 }
-    Write-Host "  ✓ Deployed" -ForegroundColor Green
 } finally {
     Remove-Item $credsFile -Force -ErrorAction SilentlyContinue
 }
@@ -211,13 +213,11 @@ $exitCode = Invoke-WithSpinner -Message "Waiting for Velero..." -Executable "kub
     -Arguments @("rollout", "status", "deployment/velero", "-n", $Namespace, "--timeout=5m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout did not complete — check cluster state"; exit 1 }
-Write-Host "  ✓ Velero ready" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for node-agent..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "daemonset/node-agent", "-n", $Namespace, "--timeout=5m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "node-agent rollout did not complete"; exit 1 }
-Write-Host "  ✓ node-agent ready" -ForegroundColor Green
 
 # ── Recurring backup schedule ──
 $ttlHours = $RetentionDays * 24
@@ -240,18 +240,34 @@ spec:
 "@
 $scheduleYaml | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create the backup Schedule"; exit 1 }
-Write-Host "  ✓ Backup schedule created ($Schedule, ${RetentionDays}d retention)" -ForegroundColor Green
+Write-GroupLine "✓ Backup schedule created ($Schedule, ${RetentionDays}d retention)" -ForegroundColor Green
 
 if ($verbose) {
     Write-Host ""
     & kubectl get pods -n $Namespace
 }
 
+Complete-Group
+
+# Three separate groups instead of one catch-all "Housekeeping" — see
+# 11-ingress-traefik/Install.ps1 and 21-longhorn/Install.ps1 for why.
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
+# Grafana dashboard: ConfigMap labeled grafana_dashboard=1, picked up live by
+# Grafana's dashboard sidecar (see 66-grafana/Install.ps1 sidecar.dashboards.*
+# Helm flags). Order-independent, no NetworkPolicy involved — same pattern as
+# 21-longhorn/Install.ps1. Register-GrafanaDashboard prints its own
+# "✓ ... registered" confirmation line — nothing more to print here.
+Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "velero" -JsonPath "$ScriptRoot\dashboards\velero.json" -Folder "Storage"
+Complete-Group
+
+Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 $minioPort = Resolve-ServiceRealPorts -Namespace "minio" -ServiceName "minio"
@@ -266,6 +282,8 @@ Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "minio" -
 $veleroMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "velero" -ServicePortName "http-monitoring"
 if (-not $veleroMetricsPort) { $veleroMetricsPort = @(8085) }
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $veleroMetricsPort
+
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
