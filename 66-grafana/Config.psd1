@@ -26,10 +26,15 @@
 
         # Datasource endpoints (cluster-internal)
         Datasources = @{
-            PrometheusUrl = "http://prometheus.prometheus:9090"
-            LokiUrl       = "http://loki.loki:3100"
-            TempoUrl      = "http://tempo-query-frontend.tempo:3200"
-            JaegerUrl     = "http://jaeger-query.jaeger:16686"
+            PrometheusUrl   = "http://prometheus.prometheus:9090"
+            LokiUrl         = "http://loki.loki:3100"
+            TempoUrl        = "http://tempo-query-frontend.tempo:3200"
+            JaegerUrl       = "http://jaeger-query.jaeger:16686"
+            # Only resolves once 61-prometheus has receivers configured (see
+            # $alertmanagerEnabled there) — the 'alertmanager' alias Service
+            # doesn't exist otherwise, so 66-grafana/Install.ps1 probes for it
+            # live and skips the datasource rather than provisioning a dead URL.
+            AlertmanagerUrl = "http://alertmanager.prometheus:9093"
         }
     }
 }

@@ -120,6 +120,30 @@ if ($LASTEXITCODE -eq 0) {
     $tracingNamespace = "jaeger"
 }
 
+# Alertmanager datasource — only when 61-prometheus actually enabled it (its
+# 'alertmanager' alias Service only exists when $alertmanagerEnabled there,
+# i.e. at least one receiver is configured). Points Grafana's Alerting UI at
+# kube-prometheus-stack's real Alertmanager (real SMTP/Teams receivers) so
+# it's the single source of truth instead of Grafana's own built-in one,
+# which otherwise sits there unconfigured with a dummy default contact point.
+# handleGrafanaManagedAlerts stays false (the default) on purpose — this repo
+# doesn't create Grafana-managed alert rules, every rule is a PrometheusRule
+# CRD evaluated by Prometheus itself and merely displayed (read-only) in
+# Grafana's Alerting > Alert rules list.
+$alertmanagerDatasource = ""
+& kubectl get svc alertmanager -n prometheus 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    $alertmanagerDatasource = @"
+    - name: Alertmanager
+      type: alertmanager
+      url: $($ds.AlertmanagerUrl)
+      access: proxy
+      jsonData:
+        implementation: prometheus
+        handleGrafanaManagedAlerts: false
+"@
+}
+
 # ── TLS issuer + OIDC (Authelia) ─────────────────────────────────────────────
 $issuerName    = Get-ClusterIssuerName -Platform $Platform -BaseDir $BaseDir
 $tlsSecretName = if ($Hostname) { "$($Hostname -replace '\.', '-')-tls" } else { "" }
@@ -361,6 +385,7 @@ datasources:
       access: proxy
       isDefault: false
 $tracingDatasource
+$alertmanagerDatasource
 command:
   - /bin/sh
   - -c
@@ -381,6 +406,7 @@ datasources:
       access: proxy
       isDefault: false
 $tracingDatasource
+$alertmanagerDatasource
 "@ }
 Set-Content -Path $tempValues -Value $valuesYaml -Encoding UTF8
 if ($oidcConfig) {
@@ -637,7 +663,7 @@ if ($oidcConfig) {
 }
 Write-Host ""
 Write-Host "  Datasources configured:" -ForegroundColor Gray
-Write-Host "    Prometheus, Loki$(if ($tracingDatasource -match 'Tempo') { ', Tempo' } elseif ($tracingDatasource -match 'Jaeger') { ', Jaeger' })" -ForegroundColor Yellow
+Write-Host "    Prometheus, Loki$(if ($tracingDatasource -match 'Tempo') { ', Tempo' } elseif ($tracingDatasource -match 'Jaeger') { ', Jaeger' })$(if ($alertmanagerDatasource) { ', Alertmanager' })" -ForegroundColor Yellow
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 
 Write-Host "`n========================================" -ForegroundColor Cyan
