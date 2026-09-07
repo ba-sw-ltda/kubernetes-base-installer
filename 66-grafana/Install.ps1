@@ -25,13 +25,7 @@ Set-ClusterContext -BaseDir $BaseDir -Platform $Platform
 
 # Standalone: if prompt parameters are missing, call Prompt.ps1 automatically
 if ([string]::IsNullOrWhiteSpace($Hostname)) {
-    $aksState = if (Test-Path (Join-Path $BaseDir ".aks-state.json")) {
-        Get-Content (Join-Path $BaseDir ".aks-state.json") | ConvertFrom-Json
-    } else { $null }
-    $domain = if ($aksState) {
-        $label = ($aksState.ClusterName -replace '[^a-z0-9-]', '-').ToLower()
-        "$label.$($aksState.Location).cloudapp.azure.com"
-    } else { "kubernetes.local" }
+    $domain = Resolve-ClusterDomain -Platform $Platform -BaseDir $BaseDir
     $inputs = & "$ScriptRoot\Prompt.ps1" -Platform $Platform -Domain $domain
     if (-not $inputs) { Write-Host "  Aborted." -ForegroundColor Red; exit 0 }
     if ([string]::IsNullOrWhiteSpace($Hostname)) { $Hostname = $inputs.Hostname }
