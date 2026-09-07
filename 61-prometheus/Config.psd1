@@ -24,8 +24,10 @@
             Requests = @{ Cpu = "250m";  Memory = "512Mi" }
         }
 
-        # Alertmanager — disabled by default (no alerting config yet)
-        AlertmanagerEnabled        = $false
+        # Alertmanager has no static on/off switch here — Install.ps1 enables
+        # it iff at least one receiver came back from Prompt.ps1 (empty list
+        # = the legitimate "no alerting configured" answer, same contract as
+        # 43-proget-registry's $Feeds).
         GrafanaEnabled             = $false
         RemoteWriteReceiverEnabled = $true
     }

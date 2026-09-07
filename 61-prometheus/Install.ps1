@@ -3,6 +3,13 @@
     Install kube-prometheus-stack (Prometheus + Alertmanager + Node Exporter + kube-state-metrics)
 .PARAMETER Platform
     Target platform
+.PARAMETER Receivers
+    Array of @{ Type = "Email"|"Teams"; Target = <email address|Teams webhook URL> }
+    (from Prompt.ps1). Empty means "no alerting configured" — Alertmanager
+    stays disabled.
+.PARAMETER Smtp
+    @{ Host; From; User; Password; RequireTls } (from Prompt.ps1) — only
+    populated when at least one Email receiver was configured.
 .PARAMETER ConfigPath
     Path to custom configuration file (optional)
 #>
@@ -10,6 +17,8 @@
 param(
     [string]$Platform,
     [string]$Hostname,
+    [hashtable[]]$Receivers = @(),
+    [hashtable]$Smtp        = @{},
     [string]$ConfigPath
 )
 
@@ -37,6 +46,7 @@ Write-Host "  Chart:      $ChartName v$ChartVersion" -ForegroundColor Gray
 Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
 Write-Host "  Retention:  $($UserConfig.RetentionTime) / $($UserConfig.RetentionSize)" -ForegroundColor Gray
 Write-Host "  Storage:    $($UserConfig.StorageSize)" -ForegroundColor Gray
+Write-Host "  Alerting:   $(if ($Receivers.Count -gt 0) { "$($Receivers.Count) receiver(s)" } else { "disabled — no receivers configured" })" -ForegroundColor Gray
 Write-Host ""
 
 Start-Group "Preparation"
@@ -73,8 +83,106 @@ type: Opaque
 }
 
 Complete-Group
+Start-Group "Alerting"
 
-$alertmanagerEnabled = $UserConfig.AlertmanagerEnabled.ToString().ToLower()
+# Receivers with a blank target (user backed out mid-prompt) don't count.
+$Receivers = @($Receivers | Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace($_.Target) })
+$alertmanagerEnabled = $Receivers.Count -gt 0
+
+$tempAlertmanagerValues = $null
+if ($alertmanagerEnabled) {
+    $emailReceivers = @($Receivers | Where-Object { $_.Type -eq "Email" })
+    $teamsReceivers = @($Receivers | Where-Object { $_.Type -eq "Teams" })
+
+    # One shared receiver ("notifications") fans every alert out to every
+    # configured channel — this repo's ask was a flat list of destinations,
+    # not per-severity routing, so there's no routing tree to build.
+    # 'Watchdog' (kube-prometheus-stack's built-in always-firing heartbeat)
+    # keeps going to the chart's default 'null' receiver so it doesn't spam
+    # every channel below every group_interval.
+    # Nested two levels deeper than "- name: 'notifications'" itself (8sp to
+    # align under "name:", 10sp for each list item) — these are keys *of*
+    # that receiver, not siblings of the receivers: list.
+    $emailConfigsBlock = ""
+    if ($emailReceivers.Count -gt 0) {
+        $lines = foreach ($r in $emailReceivers) { "          - to: `"$($r.Target)`"" }
+        $emailConfigsBlock = "        email_configs:`n" + ($lines -join "`n") + "`n"
+    }
+
+    $teamsConfigsBlock = ""
+    if ($teamsReceivers.Count -gt 0) {
+        $lines = foreach ($r in $teamsReceivers) { "          - webhook_url: `"$($r.Target)`"`n            send_resolved: true" }
+        $teamsConfigsBlock = "        msteams_configs:`n" + ($lines -join "`n") + "`n"
+    }
+
+    $smtpLines = ""
+    if ($emailReceivers.Count -gt 0 -and $Smtp -and -not [string]::IsNullOrWhiteSpace($Smtp.Host)) {
+        $smtpLines = "      smtp_smarthost: `"$($Smtp.Host)`"`n"
+        $smtpLines += "      smtp_from: `"$($Smtp.From)`"`n"
+        $smtpLines += "      smtp_require_tls: $($Smtp.RequireTls.ToString().ToLower())"
+        if (-not [string]::IsNullOrWhiteSpace($Smtp.User)) {
+            $smtpLines += "`n      smtp_auth_username: `"$($Smtp.User)`""
+            $smtpLines += "`n      smtp_auth_password: `"$($Smtp.Password)`""
+        }
+        $smtpLines += "`n"
+
+        # Vault is the audit trail for the credential; Alertmanager still
+        # needs the plaintext inline above to actually authenticate — same
+        # dual-write as 43-proget-registry's feed credentials. Skipped
+        # entirely when the relay needs no auth (no $Smtp.User) — there is
+        # no credential to audit in that case, and writing an empty
+        # user/password pair to vault would just look like a broken secret.
+        if (-not [string]::IsNullOrWhiteSpace($Smtp.User)) {
+            $writeOk = Write-ClusterSecret -Path "prometheus/smtp" -BaseDir $BaseDir -Platform $Platform -Data @{
+                user     = $Smtp.User
+                password = $Smtp.Password
+            }
+            if ($writeOk) { Write-GroupLine "✓ SMTP credentials stored in vault" -ForegroundColor Green }
+        }
+    }
+
+    # kube-prometheus-stack's own defaults for global/inhibit_rules/route are
+    # reproduced here (not merged — a --values file replaces this whole key),
+    # just re-pointed at 'notifications' instead of the chart's default 'null'.
+    $alertmanagerConfigYaml = @"
+alertmanager:
+  config:
+    global:
+      resolve_timeout: 5m
+$smtpLines    inhibit_rules:
+      - source_matchers: ['severity = critical']
+        target_matchers: ['severity =~ warning|info']
+        equal: ['namespace', 'alertname']
+      - source_matchers: ['severity = warning']
+        target_matchers: ['severity = info']
+        equal: ['namespace', 'alertname']
+      - source_matchers: ['alertname = InfoInhibitor']
+        target_matchers: ['severity = info']
+        equal: ['namespace']
+      - target_matchers: ['alertname = InfoInhibitor']
+    route:
+      group_by: ['namespace']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: 'notifications'
+      routes:
+      - receiver: 'null'
+        matchers:
+          - alertname = "Watchdog"
+    receivers:
+      - name: 'null'
+      - name: 'notifications'
+$emailConfigsBlock$teamsConfigsBlock
+"@
+
+    $tempAlertmanagerValues = Join-Path $env:TEMP "prometheus-alertmanager-values.yaml"
+    Set-Content -Path $tempAlertmanagerValues -Value $alertmanagerConfigYaml -Encoding UTF8
+} else {
+    Write-GroupLine "· No receivers configured — Alertmanager stays disabled" -ForegroundColor DarkGray
+}
+
+Complete-Group
 
 $HelmArgs = @(
     "upgrade", "--install", "--force", "prometheus", "prometheus-community/$ChartName",
@@ -86,12 +194,14 @@ $HelmArgs = @(
     "--set", "prometheus.prometheusSpec.resources.limits.memory=$($UserConfig.Resources.Limits.Memory)",
     "--set", "prometheus.prometheusSpec.resources.requests.cpu=$($UserConfig.Resources.Requests.Cpu)",
     "--set", "prometheus.prometheusSpec.resources.requests.memory=$($UserConfig.Resources.Requests.Memory)",
-    "--set", "alertmanager.enabled=$alertmanagerEnabled",
+    "--set", "alertmanager.enabled=$($alertmanagerEnabled.ToString().ToLower())",
     "--set", "grafana.enabled=$($UserConfig.GrafanaEnabled.ToString().ToLower())",
     "--set", "prometheus.prometheusSpec.enableRemoteWriteReceiver=$($UserConfig.RemoteWriteReceiverEnabled.ToString().ToLower())",
     "--set", "prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.accessModes[0]=ReadWriteOnce",
     "--set", "prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.resources.requests.storage=$($UserConfig.StorageSize)"
 )
+
+if ($tempAlertmanagerValues) { $HelmArgs += @("--values", $tempAlertmanagerValues) }
 
 if ($Platform -in @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")) {
     # The node-exporter subchart ships a default toleration (effect:
@@ -206,6 +316,24 @@ spec:
 $aliasYaml | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Service alias 'prometheus' created" -ForegroundColor Green }
 
+if ($alertmanagerEnabled) {
+    # Same alias pattern as 'prometheus' above — gives 66-grafana a stable
+    # short DNS name for the Alertmanager datasource instead of hardcoding
+    # the full "prometheus-kube-prometheus-alertmanager" release name.
+    $amAliasYaml = @"
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: $Namespace
+spec:
+  type: ExternalName
+  externalName: prometheus-kube-prometheus-alertmanager.$Namespace.svc.cluster.local
+"@
+    $amAliasYaml | & kubectl apply -f - 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Service alias 'alertmanager' created" -ForegroundColor Green }
+}
+
 Complete-Group
 
 if ($FullConfig.RancherProject) {
@@ -247,6 +375,43 @@ Set-NetworkPolicyConsumerEgress -Namespace $ingressNamespace -TargetNamespace $N
 # project assignments.
 Resolve-PendingNetworkPolicyConsumerEgress -Namespace $Namespace
 
+if ($alertmanagerEnabled) {
+    # Alertmanager's own targets (the SMTP relay, the Teams webhook host)
+    # are arbitrary internet endpoints, not another namespace in this
+    # cluster — same shape as the DNS/NTP external-egress rules in
+    # Install-NetworkPolicyBaseline, so it gets the same 0.0.0.0/0-by-port
+    # treatment, scoped to just the alertmanager pod (not the whole
+    # namespace) to keep the hole as narrow as the baseline's default-deny
+    # posture intends.
+    $smtpPort = 587
+    if ($Smtp -and -not [string]::IsNullOrWhiteSpace($Smtp.Host) -and $Smtp.Host -match ':(\d+)$') {
+        $smtpPort = [int]$Matches[1]
+    }
+    $alertEgressYaml = @"
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-alertmanager-external-egress
+  namespace: $Namespace
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: TCP
+      port: $smtpPort
+    - protocol: TCP
+      port: 443
+"@
+    $alertEgressYaml | & kubectl apply -f - 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Alertmanager external egress (SMTP $smtpPort / HTTPS 443) allowed" -ForegroundColor Green }
+}
+
 Complete-Group
 
 if ($verbose) {
@@ -263,6 +428,10 @@ if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
 }
 Write-Host "  Service (cluster-internal):" -ForegroundColor Gray
 Write-Host "    http://prometheus.${Namespace}:9090" -ForegroundColor Yellow
+if ($alertmanagerEnabled) {
+    Write-Host "  Alertmanager:" -ForegroundColor Gray
+    foreach ($r in $Receivers) { Write-Host "    $($r.Type): $($r.Target)" -ForegroundColor Yellow }
+}
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 
 Write-Host "`n========================================" -ForegroundColor Cyan
