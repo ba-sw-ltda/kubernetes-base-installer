@@ -219,6 +219,147 @@ $prometheusPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "p
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $prometheusPort
 Set-NetworkPolicyConsumerEgress -Namespace $ingressNamespace -TargetNamespace $Namespace -Port $prometheusPort
 
+# Prometheus as a CONSUMER of every namespace it actually scrapes via a
+# ServiceMonitor (Compliance finding #1, NetworkPolicy audit 2026-09-05):
+# until now nothing ever labeled `prometheus` as a consumer, so every
+# provider-ingress rule written for a ServiceMonitor target (12-metallb,
+# 21-longhorn, 31-cert-manager, 33-openbao, 35-authelia, 62-loki,
+# 63-promtail, 64-tracing-jaeger/tempo, 65-opentelemetry-collector,
+# 66-grafana, 91-argocd, 92-minio, 93-velero, 11-ingress-nginx/traefik) was
+# inert — Prometheus's own default-deny (Install-NetworkPolicyBaseline)
+# silently blocked every scrape. One Set-NetworkPolicyConsumerEgress call
+# per ServiceMonitor'd namespace below, each resolving the same
+# Service+port-name pair that namespace's own provider-ingress rule uses so
+# both ends match.
+#
+# Components that install BEFORE 61-prometheus (ingress=11, metallb=12,
+# longhorn=21, cert-manager=31, openbao=33, authelia=35) already exist at
+# this point, so those resolve live with no fallback needed. Components
+# installing AFTER (loki=62, promtail=63, tracing=64, otel=65, grafana=66,
+# argocd=91, minio=92, velero=93) don't exist yet on a fresh install, so
+# those fall back to each chart's documented default port — same
+# resolve-then-fallback idiom already used for cert-manager's own openbao
+# consumer-egress call above. Re-running this script once those components
+# are live re-resolves the real value and re-applies the rule, same as
+# every other NetworkPolicy call in this repo.
+
+# Ingress controller metrics (whichever variant is active — both install
+# before Prometheus, so this always resolves live).
+& kubectl get svc ingress-nginx-controller-metrics -n $ingressNamespace 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    $ingressMetricsPort = Resolve-ServiceRealPorts -Namespace $ingressNamespace -ServiceName "ingress-nginx-controller-metrics" -ServicePortName "metrics"
+    if (-not $ingressMetricsPort) { $ingressMetricsPort = @(10254) }
+} else {
+    $ingressMetricsPort = @(9100)   # traefik — hardcoded upstream too, see 11-ingress-traefik/Install.ps1
+}
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $ingressNamespace -Port $ingressMetricsPort
+
+# metallb-system (already installed, order 12) — hardcoded port upstream too.
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "metallb-system" -Port 7472
+
+# longhorn-system (already installed, order 21)
+$longhornFrontendPort = Resolve-ServiceRealPorts -Namespace "longhorn-system" -ServiceName "longhorn-frontend"
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "longhorn-system" -Port ($longhornFrontendPort + 9500)
+
+# cert-manager (already installed, order 31) — hardcoded port upstream too.
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "cert-manager" -Port 9402
+
+# openbao (already installed, order 33)
+$openbaoConsumerPort = Resolve-ServiceRealPorts -Namespace "openbao" -ServiceName "openbao" -ServicePortName "http"
+if (-not $openbaoConsumerPort) { $openbaoConsumerPort = @(8200) }
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "openbao" -Port $openbaoConsumerPort
+
+# authelia (already installed, order 35) — chart-native ServiceMonitor
+# (configMap.telemetry.metrics.serviceMonitor.enabled=true, see
+# 35-authelia/Install.ps1), unfiltered resolve same as that script's own
+# provider-ingress rule. Metrics port defaults to 9959 (chart >=4.36.0).
+$autheliaConsumerPort = Resolve-ServiceRealPorts -Namespace "authelia" -ServiceName "authelia"
+if (-not $autheliaConsumerPort) { $autheliaConsumerPort = @(9959) }
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "authelia" -Port $autheliaConsumerPort
+
+# loki (installs after, order 62) — chart default "http-metrics" port is 3100.
+$lokiConsumerPort = Resolve-ServiceRealPorts -Namespace "loki" -ServiceName "loki" -ServicePortName "http-metrics"
+if (-not $lokiConsumerPort) { $lokiConsumerPort = @(3100) }
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port $lokiConsumerPort
+
+# promtail (installs after, order 63) — metrics Service is named
+# "promtail-metrics", not "promtail" (see 63-promtail/Install.ps1). Chart
+# default "http-metrics" port is 3101.
+$promtailConsumerPort = Resolve-ServiceRealPorts -Namespace "promtail" -ServiceName "promtail-metrics" -ServicePortName "http-metrics"
+if (-not $promtailConsumerPort) { $promtailConsumerPort = @(3101) }
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "promtail" -Port $promtailConsumerPort
+
+# Tracing backend (installs after, order 64) — mutually exclusive, same
+# auto-detection 66-grafana/Install.ps1 uses (tempo-distributed uses
+# tempo-query-frontend; legacy tempo uses the plain "tempo" Service).
+$tracingNamespace = ""
+& kubectl get svc tempo-query-frontend -n tempo 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { & kubectl get svc tempo -n tempo 2>&1 | Out-Null }
+if ($LASTEXITCODE -eq 0) { $tracingNamespace = "tempo" }
+& kubectl get svc jaeger -n jaeger 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) { $tracingNamespace = "jaeger" }
+
+if ($tracingNamespace -eq "jaeger") {
+    $jaegerConsumerQueryPort     = Resolve-ServiceRealPorts -Namespace "jaeger" -ServiceName "jaeger-query"
+    if (-not $jaegerConsumerQueryPort) { $jaegerConsumerQueryPort = @(16686) }
+    $jaegerConsumerCollectorPort = Resolve-ServiceRealPorts -Namespace "jaeger" -ServiceName "jaeger-collector" -ServicePortName "grpc-otlp"
+    if (-not $jaegerConsumerCollectorPort) { $jaegerConsumerCollectorPort = @(4317) }
+    $jaegerConsumerAdminPort = @(Resolve-ServiceRealPorts -Namespace "jaeger" -ServiceName "jaeger-query" -ServicePortName "admin") +
+        @(Resolve-ServiceRealPorts -Namespace "jaeger" -ServiceName "jaeger-collector" -ServicePortName "admin") +
+        @(Resolve-ServiceRealPorts -Namespace "jaeger" -ServiceName "jaeger" -ServicePortName "admin")
+    if (-not $jaegerConsumerAdminPort) { $jaegerConsumerAdminPort = @(14269, 16687) }
+    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "jaeger" -Port ($jaegerConsumerQueryPort + $jaegerConsumerCollectorPort + $jaegerConsumerAdminPort)
+} elseif ($tracingNamespace -eq "tempo") {
+    $tempoConsumerQueryFrontendPort = Resolve-ServiceRealPorts -Namespace "tempo" -ServiceName "tempo-query-frontend" -ServicePortName "http-metrics"
+    if (-not $tempoConsumerQueryFrontendPort) { $tempoConsumerQueryFrontendPort = @(3200) }
+    $tempoConsumerDistributorPorts = Resolve-ServiceRealPorts -Namespace "tempo" -ServiceName "tempo-distributor"
+    if (-not $tempoConsumerDistributorPorts) { $tempoConsumerDistributorPorts = @(3200, 9095) }
+    $tempoConsumerCompactorPort = Resolve-ServiceRealPorts -Namespace "tempo" -ServiceName "tempo-compactor" -ServicePortName "http-metrics"
+    if (-not $tempoConsumerCompactorPort) { $tempoConsumerCompactorPort = @(3200) }
+    $tempoConsumerIngesterPort = Resolve-ServiceRealPorts -Namespace "tempo" -ServiceName "tempo-ingester" -ServicePortName "http-metrics"
+    if (-not $tempoConsumerIngesterPort) { $tempoConsumerIngesterPort = @(3200) }
+    $tempoConsumerQuerierPort = Resolve-ServiceRealPorts -Namespace "tempo" -ServiceName "tempo-querier" -ServicePortName "http-metrics"
+    if (-not $tempoConsumerQuerierPort) { $tempoConsumerQuerierPort = @(3200) }
+    $tempoConsumerPorts = @($tempoConsumerQueryFrontendPort + $tempoConsumerDistributorPorts + $tempoConsumerCompactorPort + $tempoConsumerIngesterPort + $tempoConsumerQuerierPort | Select-Object -Unique)
+    Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "tempo" -Port $tempoConsumerPorts
+}
+
+# opentelemetry-collector (installs after, order 65) — namespace is
+# "opentelemetry", not "opentelemetry-collector". Chart defaults: otlp=4317,
+# otlp-http=4318, metrics=8888 (see 65-opentelemetry-collector/Install.ps1).
+$otelConsumerPorts = @(
+    (Resolve-ServiceRealPorts -Namespace "opentelemetry" -ServiceName "opentelemetry-collector" -ServicePortName "otlp") +
+    (Resolve-ServiceRealPorts -Namespace "opentelemetry" -ServiceName "opentelemetry-collector" -ServicePortName "otlp-http") +
+    (Resolve-ServiceRealPorts -Namespace "opentelemetry" -ServiceName "opentelemetry-collector" -ServicePortName "metrics") |
+    Select-Object -Unique
+)
+if (-not $otelConsumerPorts) { $otelConsumerPorts = @(4317, 4318, 8888) }
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "opentelemetry" -Port $otelConsumerPorts
+
+# grafana (installs after, order 66) — chart default Service port is 80.
+$grafanaConsumerPort = Resolve-ServiceRealPorts -Namespace "grafana" -ServiceName "grafana"
+if (-not $grafanaConsumerPort) { $grafanaConsumerPort = @(80) }
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "grafana" -Port $grafanaConsumerPort
+
+# argocd (installs after, order 91) — chart default argocd-server "http"
+# port is 80; argocd-metrics default is 8082.
+$argocdConsumerPort = Resolve-ServiceRealPorts -Namespace "argocd" -ServiceName "argocd-server" -ServicePortName "http"
+if (-not $argocdConsumerPort) { $argocdConsumerPort = @(80) }
+$argocdConsumerMetricsPort = Resolve-ServiceRealPorts -Namespace "argocd" -ServiceName "argocd-metrics" -ServicePortName "metrics"
+if (-not $argocdConsumerMetricsPort) { $argocdConsumerMetricsPort = @(8082) }
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "argocd" -Port ($argocdConsumerPort + $argocdConsumerMetricsPort)
+
+# minio (installs after, order 92) — chart default Service ports are 9000
+# (S3 API, also serves /minio/v2/metrics/cluster) and 9001 (console).
+$minioConsumerPort = Resolve-ServiceRealPorts -Namespace "minio" -ServiceName "minio"
+if (-not $minioConsumerPort) { $minioConsumerPort = @(9000, 9001) }
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "minio" -Port $minioConsumerPort
+
+# velero (installs after, order 93) — chart default "http-monitoring" port is 8085.
+$veleroConsumerPort = Resolve-ServiceRealPorts -Namespace "velero" -ServiceName "velero" -ServicePortName "http-monitoring"
+if (-not $veleroConsumerPort) { $veleroConsumerPort = @(8085) }
+Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "velero" -Port $veleroConsumerPort
+
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
 Write-Host "  Quick Reference" -ForegroundColor White
