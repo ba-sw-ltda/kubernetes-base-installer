@@ -39,6 +39,8 @@ Write-Host "  Retention:  $($UserConfig.RetentionTime) / $($UserConfig.Retention
 Write-Host "  Storage:    $($UserConfig.StorageSize)" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group "Preparation"
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "prometheus-community", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
@@ -46,11 +48,10 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
 
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 
 # Pull proxy Secret via Reflector if proxy-config exists
 & kubectl get secret proxy-config -n proxy-config 2>&1 | Out-Null
@@ -67,9 +68,11 @@ type: Opaque
 "@
     $reflectedSecret | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✓ Proxy Secret reflected into $Namespace" -ForegroundColor Green
+        Write-GroupLine "✓ Proxy Secret reflected into $Namespace" -ForegroundColor Green
     }
 }
+
+Complete-Group
 
 $alertmanagerEnabled = $UserConfig.AlertmanagerEnabled.ToString().ToLower()
 
@@ -117,27 +120,28 @@ if ($Platform -in @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")) {
     $HelmArgs += @("--set-json", "prometheus-node-exporter.tolerations=[]")
 }
 
+Start-Group "Deploy"
+
 Reset-StuckHelmRelease -ReleaseName "prometheus" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying kube-prometheus-stack..." -Executable "helm" `
     -Arguments $HelmArgs -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to deploy kube-prometheus-stack (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for prometheus-operator..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/prometheus-kube-prometheus-operator", "-n", $Namespace, "--timeout=5m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout of prometheus-operator did not complete"; exit 1 }
-Write-Host "  ✓ prometheus-operator ready" -ForegroundColor Green
 
 # The Prometheus Operator creates the StatefulSet asynchronously after its own rollout.
 # Wait for it to appear before running rollout status.
 $frames = @('|','/','-','\'); $fi = 0; $elapsed = 0
+$indent = Get-GroupIndent
 while ($elapsed -lt 60) {
     $ss = & kubectl get statefulset prometheus-prometheus-kube-prometheus-prometheus `
         -n $Namespace --ignore-not-found 2>$null
     if ($ss) { break }
-    Write-Host ("`r  $($frames[$fi++ % 4]) Waiting for prometheus StatefulSet to be created...") -NoNewline -ForegroundColor Cyan
+    Write-Host ("`r$indent$($frames[$fi++ % 4]) Waiting for prometheus StatefulSet to be created...") -NoNewline -ForegroundColor Cyan
     Start-Sleep -Seconds 5; $elapsed += 5
 }
 Write-Host ("`r" + (" " * 60) + "`r") -NoNewline
@@ -147,7 +151,9 @@ $exitCode = Invoke-WithSpinner -Message "Waiting for prometheus..." -Executable 
     -Arguments @("rollout", "status", "statefulset/prometheus-prometheus-kube-prometheus-prometheus", "-n", $Namespace, "--timeout=10m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout of prometheus did not complete"; exit 1 }
-Write-Host "  ✓ prometheus ready" -ForegroundColor Green
+
+Complete-Group
+Start-Group "Ingress & Portal"
 
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
     $protect = Protect-ComponentIngress -Hostname $Hostname -Platform $Platform -BaseDir $BaseDir
@@ -177,7 +183,7 @@ $($protect.TlsBlock)
               number: 9090
 "@
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
+    if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Ingress configured ($Hostname)" -ForegroundColor Green }
     $scheme = if (-not [string]::IsNullOrWhiteSpace($protect.TlsBlock)) { "https" } else { "http" }
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
     Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
@@ -198,16 +204,18 @@ spec:
   externalName: prometheus-kube-prometheus-prometheus.$Namespace.svc.cluster.local
 "@
 $aliasYaml | & kubectl apply -f - 2>&1 | Out-Null
-if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Service alias 'prometheus' created" -ForegroundColor Green }
+if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Service alias 'prometheus' created" -ForegroundColor Green }
 
-if ($verbose) {
-    Write-Host ""
-    & kubectl get pods -n $Namespace
-}
+Complete-Group
 
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
+
+Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # Real namespace of whichever ingress controller is actually installed —
@@ -238,6 +246,13 @@ Set-NetworkPolicyConsumerEgress -Namespace $ingressNamespace -TargetNamespace $N
 # marker/resolver pattern already used for portal entries and Rancher
 # project assignments.
 Resolve-PendingNetworkPolicyConsumerEgress -Namespace $Namespace
+
+Complete-Group
+
+if ($verbose) {
+    Write-Host ""
+    & kubectl get pods -n $Namespace
+}
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
