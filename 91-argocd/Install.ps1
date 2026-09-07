@@ -202,8 +202,13 @@ if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
             # only argocd-server actually calls out to Authelia, so this patches its
             # Deployment directly instead (idempotent on re-install).
             $autheliaHost = ([Uri]$oidcConfig.Issuer).Host
-            if (Test-HostnameNeedsClusterAlias -Hostname $autheliaHost -IngressNamespace "ingress" -IngressServiceName "traefik" -CheckNamespace $Namespace) {
-                $traefikClusterIp = (& kubectl get svc traefik -n ingress -o jsonpath='{.spec.clusterIP}' 2>$null)
+            # Real namespace of whichever ingress controller is actually installed —
+            # "ingress" on fresh installs, but pre-rename clusters (e.g. live RKE2) can
+            # still have ingress-nginx in the legacy "ingress-nginx" namespace (compliance
+            # finding #2, NetworkPolicy audit 2026-09-05; see project_rke2_ingress_namespace_mismatch memory).
+            $ingressNamespace = Resolve-IngressNamespace
+            if (Test-HostnameNeedsClusterAlias -Hostname $autheliaHost -IngressNamespace $ingressNamespace -IngressServiceName "traefik" -CheckNamespace $Namespace) {
+                $traefikClusterIp = (& kubectl get svc traefik -n $ingressNamespace -o jsonpath='{.spec.clusterIP}' 2>$null)
                 if ($traefikClusterIp) {
                     $hostAliasPatch = "{`"spec`":{`"template`":{`"spec`":{`"hostAliases`":[{`"ip`":`"$traefikClusterIp`",`"hostnames`":[`"$autheliaHost`"]}]}}}}"
                     & kubectl patch deployment argocd-server -n $Namespace --type merge -p $hostAliasPatch 2>&1 | Out-Null
@@ -295,14 +300,19 @@ $argocdPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "argoc
 # own), created once controller.metrics.enabled is on above. Bundled into the
 # same provider-ingress rule as argocd-server's http port rather than a
 # separate call, mirroring how every other component in this rollout adds its
-# metrics port. Inert until `prometheus` is labeled as a consumer — same
-# deliberate gap as every other component here, see 21-longhorn/Install.ps1's
-# NOTE.
+# metrics port. `prometheus` is labeled as a consumer of this namespace by
+# 61-prometheus/Install.ps1 (compliance finding #1, NetworkPolicy audit
+# 2026-09-05), not here — see that file's "Network Policy" group.
 $argocdMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "argocd-metrics" -ServicePortName "metrics"
 if (-not $argocdMetricsPort) { $argocdMetricsPort = @(8082) }
 
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port ($argocdPort + $argocdMetricsPort)
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $argocdPort
+# Real namespace of whichever ingress controller is actually installed —
+# "ingress" on fresh installs, but pre-rename clusters (e.g. live RKE2) can
+# still have ingress-nginx in the legacy "ingress-nginx" namespace (compliance
+# finding #2, NetworkPolicy audit 2026-09-05; see project_rke2_ingress_namespace_mismatch memory).
+$ingressNamespace = Resolve-IngressNamespace
+Set-NetworkPolicyConsumerEgress -Namespace $ingressNamespace -TargetNamespace $Namespace -Port $argocdPort
 if ($oidcConfig) {
     # ArgoCD itself calls out to Authelia's OIDC endpoints via the ingress hostname (HTTPS).
     # Set-NetworkPolicyConsumerEgress's -Port is a mandatory int[] — PowerShell
@@ -312,11 +322,11 @@ if ($oidcConfig) {
     # RKE2 cluster still runs the pre-migration ingress-nginx controller (not
     # yet rebuilt onto the Traefik-default baseline), so "traefik" doesn't
     # exist there and this must degrade gracefully, not crash.
-    $ingressWebsecurePort = Resolve-ServiceRealPorts -Namespace "ingress" -ServiceName "traefik" -ServicePortName "websecure"
+    $ingressWebsecurePort = Resolve-ServiceRealPorts -Namespace $ingressNamespace -ServiceName "traefik" -ServicePortName "websecure"
     if ($ingressWebsecurePort) {
-        Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "ingress" -Port $ingressWebsecurePort
+        Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $ingressNamespace -Port $ingressWebsecurePort
     } else {
-        Write-Warning "Could not resolve Traefik's websecure port in the 'ingress' namespace — skipping ArgoCD's OIDC egress NetworkPolicy rule. If this cluster's ingress controller isn't Traefik yet, ArgoCD's OIDC calls to Authelia will be blocked until this is fixed manually or the ingress layer is migrated."
+        Write-Warning "Could not resolve Traefik's websecure port in the '$ingressNamespace' namespace — skipping ArgoCD's OIDC egress NetworkPolicy rule. If this cluster's ingress controller isn't Traefik yet, ArgoCD's OIDC calls to Authelia will be blocked until this is fixed manually or the ingress layer is migrated."
     }
 }
 

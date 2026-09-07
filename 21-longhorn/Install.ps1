@@ -270,17 +270,18 @@ $longhornPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "lon
 # ServiceMonitor added above (see $HelmArgs metrics.serviceMonitor.* flags)
 # can actually be scraped, not just defined.
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port ($longhornPort + 9500)
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $longhornPort
-# NOTE: the `prometheus` namespace is NOT labeled here via
-# Set-NetworkPolicyConsumerEgress — that function also creates an Egress-only
-# NetworkPolicy object in the *source* namespace, and `prometheus` currently
-# has zero NetworkPolicies of its own (fully open egress). Adding one would
-# flip it to deny-all-egress-except-longhorn, breaking every other scrape
-# target. Applied ad hoc instead (label only, same technique as the
-# ingress-nginx fix — see project_rke2_ingress_namespace_mismatch memory):
-#   kubectl label namespace prometheus network.k8s/allow-longhorn-system=true --overwrite
-# Needs a real `prometheus` egress baseline before this can be scripted here
-# safely — deferred to the weekend NetworkPolicy structural fix.
+# Real namespace of whichever ingress controller is actually installed —
+# "ingress" on fresh installs, but pre-rename clusters (e.g. live RKE2) can
+# still have ingress-nginx in the legacy "ingress-nginx" namespace (compliance
+# finding #2, NetworkPolicy audit 2026-09-05; see project_rke2_ingress_namespace_mismatch memory).
+$ingressNamespace = Resolve-IngressNamespace
+Set-NetworkPolicyConsumerEgress -Namespace $ingressNamespace -TargetNamespace $Namespace -Port $longhornPort
+# NOTE: labeling the `prometheus` namespace as a consumer of longhorn-system
+# is no longer done ad hoc here — compliance finding #1 (NetworkPolicy audit
+# 2026-09-05) gave `prometheus` a real, comprehensive egress baseline
+# (including this longhorn-system rule) directly in 61-prometheus/Install.ps1,
+# resolved live the same way as every other provider in this repo. See that
+# file's "Network Policy" group.
 
 Complete-Group
 

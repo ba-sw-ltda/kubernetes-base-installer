@@ -234,10 +234,15 @@ grafana.ini:
 # "real" vs "synthetic" — that hardcoded-platform-list pattern has bitten this codebase before
 # (see the Magalu OpenBao platform-gate history) and would need updating every time a new
 # platform or a real customer domain is added.
+# Real namespace of whichever ingress controller is actually installed —
+# "ingress" on fresh installs, but pre-rename clusters (e.g. live RKE2) can
+# still have ingress-nginx in the legacy "ingress-nginx" namespace (compliance
+# finding #2, NetworkPolicy audit 2026-09-05; see project_rke2_ingress_namespace_mismatch memory).
+$ingressNamespace = Resolve-IngressNamespace
 if ($oidcConfig) {
     $autheliaHost = ([Uri]$oidcIssuer).Host
-    if (Test-HostnameNeedsClusterAlias -Hostname $autheliaHost -IngressNamespace "ingress" -IngressServiceName "traefik" -CheckNamespace $Namespace) {
-        $traefikClusterIp = (& kubectl get svc traefik -n ingress -o jsonpath='{.spec.clusterIP}' 2>$null)
+    if (Test-HostnameNeedsClusterAlias -Hostname $autheliaHost -IngressNamespace $ingressNamespace -IngressServiceName "traefik" -CheckNamespace $Namespace) {
+        $traefikClusterIp = (& kubectl get svc traefik -n $ingressNamespace -o jsonpath='{.spec.clusterIP}' 2>$null)
         if ($traefikClusterIp) {
             $oidcIniBlock += @"
 
@@ -248,7 +253,7 @@ hostAliases:
 "@
             Write-Host "  ✓ Grafana pod resolves $autheliaHost internally (hostAliases -> $traefikClusterIp)" -ForegroundColor Green
         } else {
-            Write-Warning "Could not resolve Traefik's ClusterIP in the 'ingress' namespace — skipping the hostAliases entry for $autheliaHost. If the cluster's DNS can't resolve this hostname on its own (e.g. a synthetic domain that only exists in a client's hosts file), Grafana's OIDC login will fail with a DNS lookup error."
+            Write-Warning "Could not resolve Traefik's ClusterIP in the '$ingressNamespace' namespace — skipping the hostAliases entry for $autheliaHost. If the cluster's DNS can't resolve this hostname on its own (e.g. a synthetic domain that only exists in a client's hosts file), Grafana's OIDC login will fail with a DNS lookup error."
         }
     } else {
         Write-Host "  · $autheliaHost already resolves correctly from inside the cluster — skipping hostAliases workaround" -ForegroundColor DarkGray
@@ -558,11 +563,11 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 # been fixed).
 $grafanaPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "grafana"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $grafanaPort
-# Register grafana as an egress target inside the shared "ingress" namespace.
+# Register grafana as an egress target inside the real ingress namespace.
 # Must match the SAME real container port as the provider-ingress rule above.
 # Safe because 11-ingress-* always applies its own baseline before any later
 # component (numeric order 11 < 66) gets here.
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $grafanaPort
+Set-NetworkPolicyConsumerEgress -Namespace $ingressNamespace -TargetNamespace $Namespace -Port $grafanaPort
 $prometheusPort = Resolve-ServiceRealPorts -Namespace "prometheus" -ServiceName "prometheus-kube-prometheus-prometheus" -ServicePortName "http-web"
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "prometheus" -Port $prometheusPort
 $lokiPort = Resolve-ServiceRealPorts -Namespace "loki" -ServiceName "loki" -ServicePortName "http-metrics"
@@ -591,11 +596,11 @@ if ($oidcConfig) {
     # -Port is a mandatory int[] — PowerShell rejects an *empty* array at parameter
     # binding (a terminating error, not a graceful no-op), so an unresolved Traefik
     # Service must not abort this whole install.
-    $ingressWebsecurePort = Resolve-ServiceRealPorts -Namespace "ingress" -ServiceName "traefik" -ServicePortName "websecure"
+    $ingressWebsecurePort = Resolve-ServiceRealPorts -Namespace $ingressNamespace -ServiceName "traefik" -ServicePortName "websecure"
     if ($ingressWebsecurePort) {
-        Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "ingress" -Port $ingressWebsecurePort
+        Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $ingressNamespace -Port $ingressWebsecurePort
     } else {
-        Write-Warning "Could not resolve Traefik's websecure port in the 'ingress' namespace — skipping Grafana's OIDC egress NetworkPolicy rule. Grafana's OIDC login via Authelia will be blocked until this is fixed manually or Traefik is installed."
+        Write-Warning "Could not resolve Traefik's websecure port in the '$ingressNamespace' namespace — skipping Grafana's OIDC egress NetworkPolicy rule. Grafana's OIDC login via Authelia will be blocked until this is fixed manually or Traefik is installed."
     }
 }
 

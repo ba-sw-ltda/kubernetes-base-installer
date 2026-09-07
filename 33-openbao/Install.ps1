@@ -987,7 +987,13 @@ Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $openbaoIngressPort
 # got it. Gated on Hostname like the Ingress block above — no route, nothing
 # to register as a consumer of.
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
-    Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $openbaoIngressPort
+    # Real namespace of whichever ingress controller is actually installed —
+    # "ingress" on fresh installs, but pre-rename clusters (e.g. live RKE2) can
+    # still have ingress-nginx in the legacy "ingress-nginx" namespace
+    # (compliance finding #2, NetworkPolicy audit 2026-09-05; see
+    # project_rke2_ingress_namespace_mismatch memory).
+    $ingressNamespace = Resolve-IngressNamespace
+    Set-NetworkPolicyConsumerEgress -Namespace $ingressNamespace -TargetNamespace $Namespace -Port $openbaoIngressPort
 }
 
 Complete-Group

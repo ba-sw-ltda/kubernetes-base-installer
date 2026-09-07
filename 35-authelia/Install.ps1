@@ -428,7 +428,12 @@ Start-Group -Title "Network Policy"
 Install-NetworkPolicyBaseline -Namespace $Namespace
 $autheliaPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "authelia"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $autheliaPort
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $autheliaPort
+# Real namespace of whichever ingress controller is actually installed —
+# "ingress" on fresh installs, but pre-rename clusters (e.g. live RKE2) can
+# still have ingress-nginx in the legacy "ingress-nginx" namespace (compliance
+# finding #2, NetworkPolicy audit 2026-09-05; see project_rke2_ingress_namespace_mismatch memory).
+$ingressNamespace = Resolve-IngressNamespace
+Set-NetworkPolicyConsumerEgress -Namespace $ingressNamespace -TargetNamespace $Namespace -Port $autheliaPort
 
 Complete-Group
 

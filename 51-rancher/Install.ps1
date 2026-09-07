@@ -284,10 +284,16 @@ groupPrincipalName: "oidc_group://admins"
 # workaround for the reasoning). The Rancher chart has no hostAliases value
 # (unlike Grafana's), so this patches the Deployment directly — idempotent
 # on re-install since a matching hostAliases entry is a no-op merge.
+# Real namespace of whichever ingress controller is actually installed —
+# "ingress" on fresh installs, but pre-rename clusters (e.g. live RKE2) can
+# still have ingress-nginx in the legacy "ingress-nginx" namespace (compliance
+# finding #2, NetworkPolicy audit 2026-09-05; see project_rke2_ingress_namespace_mismatch memory).
+$ingressNamespace = Resolve-IngressNamespace
+
 if ($oidc) {
     $autheliaHost = ([Uri]$oidc.Issuer).Host
-    if (Test-HostnameNeedsClusterAlias -Hostname $autheliaHost -IngressNamespace "ingress" -IngressServiceName "traefik" -CheckNamespace $Namespace) {
-        $traefikClusterIp = (& kubectl get svc traefik -n ingress -o jsonpath='{.spec.clusterIP}' 2>$null)
+    if (Test-HostnameNeedsClusterAlias -Hostname $autheliaHost -IngressNamespace $ingressNamespace -IngressServiceName "traefik" -CheckNamespace $Namespace) {
+        $traefikClusterIp = (& kubectl get svc traefik -n $ingressNamespace -o jsonpath='{.spec.clusterIP}' 2>$null)
         if ($traefikClusterIp) {
             $hostAliasPatch = "{`"spec`":{`"template`":{`"spec`":{`"hostAliases`":[{`"ip`":`"$traefikClusterIp`",`"hostnames`":[`"$autheliaHost`"]}]}}}}"
             & kubectl patch deployment rancher -n $Namespace --type merge -p $hostAliasPatch 2>&1 | Out-Null
@@ -316,7 +322,7 @@ Start-Group "Network policies"
 Install-NetworkPolicyBaseline -Namespace $Namespace
 $rancherPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "rancher" -ServicePortName "http"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $rancherPort
-Set-NetworkPolicyConsumerEgress -Namespace "ingress" -TargetNamespace $Namespace -Port $rancherPort
+Set-NetworkPolicyConsumerEgress -Namespace $ingressNamespace -TargetNamespace $Namespace -Port $rancherPort
 
 # Rancher v2.14 embeds an aggregated API server (ext.cattle.io) directly in
 # the rancher pod, registered as APIService v1.ext.cattle.io and backed by
@@ -341,11 +347,11 @@ if ($oidc) {
     # binding error, not a graceful no-op, so an unresolved Traefik Service
     # (e.g. a cluster still running the pre-migration ingress-nginx controller)
     # must not be allowed to abort the whole install here.
-    $ingressWebsecurePort = Resolve-ServiceRealPorts -Namespace "ingress" -ServiceName "traefik" -ServicePortName "websecure"
+    $ingressWebsecurePort = Resolve-ServiceRealPorts -Namespace $ingressNamespace -ServiceName "traefik" -ServicePortName "websecure"
     if ($ingressWebsecurePort) {
-        Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "ingress" -Port $ingressWebsecurePort
+        Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $ingressNamespace -Port $ingressWebsecurePort
     } else {
-        Write-Warning "Could not resolve Traefik's websecure port in the 'ingress' namespace — skipping Rancher's OIDC egress NetworkPolicy rule. If this cluster's ingress controller isn't Traefik yet, Rancher's OIDC calls to Authelia will be blocked until this is fixed manually or the ingress layer is migrated."
+        Write-Warning "Could not resolve Traefik's websecure port in the '$ingressNamespace' namespace — skipping Rancher's OIDC egress NetworkPolicy rule. If this cluster's ingress controller isn't Traefik yet, Rancher's OIDC calls to Authelia will be blocked until this is fixed manually or the ingress layer is migrated."
     }
 }
 
