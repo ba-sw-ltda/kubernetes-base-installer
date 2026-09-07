@@ -109,6 +109,14 @@ $HelmArgs = @(
     # this repo (see 21-longhorn/Install.ps1). CRD-only, no NetworkPolicy
     # effect by itself — the metrics port is bundled into the provider-ingress
     # rule below.
+    # additionalLabels is NOT a flat prometheus.serviceMonitor.* key in this
+    # chart — it only exists nested under .speaker and .controller (confirmed
+    # via `helm show values metallb/metallb --version 0.15.3`). The flat path
+    # silently no-ops (Helm doesn't validate unknown value keys), so the two
+    # ServiceMonitors were rendering without the "release: prometheus" label
+    # that the kube-prometheus-stack Prometheus CR's serviceMonitorSelector
+    # requires — live-confirmed 2026-09-07: 0 scrape targets, empty MetalLB
+    # dashboard, unrelated to NetworkPolicy (which was already correct).
     # Unlike every other chart in this repo, this one's servicemonitor.yaml
     # template also renders a Role/RoleBinding granting the Prometheus
     # ServiceAccount read access to metallb-system (prometheus.rbacPrometheus,
@@ -118,7 +126,8 @@ $HelmArgs = @(
     # kube-prometheus-stack release (name "prometheus"), confirmed via
     # `helm template`.
     "--set", "prometheus.serviceMonitor.enabled=true",
-    "--set", "prometheus.serviceMonitor.additionalLabels.release=prometheus",
+    "--set", "prometheus.serviceMonitor.speaker.additionalLabels.release=prometheus",
+    "--set", "prometheus.serviceMonitor.controller.additionalLabels.release=prometheus",
     "--set", "prometheus.serviceAccount=prometheus-kube-prometheus-prometheus",
     "--set", "prometheus.namespace=prometheus"
 )
