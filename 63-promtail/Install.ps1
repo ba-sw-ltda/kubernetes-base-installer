@@ -97,6 +97,13 @@ $HelmArgs = @(
     # provider-ingress rule below (Promtail previously had no
     # provider-ingress rule at all, only its own consumer-egress rule
     # toward Loki).
+    # NOTE: `service.enabled` (default false on this chart) gates a separate,
+    # unrelated Service template and turned out to be a red herring — the
+    # metrics Service (templates/service-metrics.yaml, named "promtail-metrics")
+    # renders unconditionally either way, confirmed via `helm template`. The
+    # actual fix for the "Service 'promtail' not found" failure was correcting
+    # the ServiceName passed to Resolve-ServiceRealPorts below, from "promtail"
+    # to the real name "promtail-metrics".
     "--set", "serviceMonitor.enabled=true",
     "--set", "serviceMonitor.labels.release=prometheus"
 )
@@ -153,10 +160,12 @@ Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -P
 # Metrics scrape port (promtail:http-metrics), bundled separately since
 # Promtail previously had no provider-ingress rule of its own — only the
 # consumer-egress rule above (toward Loki, for shipping logs). Label-gated
-# on the network.k8s/allow-$Namespace consumer contract, inert until
-# `prometheus` is labeled as a consumer, same deliberate gap as
-# 21-longhorn/Install.ps1.
-$promtailMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "promtail" -ServicePortName "http-metrics"
+# on the network.k8s/allow-$Namespace consumer contract.
+# The chart's own metrics Service is named "<release>-metrics" (rendered by
+# templates/service-metrics.yaml as "promtail-metrics"), not "promtail" —
+# confirmed via `helm template`. That name mismatch, not just service.enabled
+# being off, is why this kept failing even after enabling the service.
+$promtailMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "promtail-metrics" -ServicePortName "http-metrics"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $promtailMetricsPort
 # Self-register as a Prometheus scrape target instead of Prometheus
 # enumerating every ServiceMonitor'd namespace centrally (compliance finding
