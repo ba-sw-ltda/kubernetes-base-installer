@@ -64,6 +64,43 @@ if ($CreateNamespace) {
 Complete-Group
 Start-Group -Title "Deploy"
 
+# Cross-node hostNetwork routing defect (root-caused 2026-09-07 live on RKE2,
+# NetworkPolicy exhaustively ruled out first): on a self-hosted control plane
+# the API server itself runs as a hostNetwork pod on a cluster node. When it
+# calls a webhook pod on a *different* node, the reply's outbound packet gets
+# stamped with flannel.1's own bogus source address (which happens to equal
+# the sending node's local pod-subnet network address) instead of a real pod
+# IP — that address is then silently black-holed by the sending node's own
+# routing table, so the call times out ("failed calling webhook ... context
+# deadline exceeded"), leaving Certificates stuck un-Ready. Confirmed via
+# conntrack ([UNREPLIED] SYN, src=<pod-subnet network address>) after a full
+# elimination pass (version skew, Calico host-endpoint policy, iptables DROP
+# rules, rp_filter — all ruled out). Same-node calls never cross flannel.1 and
+# are unaffected. Fix: pin one webhook replica onto every control-plane node
+# (hard node + pod anti-affinity) and set internalTrafficPolicy=Local on its
+# Service (patched after deploy below — the chart exposes no values key for
+# it), so kube-proxy only ever routes to the same-node replica and the broken
+# cross-node path is never taken. Deliberately NOT applied on managed-control-
+# plane platforms: their API server isn't a cluster node, so the bug can't
+# occur there, and forcing internalTrafficPolicy=Local anyway risks a real
+# regression (a node with no local endpoint would get 100% failure instead of
+# today's non-issue). Same deny-list convention as Install-Base.ps1's
+# $cloudHostsPlatforms (line ~1532) — default to applying the fix and only
+# skip known-managed platforms, rather than an allow-list of self-hosted ones
+# that could silently miss a new platform (see feedback_magalu_openbao_platform_gate_bug).
+# The deeper systemic flannel/Calico routing defect (affects ALL hostNetwork
+# cross-node traffic, not just this webhook) is tracked separately.
+$cloudHostsPlatforms = @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")
+$applyWebhookNodeFix = $Platform -notin $cloudHostsPlatforms
+$controlPlaneNodeCount = 1
+if ($applyWebhookNodeFix) {
+    $cpNodeNames = (& kubectl get nodes -l "node-role.kubernetes.io/control-plane" -o jsonpath='{.items[*].metadata.name}' 2>$null) -split '\s+' | Where-Object { $_ }
+    if (-not $cpNodeNames) {
+        $cpNodeNames = (& kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>$null) -split '\s+' | Where-Object { $_ }
+    }
+    if ($cpNodeNames.Count -gt 0) { $controlPlaneNodeCount = $cpNodeNames.Count }
+}
+
 # Deploy
 $HelmArgs = @(
     "upgrade", "--install", "cert-manager", "jetstack/$ChartName",
@@ -84,6 +121,38 @@ $HelmArgs = @(
     "--set", "prometheus.servicemonitor.labels.release=prometheus"
 )
 
+if ($applyWebhookNodeFix) {
+    # Required (hard) node affinity keeps every webhook replica on a
+    # control-plane node — a soft/preferred rule could still let the
+    # scheduler place all replicas on worker nodes, missing the very nodes
+    # the API server actually calls from. Required pod anti-affinity by
+    # hostname then spreads them 1-per-node; safe to require since
+    # replicaCount is set to exactly the control-plane node count below, so
+    # there's always exactly enough room. Tolerations added defensively in
+    # case a platform taints its control-plane nodes (RKE2 doesn't by
+    # default — already confirmed schedulable — but this costs nothing if
+    # the taint is absent).
+    $webhookAffinityJson = '{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"node-role.kubernetes.io/control-plane","operator":"Exists"}]}]}},"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"topologyKey":"kubernetes.io/hostname","labelSelector":{"matchLabels":{"app.kubernetes.io/instance":"cert-manager","app.kubernetes.io/component":"webhook"}}}]}}'
+    $webhookTolerationsJson = '[{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}]'
+    $HelmArgs += @(
+        "--set", "webhook.replicaCount=$controlPlaneNodeCount",
+        "--set-json", "webhook.affinity=$webhookAffinityJson",
+        "--set-json", "webhook.tolerations=$webhookTolerationsJson",
+        # Chart default RollingUpdate strategy (maxSurge=25%) needs a spare
+        # scheduling slot to stand up each new pod before retiring an old
+        # one. With replicaCount pinned to the node count and hard
+        # pod-anti-affinity, there is no spare node for that surge pod —
+        # confirmed live 2026-09-07 ("didn't match pod anti-affinity rules",
+        # deployment stuck with old + new replicas both present, one node
+        # short). Fix is the chart's own documented value for this exact
+        # case (see its webhook.strategy comment): retire an old replica
+        # first (maxUnavailable=1), never surge (maxSurge=0).
+        "--set", "webhook.strategy.type=RollingUpdate",
+        "--set", "webhook.strategy.rollingUpdate.maxSurge=0",
+        "--set", "webhook.strategy.rollingUpdate.maxUnavailable=1"
+    )
+}
+
 Reset-StuckHelmRelease -ReleaseName "cert-manager" -Namespace $Namespace
 
 $exitCode = Invoke-WithSpinner -Message "Deploying cert-manager..." -Executable "helm" `
@@ -96,6 +165,21 @@ foreach ($dep in @("cert-manager", "cert-manager-cainjector", "cert-manager-webh
         -Arguments @("rollout", "status", "deployment/$dep", "-n", $Namespace, "--timeout=5m") `
         -ShowOutput:$verbose
     if ($exitCode -ne 0) { Write-Error "Rollout of $dep did not complete"; exit 1 }
+}
+
+if ($applyWebhookNodeFix) {
+    # The chart exposes no values key for internalTrafficPolicy (checked
+    # against the full webhook values block, v1.20.2) — only reachable via a
+    # post-install patch. Combined with the affinity/replica pinning above,
+    # this makes kube-proxy always route the apiserver's webhook calls to a
+    # same-node replica, permanently avoiding the broken flannel.1 cross-node
+    # path.
+    & kubectl patch service cert-manager-webhook -n $Namespace -p '{"spec":{"internalTrafficPolicy":"Local"}}' 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-GroupLine "✓ cert-manager-webhook Service set to internalTrafficPolicy=Local ($controlPlaneNodeCount replica(s), one per control-plane node)" -ForegroundColor Green
+    } else {
+        Write-Warning "  ⚠ Failed to set internalTrafficPolicy=Local on cert-manager-webhook Service"
+    }
 }
 
 if ($verbose) {
