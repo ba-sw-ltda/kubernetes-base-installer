@@ -369,6 +369,20 @@ $caTrustExtraVolumeMountsYaml
 Complete-Group
 Start-Group -Title "Deploy"
 
+# default_home_dashboard_path points at wherever the dashboard sidecar lands
+# 61-prometheus's "cluster-overview" dashboard (see Register-GrafanaDashboard
+# there: -Name "cluster-overview" -Folder "Cluster" -> sidecar.dashboards.folder
+# "/tmp/dashboards" + folderAnnotation "grafana_folder", confirmed live layout
+# is <folder>/<name>.json — same path shape every other vendored dashboard in
+# this repo already uses). This key merges into the same grafana.ini map as
+# the OIDC ini block below (different subsection, both applied via --values),
+# so it has to stay defined unconditionally here rather than only under
+# $oidcIniBlock — Grafana needs a home dashboard whether or not OIDC is on.
+$homeDashboardIni = @"
+grafana.ini:
+  dashboards:
+    default_home_dashboard_path: /tmp/dashboards/Cluster/cluster-overview.json
+"@
 $valuesYaml = if ($mount.Installed) { @"
 datasources:
   datasources.yaml:
@@ -386,6 +400,7 @@ datasources:
       isDefault: false
 $tracingDatasource
 $alertmanagerDatasource
+$homeDashboardIni
 command:
   - /bin/sh
   - -c
@@ -407,6 +422,7 @@ datasources:
       isDefault: false
 $tracingDatasource
 $alertmanagerDatasource
+$homeDashboardIni
 "@ }
 Set-Content -Path $tempValues -Value $valuesYaml -Encoding UTF8
 if ($oidcConfig) {
