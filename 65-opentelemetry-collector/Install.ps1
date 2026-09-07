@@ -203,6 +203,12 @@ $otelCollectorPorts = @(
 )
 if (-not $otelCollectorPorts) { $otelCollectorPorts = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "opentelemetry-collector" }
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $otelCollectorPorts
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix). Only the "metrics" port matters to Prometheus, but the full
+# provider-ingress port set is harmless to also open here (same egress rule
+# object either way, named allow-egress-to-$Namespace).
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port $otelCollectorPorts
 # Trace-export egress target depends on the tracing backend: tempo's real
 # receiving Service is tempo-distributor, jaeger's is jaeger-collector. NOTE:
 # as of 2026-08-20 on Magalu, tempo-distributor doesn't expose 4317 (OTLP)
