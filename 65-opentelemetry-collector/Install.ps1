@@ -64,9 +64,11 @@ Write-Host "  Metrics →   prometheus.prometheus:9090" -ForegroundColor Gray
 Write-Host "  Logs    →   loki.loki:3100" -ForegroundColor Gray
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "open-telemetry", $Repository, "--force-update") -ShowOutput:$verbose
@@ -75,7 +77,9 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 # Build collector config as YAML values
 $otelConfig = @"
@@ -157,13 +161,11 @@ $exitCode = Invoke-WithSpinner -Message "Deploying OpenTelemetry Collector..." -
     -Arguments $HelmArgs -ShowOutput:$verbose
 Remove-Item $tempValues -Force -ErrorAction SilentlyContinue
 if ($exitCode -ne 0) { Write-Error "Failed to deploy OpenTelemetry Collector (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for opentelemetry-collector..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/opentelemetry-collector", "-n", $Namespace, "--timeout=5m") `
     -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Rollout of OpenTelemetry Collector did not complete"; exit 1 }
-Write-Host "  ✓ OpenTelemetry Collector ready" -ForegroundColor Green
 
 # Publish OTLP endpoints as a reflected ConfigMap so all namespaces can reference them
 $otlpConfigMap = @"
@@ -182,14 +184,23 @@ data:
 "@
 $otlpConfigMap | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "  ✓ OTLP endpoints ConfigMap published (reflected to all namespaces)" -ForegroundColor Green
+    Write-GroupLine "✓ OTLP endpoints ConfigMap published (reflected to all namespaces)" -ForegroundColor Green
 }
+
+Complete-Group
 
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
+Start-Group -Title "Monitoring"
 Register-GrafanaDashboard -Namespace $Namespace -Name "opentelemetry-collector" -JsonPath "$ScriptRoot\dashboards\opentelemetry-collector.json" -Folder "Observability"
+Complete-Group
+
+Start-Group -Title "Network Policy"
 
 Install-NetworkPolicyBaseline -Namespace $Namespace
 # OTLP gRPC/HTTP receiver ports (4317/4318) plus the ServiceMonitor's own
@@ -228,6 +239,8 @@ $prometheusPort = Resolve-ServiceRealPorts -Namespace "prometheus" -ServiceName 
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "prometheus" -Port $prometheusPort
 $lokiPort = Resolve-ServiceRealPorts -Namespace "loki" -ServiceName "loki" -ServicePortName "http-metrics"
 Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace "loki" -Port $lokiPort
+
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
