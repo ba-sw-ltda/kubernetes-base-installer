@@ -54,6 +54,8 @@ Write-Host "  Namespace:  $Namespace" -ForegroundColor Gray
 if ($Hostname) { Write-Host "  Hostname:   $Hostname" -ForegroundColor Gray }
 Write-Host ""
 
+Start-Group -Title "Preparation"
+
 $exitCode = Invoke-WithSpinner -Message "Adding Helm repository..." -Executable "helm" `
     -Arguments @("repo", "add", "grafana", $Repository, "--force-update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
@@ -61,11 +63,11 @@ if ($exitCode -ne 0) { Write-Error "Failed to add Helm repository"; exit 1 }
 $exitCode = Invoke-WithSpinner -Message "Updating Helm repositories..." -Executable "helm" `
     -Arguments @("repo", "update") -ShowOutput:$verbose
 if ($exitCode -ne 0) { Write-Error "Failed to update Helm repositories"; exit 1 }
-Write-Host "  ✓ Repository ready" -ForegroundColor Green
+Write-GroupLine "✓ Repository ready" -ForegroundColor Green
 
 & kubectl create namespace $Namespace --dry-run=client -o yaml 2>&1 | & kubectl apply -f - 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create namespace '$Namespace'"; exit 1 }
-Write-Host "  ✓ Namespace ready" -ForegroundColor Green
+Write-GroupLine "✓ Namespace ready" -ForegroundColor Green
 
 # Pull proxy Secret via Reflector if proxy-config exists
 & kubectl get secret proxy-config -n proxy-config 2>&1 | Out-Null
@@ -82,9 +84,12 @@ type: Opaque
 "@
     $reflectedSecret | & kubectl apply -f - 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✓ Proxy Secret reflected into $Namespace" -ForegroundColor Green
+        Write-GroupLine "✓ Proxy Secret reflected into $Namespace" -ForegroundColor Green
     }
 }
+
+Complete-Group
+Start-Group -Title "Configuration"
 
 # Auto-detect tracing backend (tempo-distributed uses tempo-query-frontend; legacy uses tempo)
 $tracingDatasource = ""
@@ -133,15 +138,15 @@ $oidcConfig = $null
 if ($issuerName -and -not [string]::IsNullOrWhiteSpace($Hostname)) {
     $autheliaDeployed = (@(& kubectl get deployment authelia -n authelia --ignore-not-found -o name 2>$null) -join "").Trim()
     if ($autheliaDeployed) {
-        Write-Host "  · Registering Grafana as OIDC client in Authelia..." -ForegroundColor DarkGray
+        Write-GroupLine "· Registering Grafana as OIDC client in Authelia..." -ForegroundColor DarkGray
         $oidcConfig = Register-AutheliaOidcClient `
             -ClientId "grafana" -ClientName "Grafana" `
             -RedirectUris @("https://$Hostname/login/generic_oauth") `
             -BaseDir $BaseDir -Platform $Platform
         if ($oidcConfig) {
-            Write-Host "  ✓ Registered as OIDC client" -ForegroundColor Green
+            Write-GroupLine "✓ Registered as OIDC client" -ForegroundColor Green
         } else {
-            Write-Host "  ⚠ Could not sync Authelia config — OIDC skipped" -ForegroundColor Yellow
+            Write-GroupLine "⚠ Could not sync Authelia config — OIDC skipped" -ForegroundColor Yellow
         }
     }
 }
@@ -164,9 +169,9 @@ if ($mount.Installed) {
     if ($writeOk) {
         $mount.SpcYaml | & kubectl apply -f - 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "SecretProviderClass could not be applied — check CSI driver installation"; exit 1 }
-        Write-Host "  ✓ Credentials written to vault + SecretProviderClass created" -ForegroundColor Green
+        Write-GroupLine "✓ Credentials written to vault + SecretProviderClass created" -ForegroundColor Green
     } else {
-        Write-Host "  ⚠ Vault not available — falling back to direct password (no CSI mount)" -ForegroundColor Yellow
+        Write-GroupLine "⚠ Vault not available — falling back to direct password (no CSI mount)" -ForegroundColor Yellow
         $mount.Installed = $false
     }
 }
@@ -245,12 +250,12 @@ hostAliases:
     hostnames:
       - "$autheliaHost"
 "@
-            Write-Host "  ✓ Grafana pod resolves $autheliaHost internally (hostAliases -> $traefikClusterIp)" -ForegroundColor Green
+            Write-GroupLine "✓ Grafana pod resolves $autheliaHost internally (hostAliases -> $traefikClusterIp)" -ForegroundColor Green
         } else {
-            Write-Warning "Could not resolve Traefik's ClusterIP in the '$ingressNamespace' namespace — skipping the hostAliases entry for $autheliaHost. If the cluster's DNS can't resolve this hostname on its own (e.g. a synthetic domain that only exists in a client's hosts file), Grafana's OIDC login will fail with a DNS lookup error."
+            Write-GroupLine "⚠ Could not resolve Traefik's ClusterIP in the '$ingressNamespace' namespace — skipping the hostAliases entry for $autheliaHost. If the cluster's DNS can't resolve this hostname on its own (e.g. a synthetic domain that only exists in a client's hosts file), Grafana's OIDC login will fail with a DNS lookup error." -ForegroundColor Yellow
         }
     } else {
-        Write-Host "  · $autheliaHost already resolves correctly from inside the cluster — skipping hostAliases workaround" -ForegroundColor DarkGray
+        Write-GroupLine "· $autheliaHost already resolves correctly from inside the cluster — skipping hostAliases workaround" -ForegroundColor DarkGray
     }
 }
 
@@ -329,13 +334,16 @@ extraInitContainers:
 $caTrustExtraVolumeMountsYaml
 "@
                 $caTrustViaSet = $mount.Installed
-                Write-Host "  ✓ OpenBao root CA trusted by Grafana OIDC ($caMount, tls-ca-additional)" -ForegroundColor Green
+                Write-GroupLine "✓ OpenBao root CA trusted by Grafana OIDC ($caMount, tls-ca-additional)" -ForegroundColor Green
             }
         }
     } else {
-        Write-Host "  · Default PKI isn't a self-signed Root CA — skipping CA-trust workaround" -ForegroundColor DarkGray
+        Write-GroupLine "· Default PKI isn't a self-signed Root CA — skipping CA-trust workaround" -ForegroundColor DarkGray
     }
 }
+
+Complete-Group
+Start-Group -Title "Deploy"
 
 $valuesYaml = if ($mount.Installed) { @"
 datasources:
@@ -449,7 +457,6 @@ $exitCode = Invoke-WithSpinner -Message "Deploying Grafana..." -Executable "helm
 Remove-Item $tempValues     -Force -ErrorAction SilentlyContinue
 Remove-Item $tempOidcValues -Force -ErrorAction SilentlyContinue
 if ($exitCode -ne 0) { Write-Error "Failed to deploy Grafana (exit code $exitCode)"; exit 1 }
-Write-Host "  ✓ Deployed" -ForegroundColor Green
 
 $exitCode = Invoke-WithSpinner -Message "Waiting for grafana (up to 10m)..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/grafana", "-n", $Namespace, "--timeout=10m") `
@@ -465,7 +472,6 @@ if ($exitCode -ne 0) {
     Write-Error "Rollout of Grafana did not complete"
     exit 1
 }
-Write-Host "  ✓ Grafana ready" -ForegroundColor Green
 
 # ── Legacy local-admin / OIDC login collision self-heal ──────────────────────
 # Grafana's chart always bootstraps a local admin via GF_SECURITY_ADMIN_USER
@@ -481,7 +487,7 @@ Write-Host "  ✓ Grafana ready" -ForegroundColor Green
 # Self-heal it here on every install/upgrade so this never needs a manual
 # fix again — no manual kubectl/API intervention (see feedback_no_manual_intervention).
 if ($oidcConfig -and $UserConfig.AdminUser -ne "admin") {
-    Write-Host "  · Checking for legacy 'admin' login collision with OIDC..." -ForegroundColor DarkGray
+    Write-GroupLine "· Checking for legacy 'admin' login collision with OIDC..." -ForegroundColor DarkGray
     $grafanaPod = (& kubectl get pods -n $Namespace -l "app.kubernetes.io/name=grafana" -o jsonpath='{.items[0].metadata.name}' 2>$null)
     if ($grafanaPod) {
         $authArg   = "$($UserConfig.AdminUser):$AdminPassword"
@@ -494,18 +500,21 @@ if ($oidcConfig -and $UserConfig.AdminUser -ne "admin") {
                     & kubectl exec -n $Namespace $grafanaPod -- curl -s -u $authArg -X PUT `
                         -H "Content-Type: application/json" -d '{"login":"break-glass-admin"}' `
                         "http://localhost:3000/api/users/$($legacyAdmin.id)" 2>&1 | Out-Null
-                    Write-Host "  ✓ Renamed legacy local admin login 'admin' -> 'break-glass-admin' (was blocking the OIDC-provisioned 'admin' account)" -ForegroundColor Green
+                    Write-GroupLine "✓ Renamed legacy local admin login 'admin' -> 'break-glass-admin' (was blocking the OIDC-provisioned 'admin' account)" -ForegroundColor Green
                 } else {
-                    Write-Host "  · No collision found" -ForegroundColor DarkGray
+                    Write-GroupLine "· No collision found" -ForegroundColor DarkGray
                 }
             } catch {
-                Write-Host "  ⚠ Could not parse Grafana users list — skipping login-collision check" -ForegroundColor Yellow
+                Write-GroupLine "⚠ Could not parse Grafana users list — skipping login-collision check" -ForegroundColor Yellow
             }
         } else {
-            Write-Host "  ⚠ Could not reach Grafana API to check for a login collision (password may not have propagated to a running pod yet) — if SSO login fails with 'user not found', re-run this install" -ForegroundColor Yellow
+            Write-GroupLine "⚠ Could not reach Grafana API to check for a login collision (password may not have propagated to a running pod yet) — if SSO login fails with 'user not found', re-run this install" -ForegroundColor Yellow
         }
     }
 }
+
+Complete-Group
+Start-Group -Title "Ingress & Portal"
 
 if (-not [string]::IsNullOrWhiteSpace($Hostname)) {
     $ingressYaml = @"
@@ -533,7 +542,7 @@ spec:
 $tlsBlock
 "@
     $ingressYaml | & kubectl apply -f - 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host "  ✓ Ingress configured ($Hostname)" -ForegroundColor Green }
+    if ($LASTEXITCODE -eq 0) { Write-GroupLine "✓ Ingress configured ($Hostname)" -ForegroundColor Green }
     $scheme = if ($issuerName) { "https" } else { "http" }
     $portalIcon = Get-PortalIconDataUri -ScriptRoot $ScriptRoot -IconFile $FullConfig.PortalIcon
     Register-PortalEntry -Name $FullConfig.PortalTitle -Url "${scheme}://$Hostname" `
@@ -542,11 +551,20 @@ $tlsBlock
         -LogoUrl $portalIcon
 }
 
+Complete-Group
+
 if ($FullConfig.RancherProject) {
+    Start-Group -Title "Rancher"
     Set-RancherProjectAssignment -Namespace $Namespace -ProjectName $FullConfig.RancherProject
+    Write-GroupLine "✓ Assigned to Rancher project '$($FullConfig.RancherProject)'" -ForegroundColor Green
+    Complete-Group
 }
 
+Start-Group -Title "Network Policy"
+
 Install-NetworkPolicyBaseline -Namespace $Namespace
+# $ingressNamespace already resolved above (see the hostAliases block) — reused
+# here (compliance finding #2, NetworkPolicy audit 2026-09-05).
 # NetworkPolicy ports match the pod's actual container port, not the Service
 # port (80) that fronts it via kube-proxy DNAT — Grafana's container listens
 # on 3000, so the policy must allow 3000 or ingress traffic is silently
@@ -598,9 +616,11 @@ if ($oidcConfig) {
     if ($ingressWebsecurePort) {
         Set-NetworkPolicyConsumerEgress -Namespace $Namespace -TargetNamespace $ingressNamespace -Port $ingressWebsecurePort
     } else {
-        Write-Warning "Could not resolve Traefik's websecure port in the '$ingressNamespace' namespace — skipping Grafana's OIDC egress NetworkPolicy rule. Grafana's OIDC login via Authelia will be blocked until this is fixed manually or Traefik is installed."
+        Write-GroupLine "⚠ Could not resolve Traefik's websecure port in the '$ingressNamespace' namespace — skipping Grafana's OIDC egress NetworkPolicy rule. Grafana's OIDC login via Authelia will be blocked until this is fixed manually or Traefik is installed." -ForegroundColor Yellow
     }
 }
+
+Complete-Group
 
 Write-Host ""
 Write-Host "  ──────────────────────────────────────────" -ForegroundColor DarkGray
