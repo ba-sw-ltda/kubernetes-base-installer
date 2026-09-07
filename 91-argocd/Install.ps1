@@ -341,6 +341,11 @@ $argocdMetricsPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName
 if (-not $argocdMetricsPort) { $argocdMetricsPort = @(8082) }
 
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port ($argocdPort + $argocdMetricsPort)
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix). If `prometheus` doesn't exist yet, this parks a pending marker
+# that 61-prometheus/Install.ps1 resolves once it does.
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port ($argocdPort + $argocdMetricsPort)
 # Real namespace of whichever ingress controller is actually installed —
 # "ingress" on fresh installs, but pre-rename clusters (e.g. live RKE2) can
 # still have ingress-nginx in the legacy "ingress-nginx" namespace (compliance
