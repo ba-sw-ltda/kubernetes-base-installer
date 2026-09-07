@@ -257,6 +257,11 @@ Install-NetworkPolicyBaseline -Namespace $Namespace
 # (/minio/v2/metrics/cluster) — no separate metrics port to resolve.
 $minioPort = Resolve-ServiceRealPorts -Namespace $Namespace -ServiceName "minio"
 Set-NetworkPolicyProviderIngress -Namespace $Namespace -Port $minioPort
+# Self-register as a Prometheus scrape target instead of Prometheus
+# enumerating every ServiceMonitor'd namespace centrally (compliance finding
+# #1 fix). If `prometheus` doesn't exist yet, this parks a pending marker
+# that 61-prometheus/Install.ps1 resolves once it does.
+Set-NetworkPolicyConsumerEgress -Namespace "prometheus" -TargetNamespace $Namespace -Port $minioPort
 
 Complete-Group
 
