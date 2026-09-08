@@ -105,6 +105,22 @@ if ($exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($crdYaml)) {
 Complete-Group
 Start-Group -Title "Deploy"
 
+# Pre-emptive patch, applied BEFORE the helm upgrade below — breaks a chicken-and-egg
+# deadlock discovered live 2026-09-08: if a previous install already created this
+# longhorn-manager-backed Service (default internalTrafficPolicy=Cluster), the CSI
+# plugin's REST calls to longhorn-backend (used on every volume attach/detach) fired by
+# THIS upgrade's own manifest apply / concurrent attach traffic can route cross-node over
+# the flannel.1 VXLAN and time out — wedging `helm upgrade --install longhorn` itself
+# indefinitely, before it ever reaches the post-deploy patch further down (which is then
+# unreachable). Best-effort and silent: on a genuinely fresh install this Service doesn't
+# exist yet, so this simply no-ops and the post-deploy patch below is what applies
+# instead. longhorn-admission-webhook deliberately excluded — see the post-deploy patch's
+# comment for why. Same deny-list reasoning as cert-manager's fix — see the post-deploy
+# patch's comment for the full root-cause writeup and $cloudHostsPlatforms definition.
+if ($Platform -notin @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")) {
+    & kubectl patch service longhorn-backend -n $Namespace -p '{"spec":{"internalTrafficPolicy":"Local"}}' 2>$null | Out-Null
+}
+
 $HelmArgs = @(
     "upgrade", "--install", "longhorn", "longhorn/$ChartName",
     "--namespace", $Namespace,
@@ -151,6 +167,54 @@ if ($exitCode -ne 0) {
     exit 1
 }
 
+# Authoritative patch — covers a fresh install, where the pre-emptive patch further up
+# (right before the helm upgrade call) necessarily no-op'd because this Service didn't
+# exist yet. Longhorn manager already runs as a DaemonSet (one pod per node), so unlike
+# 31-cert-manager/Install.ps1's webhook fix this needs no affinity/replica
+# pinning — every node already has a local backend the moment the rollout above succeeds.
+# Same underlying flannel.1 cross-node VXLAN defect as cert-manager's fix (see that
+# script's comment for the full root-cause writeup), but ONLY longhorn-backend gets
+# patched here:
+#   - longhorn-backend: the CSI plugin's REST calls (used on every volume attach/
+#     detach, e.g. POST /v1/volumes/<name>?action=attach) can land on a different node's
+#     pod via the Service's default internalTrafficPolicy=Cluster, and the reply on that
+#     cross-node path times out ("context deadline exceeded (Client.Timeout exceeded
+#     while awaiting headers)"). Confirmed live 2026-09-08: this is what stuck OpenBao's
+#     PVC attach in a retry loop and cascaded into Authelia (Vault secret mount) /
+#     Rancher OIDC login / Portal ForwardAuth all failing.
+# longhorn-admission-webhook is deliberately EXCLUDED and, if a prior run of this script
+# already set it to Local, actively reverted back to Cluster below. Originally patched to
+# Local alongside longhorn-backend, but that creates a guaranteed, self-inflicted
+# deadlock: the same longhorn-manager process that serves this webhook also calls it
+# (synchronously, during its own startup, to validate the longhorn-default-setting
+# ConfigMap) — and with internalTrafficPolicy=Local that self-call can ONLY be routed to
+# the pod's own node-local endpoint, i.e. itself, which isn't Ready yet. It needs itself
+# to be ready in order to become ready — every single longhorn-manager restart on every
+# node fails this self-check and crash-loops forever, not just under cross-node load.
+# Confirmed live 2026-09-08 via `kubectl get endpointslices ... longhorn-admission-webhook`
+# showing the restarting pod's own address as its node's only (not-Ready) endpoint.
+# longhorn-backend has no equivalent self-call (it's only ever called externally, by the
+# CSI plugin pods), so it doesn't share this failure mode and keeps Local. Cluster policy
+# reintroduces a narrower version of the original cross-node webhook-timeout risk for this
+# one Service — accepted as the lesser, non-deterministic risk versus a deterministic
+# restart deadlock. Deliberately NOT applied on managed-control-plane platforms — same
+# reasoning and same deny-list as cert-manager's fix ($cloudHostsPlatforms, see that script).
+$cloudHostsPlatforms = @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")
+if ($Platform -notin $cloudHostsPlatforms) {
+    & kubectl patch service longhorn-backend -n $Namespace -p '{"spec":{"internalTrafficPolicy":"Local"}}' 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-GroupLine "✓ longhorn-backend Service set to internalTrafficPolicy=Local" -ForegroundColor Green
+    } else {
+        Write-Warning "  ⚠ Failed to set internalTrafficPolicy=Local on longhorn-backend Service"
+    }
+    & kubectl patch service longhorn-admission-webhook -n $Namespace -p '{"spec":{"internalTrafficPolicy":"Cluster"}}' 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-GroupLine "✓ longhorn-admission-webhook Service confirmed on internalTrafficPolicy=Cluster" -ForegroundColor Green
+    } else {
+        Write-Warning "  ⚠ Failed to confirm internalTrafficPolicy=Cluster on longhorn-admission-webhook Service"
+    }
+}
+
 $exitCode = Invoke-WithSpinner -Message "Waiting for longhorn-driver-deployer..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/longhorn-driver-deployer", "-n", $Namespace, "--timeout=15m") `
     -ShowOutput:$verbose
@@ -163,6 +227,46 @@ if ($exitCode -ne 0) { Write-Error "Rollout of longhorn-ui did not complete"; ex
 
 Complete-Group
 Start-Group -Title "Configuration"
+
+# Self-heal: detect and recreate engine processes wedged in "starting" state.
+# Discovered live 2026-09-08: an OpenBao HA reinit (see 33-openbao/Install.ps1)
+# reshuffled Longhorn replicas onto different nodes at the exact moment the
+# flannel.1 cross-node VXLAN bug (patched above) was still silently active and
+# undiagnosed — two engine processes got stuck mid-startup and, because a
+# wedged engine never retries itself, sat there indefinitely (44h+ / 7d+ by
+# the time this was found and manually root-caused) even after the network
+# path was fixed. Without this check, that class of failure requires manual
+# diagnosis every time — this makes the install self-heal it instead. An
+# Engine CR holds no data (replicas do); deleting one is safe and just makes
+# longhorn-manager's controller recreate the process fresh against the
+# current, correct replica addresses. Checked twice, 30s apart, so a
+# legitimately-in-progress attach (which normally resolves in seconds) isn't
+# mistaken for a wedge. Not platform-gated like the Service patches above —
+# an engine can get wedged for reasons other than the flannel bug, so this is
+# a general safety net, not a flannel-specific fix.
+function Get-WedgedLonghornEngines {
+    $json = & kubectl get engines.longhorn.io -n $Namespace -o json 2>$null
+    if (-not $json) { return @() }
+    $engines = ($json | ConvertFrom-Json -AsHashtable)['items']
+    return @($engines | Where-Object {
+        $_['status']['currentState'] -eq 'starting' -and $_['status']['started'] -eq $false
+    } | ForEach-Object { $_['metadata']['name'] })
+}
+
+$wedgedFirstPass = Get-WedgedLonghornEngines
+if ($wedgedFirstPass.Count -gt 0) {
+    Write-GroupLine "Checking $($wedgedFirstPass.Count) engine(s) stuck in 'starting'..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 30
+    $wedgedConfirmed = @(Get-WedgedLonghornEngines | Where-Object { $_ -in $wedgedFirstPass })
+    if ($wedgedConfirmed.Count -gt 0) {
+        foreach ($engineName in $wedgedConfirmed) {
+            & kubectl delete engines.longhorn.io $engineName -n $Namespace --ignore-not-found 2>&1 | Out-Null
+            Write-GroupLine "✓ Recreated wedged engine: $engineName" -ForegroundColor Yellow
+        }
+    } else {
+        Write-GroupLine "✓ Engine(s) resolved on their own" -ForegroundColor Green
+    }
+}
 
 # Remove default annotation from local-path StorageClass (RKE2 ships with it as default)
 $lpExists = & kubectl get storageclass local-path --ignore-not-found 2>&1
