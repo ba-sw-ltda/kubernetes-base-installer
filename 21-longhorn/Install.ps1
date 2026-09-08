@@ -214,6 +214,46 @@ $exitCode = Invoke-WithSpinner -Message "Waiting for longhorn-ui..." -Executable
 if ($exitCode -ne 0) { Write-Error "Rollout of longhorn-ui did not complete"; exit 1 }
 Write-Host "  ✓ longhorn-ui ready" -ForegroundColor Green
 
+# Self-heal: detect and recreate engine processes wedged in "starting" state.
+# Discovered live 2026-09-08: an OpenBao HA reinit (see 33-openbao/Install.ps1)
+# reshuffled Longhorn replicas onto different nodes at the exact moment the
+# flannel.1 cross-node VXLAN bug (patched above) was still silently active and
+# undiagnosed — two engine processes got stuck mid-startup and, because a
+# wedged engine never retries itself, sat there indefinitely (44h+ / 7d+ by
+# the time this was found and manually root-caused) even after the network
+# path was fixed. Without this check, that class of failure requires manual
+# diagnosis every time — this makes the install self-heal it instead. An
+# Engine CR holds no data (replicas do); deleting one is safe and just makes
+# longhorn-manager's controller recreate the process fresh against the
+# current, correct replica addresses. Checked twice, 30s apart, so a
+# legitimately-in-progress attach (which normally resolves in seconds) isn't
+# mistaken for a wedge. Not platform-gated like the Service patches above —
+# an engine can get wedged for reasons other than the flannel bug, so this is
+# a general safety net, not a flannel-specific fix.
+function Get-WedgedLonghornEngines {
+    $json = & kubectl get engines.longhorn.io -n $Namespace -o json 2>$null
+    if (-not $json) { return @() }
+    $engines = ($json | ConvertFrom-Json -AsHashtable)['items']
+    return @($engines | Where-Object {
+        $_['status']['currentState'] -eq 'starting' -and $_['status']['started'] -eq $false
+    } | ForEach-Object { $_['metadata']['name'] })
+}
+
+$wedgedFirstPass = Get-WedgedLonghornEngines
+if ($wedgedFirstPass.Count -gt 0) {
+    Write-Host "  Checking $($wedgedFirstPass.Count) engine(s) stuck in 'starting'..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 30
+    $wedgedConfirmed = @(Get-WedgedLonghornEngines | Where-Object { $_ -in $wedgedFirstPass })
+    if ($wedgedConfirmed.Count -gt 0) {
+        foreach ($engineName in $wedgedConfirmed) {
+            & kubectl delete engines.longhorn.io $engineName -n $Namespace --ignore-not-found 2>&1 | Out-Null
+            Write-Host "  ✓ Recreated wedged engine: $engineName" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  ✓ Engine(s) resolved on their own" -ForegroundColor Green
+    }
+}
+
 # Remove default annotation from local-path StorageClass (RKE2 ships with it as default)
 $lpExists = & kubectl get storageclass local-path --ignore-not-found 2>&1
 if ($lpExists) {
