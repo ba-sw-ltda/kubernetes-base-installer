@@ -102,18 +102,21 @@ if ($exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($crdYaml)) {
 }
 
 # Pre-emptive patch, applied BEFORE the helm upgrade below — breaks a chicken-and-egg
-# deadlock discovered live 2026-09-08: if a previous install already created the
-# longhorn-admission-webhook Service (default internalTrafficPolicy=Cluster), the
-# apiserver's synchronous webhook call fired by THIS upgrade's own manifest apply can
-# route cross-node over the flannel.1 VXLAN and time out — wedging `helm upgrade
-# --install longhorn` itself indefinitely, before it ever reaches the post-deploy patch
-# further down (which is then unreachable). Best-effort and silent: on a genuinely
-# fresh install the Service doesn't exist yet, so this simply no-ops and the
-# post-deploy patch below is what applies instead. Same deny-list reasoning as
-# cert-manager's fix — see the post-deploy patch's comment for the full root-cause
-# writeup and $cloudHostsPlatforms definition.
+# deadlock discovered live 2026-09-08: if a previous install already created these
+# longhorn-manager-backed Services (default internalTrafficPolicy=Cluster), the
+# apiserver's synchronous webhook call (longhorn-admission-webhook) or the CSI plugin's
+# REST calls to longhorn-backend (used on every volume attach/detach) fired by THIS
+# upgrade's own manifest apply / concurrent attach traffic can route cross-node over the
+# flannel.1 VXLAN and time out — wedging `helm upgrade --install longhorn` itself
+# indefinitely, before it ever reaches the post-deploy patch further down (which is then
+# unreachable). Best-effort and silent: on a genuinely fresh install these Services don't
+# exist yet, so this simply no-ops and the post-deploy patch below is what applies
+# instead. Same deny-list reasoning as cert-manager's fix — see the post-deploy patch's
+# comment for the full root-cause writeup and $cloudHostsPlatforms definition.
 if ($Platform -notin @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")) {
-    & kubectl patch service longhorn-admission-webhook -n $Namespace -p '{"spec":{"internalTrafficPolicy":"Local"}}' 2>$null | Out-Null
+    foreach ($svc in @("longhorn-admission-webhook", "longhorn-backend")) {
+        & kubectl patch service $svc -n $Namespace -p '{"spec":{"internalTrafficPolicy":"Local"}}' 2>$null | Out-Null
+    }
 }
 
 $HelmArgs = @(
@@ -165,29 +168,37 @@ if ($exitCode -ne 0) {
 Write-Host "  ✓ longhorn-manager ready" -ForegroundColor Green
 
 # Authoritative patch — covers a fresh install, where the pre-emptive patch further up
-# (right before the helm upgrade call) necessarily no-op'd because the Service didn't
+# (right before the helm upgrade call) necessarily no-op'd because these Services didn't
 # exist yet. Longhorn manager already runs as a DaemonSet (one pod per node), so unlike
 # 31-cert-manager/Install.ps1's webhook fix this needs no affinity/replica
 # pinning — every node already has a local backend the moment the rollout
 # above succeeds. Same underlying flannel.1 cross-node VXLAN defect though
-# (see that script's comment for the full root-cause writeup): the
-# apiserver's synchronous webhook call (mutator.longhorn.io, fired on every
-# Volume/Engine create or update, including PVC attach) can land on a
-# different node's longhorn-manager pod via the Service's default
-# internalTrafficPolicy=Cluster, and the reply on that cross-node path times
-# out ("failed calling webhook ... context deadline exceeded"). Confirmed
-# live 2026-09-08: this is what stuck OpenBao's PVC attach in a retry loop
-# and cascaded into Authelia (Vault secret mount) / Rancher OIDC login /
-# Portal ForwardAuth all failing. Deliberately NOT applied on managed-
-# control-plane platforms — same reasoning and same deny-list as
-# cert-manager's fix ($cloudHostsPlatforms, see that script).
+# (see that script's comment for the full root-cause writeup), hitting two separate
+# Services backed by the same longhorn-manager pods:
+#   - longhorn-admission-webhook: the apiserver's synchronous webhook call
+#     (mutator.longhorn.io / validator.longhorn.io, fired on every Volume/Engine
+#     create or update) can land on a different node's pod via the Service's default
+#     internalTrafficPolicy=Cluster, and the reply on that cross-node path times out
+#     ("failed calling webhook ... context deadline exceeded").
+#   - longhorn-backend: the CSI plugin's REST calls (used on every volume attach/
+#     detach, e.g. POST /v1/volumes/<name>?action=attach) hit the same cross-node
+#     timeout ("context deadline exceeded (Client.Timeout exceeded while awaiting
+#     headers)"), discovered live 2026-09-08 as a SECOND, separate manifestation
+#     after the webhook fix alone still left PVC attaches failing intermittently.
+# Confirmed live 2026-09-08: this combination is what stuck OpenBao's PVC attach in a
+# retry loop and cascaded into Authelia (Vault secret mount) / Rancher OIDC login /
+# Portal ForwardAuth all failing. Deliberately NOT applied on managed-control-plane
+# platforms — same reasoning and same deny-list as cert-manager's fix
+# ($cloudHostsPlatforms, see that script).
 $cloudHostsPlatforms = @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")
 if ($Platform -notin $cloudHostsPlatforms) {
-    & kubectl patch service longhorn-admission-webhook -n $Namespace -p '{"spec":{"internalTrafficPolicy":"Local"}}' 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✓ longhorn-admission-webhook Service set to internalTrafficPolicy=Local" -ForegroundColor Green
-    } else {
-        Write-Warning "  ⚠ Failed to set internalTrafficPolicy=Local on longhorn-admission-webhook Service"
+    foreach ($svc in @("longhorn-admission-webhook", "longhorn-backend")) {
+        & kubectl patch service $svc -n $Namespace -p '{"spec":{"internalTrafficPolicy":"Local"}}' 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✓ $svc Service set to internalTrafficPolicy=Local" -ForegroundColor Green
+        } else {
+            Write-Warning "  ⚠ Failed to set internalTrafficPolicy=Local on $svc Service"
+        }
     }
 }
 
