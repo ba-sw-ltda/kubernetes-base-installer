@@ -149,6 +149,31 @@ if ($exitCode -ne 0) {
 }
 Write-Host "  ✓ longhorn-manager ready" -ForegroundColor Green
 
+# Longhorn manager already runs as a DaemonSet (one pod per node), so unlike
+# 31-cert-manager/Install.ps1's webhook fix this needs no affinity/replica
+# pinning — every node already has a local backend the moment the rollout
+# above succeeds. Same underlying flannel.1 cross-node VXLAN defect though
+# (see that script's comment for the full root-cause writeup): the
+# apiserver's synchronous webhook call (mutator.longhorn.io, fired on every
+# Volume/Engine create or update, including PVC attach) can land on a
+# different node's longhorn-manager pod via the Service's default
+# internalTrafficPolicy=Cluster, and the reply on that cross-node path times
+# out ("failed calling webhook ... context deadline exceeded"). Confirmed
+# live 2026-09-08: this is what stuck OpenBao's PVC attach in a retry loop
+# and cascaded into Authelia (Vault secret mount) / Rancher OIDC login /
+# Portal ForwardAuth all failing. Deliberately NOT applied on managed-
+# control-plane platforms — same reasoning and same deny-list as
+# cert-manager's fix ($cloudHostsPlatforms, see that script).
+$cloudHostsPlatforms = @("Azure AKS", "AWS EKS", "Google GKE", "Magalu Cloud")
+if ($Platform -notin $cloudHostsPlatforms) {
+    & kubectl patch service longhorn-admission-webhook -n $Namespace -p '{"spec":{"internalTrafficPolicy":"Local"}}' 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✓ longhorn-admission-webhook Service set to internalTrafficPolicy=Local" -ForegroundColor Green
+    } else {
+        Write-Warning "  ⚠ Failed to set internalTrafficPolicy=Local on longhorn-admission-webhook Service"
+    }
+}
+
 $exitCode = Invoke-WithSpinner -Message "Waiting for longhorn-driver-deployer..." -Executable "kubectl" `
     -Arguments @("rollout", "status", "deployment/longhorn-driver-deployer", "-n", $Namespace, "--timeout=15m") `
     -ShowOutput:$verbose
