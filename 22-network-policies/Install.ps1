@@ -174,6 +174,63 @@ if ($LASTEXITCODE -eq 0) {
     exit 1
 }
 
+# metrics-server (rke2-metrics-server, kube-system-native) scrapes every node's
+# kubelet directly over HTTPS on 10250 — not a Service, so NetworkPolicy egress
+# has to allow the node IPs themselves, not a pod/namespace selector. The
+# generic default-deny-all above has no rule for that, so every scrape times
+# out ("context deadline exceeded") on all nodes. Confirmed live 2026-09-08:
+# metrics-server's Deployment rollout got stuck in ProgressDeadlineExceeded —
+# the new pod failed its readiness probe (500, "no metrics to serve") 2800+
+# times over 6+ hours, while the old pod (whose scrape connections predate
+# default-deny-all, added 2026-09-07) kept working on grandfathered conntrack
+# state — masking the gap until the next rollout or pod restart hit it fresh.
+# That flapping between one healthy and one broken metrics-server endpoint is
+# also what surfaces as intermittent "stale GroupVersion discovery" /
+# "couldn't get current server API group list" noise from every client
+# (kubectl, longhorn-manager, ...) that queries the metrics.k8s.io aggregated
+# API. Node IPs are dynamic (added/replaced nodes, different CIDRs per
+# platform), so — same reasoning as the DNS-selector discovery above — this
+# reads the real InternalIP off every current Node object rather than
+# hardcoding a CIDR.
+$nodeIpsJson = & kubectl get nodes -o json 2>$null
+$nodeIps = @()
+if ($LASTEXITCODE -eq 0 -and $nodeIpsJson) {
+    $nodeIps = ($nodeIpsJson | ConvertFrom-Json).items | ForEach-Object {
+        ($_.status.addresses | Where-Object { $_.type -eq 'InternalIP' } | Select-Object -First 1).address
+    } | Where-Object { $_ }
+}
+
+if ($nodeIps.Count -gt 0) {
+    $nodeIpBlocksYaml = ($nodeIps | ForEach-Object {
+        "    - ipBlock:`n        cidr: $_/32"
+    }) -join "`n"
+    $kubeletEgressYaml = @"
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kubelet-metrics-egress
+  namespace: $Namespace
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+$nodeIpBlocksYaml
+    ports:
+    - protocol: TCP
+      port: 10250
+"@
+    $kubeletEgressYaml | & kubectl apply -f - 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✓ Kubelet-metrics egress rule applied ($($nodeIps.Count) node(s))" -ForegroundColor Green
+    } else {
+        Write-Error "Failed to apply kubelet-metrics egress rule in '$Namespace'"
+        exit 1
+    }
+} else {
+    Write-Warning "Could not list node InternalIPs — skipping kubelet-metrics egress rule (metrics-server scrapes will fail under default-deny-all)"
+}
+
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "  Installation Complete" -ForegroundColor Cyan
 Write-Host "========================================`n" -ForegroundColor Cyan
