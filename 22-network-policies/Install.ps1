@@ -248,6 +248,49 @@ $nodeIpBlocksYaml
     Write-Warning "Could not list node InternalIPs — skipping kubelet-metrics egress rule (metrics-server scrapes will fail under default-deny-all)"
 }
 
+# The apiserver's other leg of the same relationship: metrics.k8s.io is an
+# aggregated API, so each apiserver dials rke2-metrics-server's pod directly
+# (not via kubectl, not via a Service) to serve /apis/metrics.k8s.io/*. The
+# apiserver runs hostNetwork on every control-plane node, so from
+# metrics-server's side that connection arrives from a node IP, not a pod/
+# namespace selector — same reasoning as the egress rule above, so this
+# reuses the already-collected $nodeIps rather than hardcoding CIDRs.
+# Confirmed live 2026-09-10: without this ingress rule, every apiserver
+# discovery call that touches the aggregated API (`kubectl get --raw /apis`,
+# `kubectl exec`'s pre-flight discovery, any `helm upgrade`) intermittently
+# fails with "the server could not find the requested resource" — the
+# aggregation layer can't reach metrics-server to build the full discovery
+# document, so it fails the whole /apis root rather than just the one group.
+if ($nodeIps.Count -gt 0) {
+    $apiserverIngressYaml = @"
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apiserver-metrics-ingress
+  namespace: $Namespace
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rke2-metrics-server
+  policyTypes: ["Ingress"]
+  ingress:
+  - from:
+$nodeIpBlocksYaml
+    ports:
+    - protocol: TCP
+      port: 10250
+"@
+    $apiserverIngressYaml | & kubectl apply -f - 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-GroupLine "✓ Apiserver-to-metrics-server ingress rule applied ($($nodeIps.Count) node(s))" -ForegroundColor Green
+    } else {
+        Write-Error "Failed to apply apiserver-metrics ingress rule in '$Namespace'"
+        exit 1
+    }
+} else {
+    Write-Warning "Could not list node InternalIPs — skipping apiserver-metrics ingress rule (aggregated API discovery will fail under default-deny-all)"
+}
+
 Complete-Group
 
 Write-Host "`n========================================" -ForegroundColor Cyan
