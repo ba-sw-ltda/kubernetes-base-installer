@@ -299,6 +299,78 @@ $exitCode = Invoke-WithSpinner -Message "Deploying OpenBao..." -Executable "helm
 Remove-Item $valuesFile.FullName -Force -ErrorAction SilentlyContinue
 if ($exitCode -ne 0) { Write-Error "Failed to deploy OpenBao (exit code $exitCode)"; exit 1 }
 
+# The Preparation step above orphans (not deletes) any existing pods so Helm
+# can recreate the StatefulSet despite its immutable spec fields. Kubernetes
+# then just ADOPTS those already-running pods by label match — since only the
+# ConfigMap's *content* changed, not the pod template's reference to it, the
+# computed pod-template-hash is unchanged, so the StatefulSet controller sees
+# no reason to recreate them. The orphaned pods keep running whatever HCL
+# config (and image) they loaded at their original startup, silently, with no
+# error — confirmed live 2026-09-11 (an HCL fix landed in the ConfigMap and
+# `helm upgrade` reported success, but openbao-0/1/2 kept running the old
+# in-memory config for 10+ hours until this restart was added). A real
+# `helm upgrade` without the orphan workaround wouldn't have this gap — the
+# rollout restart here just restores that guarantee. Force it explicitly
+# whenever pods already existed before this run; the 3-node Raft quorum
+# tolerates a rolling restart (one replica down at a time) so this is safe
+# on every re-run, not just ones with an actual config change.
+if ($stsExists) {
+    # OpenBao's chart uses updateStrategy: OnDelete (not RollingUpdate) so an
+    # operator controls Raft-quorum-safe restart ordering explicitly, rather
+    # than the StatefulSet controller doing it unattended — `kubectl rollout
+    # restart`/`rollout status` are no-ops/errors here (confirmed live
+    # 2026-09-11: "rollout status is only available for RollingUpdate
+    # strategy type"). Recreate each pod one at a time instead, leader last,
+    # keeping 2 of 3 Raft voters up throughout; the openbao-unsealer
+    # Deployment already running in-cluster re-unseals each recreated pod
+    # automatically (see [[project_openbao_ha]] auto-unsealer), so this loop
+    # only waits for that to happen rather than unsealing itself.
+    $leaderOrdinal = 0
+    $leaderRaw = & kubectl exec openbao-0 -n $Namespace -- bao status -format=json 2>$null
+    $leaderJsonStart = if ($leaderRaw) { $leaderRaw.IndexOf('{') } else { -1 }
+    if ($leaderJsonStart -ge 0) {
+        $leaderParsed = $leaderRaw.Substring($leaderJsonStart) | ConvertFrom-Json -AsHashtable -ErrorAction SilentlyContinue
+        if ($leaderParsed -and $leaderParsed['leader_cluster_address'] -match 'openbao-(\d+)\.') {
+            $leaderOrdinal = [int]$Matches[1]
+        }
+    }
+    $restartOrder = (0..($HAReplicas - 1)) | Where-Object { $_ -ne $leaderOrdinal }
+    $restartOrder += $leaderOrdinal
+
+    foreach ($ordinal in $restartOrder) {
+        $podName = "openbao-$ordinal"
+        $exitCode = Invoke-WithSpinner -Message "Recreating $podName to pick up config/image changes..." -Executable "kubectl" `
+            -Arguments @("delete", "pod", $podName, "-n", $Namespace, "--wait=true", "--timeout=2m")
+        if ($exitCode -ne 0) { Write-Error "Failed to delete pod $podName (exit code $exitCode)"; exit 1 }
+
+        $exitCode = Invoke-WithSpinner -Message "Waiting for $podName to start..." -Executable "kubectl" `
+            -Arguments @("wait", "pod/$podName", "-n", $Namespace,
+                         "--for=jsonpath={.status.phase}=Running", "--timeout=5m")
+        if ($exitCode -ne 0) { Write-Error "$podName did not start after restart"; exit 1 }
+
+        $podUnsealed = Invoke-ScriptBlockWithSpinner -Message "Waiting for $podName to be auto-unsealed..." -ShowElapsed `
+            -ArgumentList @($Namespace, $podName) -ScriptBlock {
+                param($Namespace, $podName)
+                $elapsed = 0
+                while ($elapsed -lt 120) {
+                    $raw = & kubectl exec $podName -n $Namespace -- bao status -format=json 2>$null
+                    $jsonStart = if ($raw) { $raw.IndexOf('{') } else { -1 }
+                    if ($jsonStart -ge 0) {
+                        $parsed = $raw.Substring($jsonStart) | ConvertFrom-Json -AsHashtable -ErrorAction SilentlyContinue
+                        if ($parsed -and $parsed['sealed'] -eq $false) { return $true }
+                    }
+                    Start-Sleep -Seconds 3; $elapsed += 3
+                }
+                return $false
+            }
+        if (-not $podUnsealed) {
+            Write-Error "$podName did not become unsealed within 120s after restart — check openbao-unsealer logs"
+            exit 1
+        }
+        Write-GroupLine "✓ $podName recreated and unsealed" -ForegroundColor Green
+    }
+}
+
 # Wait for pod to be Running (not Ready — readiness probe fails until initialized)
 $exitCode = Invoke-WithSpinner -Message "Waiting for OpenBao pod..." -Executable "kubectl" `
     -Arguments @("wait", "pod/openbao-0", "-n", $Namespace,
