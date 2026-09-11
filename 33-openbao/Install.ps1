@@ -177,6 +177,20 @@ $modeYaml = if ($HAEnabled) {
           tls_disable = 1
           address = "[::]:8200"
           cluster_address = "[::]:8201"
+          # Get-OpenBaoRootToken's self-heal depends on the legacy
+          # unauthenticated 'sys/generate-root/*' ceremony, which OpenBao
+          # 2.5.3+ disables by default (HCSEC-2026-08 / CVE-2026-5807).
+          # This is a listener-level parameter, NOT top-level HCL — an
+          # earlier live config had it at the top level, where OpenBao
+          # silently accepts and ignores unknown fields (a bare WARN, not
+          # a parse error), so the ceremony stayed disabled regardless of
+          # which pod was targeted. Confirmed correct nesting via
+          # https://openbao.org/docs/configuration/listener/tcp/. Safe to
+          # leave permanently enabled here (not just during a recovery
+          # window): OpenBao's HTTP listener is ClusterIP-only, never
+          # externally reachable, so the unauthenticated-cancellation DoS
+          # this guards against is not exposed.
+          disable_unauthed_generate_root_endpoints = false
           telemetry {
             unauthenticated_metrics_access = "true"
           }
@@ -216,6 +230,10 @@ $modeYaml = if ($HAEnabled) {
         tls_disable = 1
         address = "[::]:8200"
         cluster_address = "[::]:8201"
+        # See the matching HA/raft block above for why this lives here
+        # (listener-level, not top-level HCL) and why it's safe to leave
+        # permanently enabled.
+        disable_unauthed_generate_root_endpoints = false
         telemetry {
           unauthenticated_metrics_access = "true"
         }
