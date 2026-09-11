@@ -1,7 +1,10 @@
 <#
 .SYNOPSIS
     Install Secrets Store CSI Driver — mounts vault secrets directly into pods as files.
-    No Kubernetes Secrets created, nothing stored in etcd.
+    UserConfig.SyncSecret (Config.psd1) additionally enables the driver's opt-in
+    secretObjects sync, which creates/rotates a real K8s Secret for any
+    SecretProviderClass that requests one (New-CsiSecretMount's -SyncSecretName) —
+    off for everyone who doesn't ask for it, so most consumers still see files only.
     Platform-specific vault provider is installed by the vault backend component (33-*).
 .PARAMETER Platform
     Target platform
